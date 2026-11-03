@@ -1,0 +1,125 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Validates content/**/*.yml against content/SCHEMA.md and runs every `code`
+# item's reference solution against its tests. Stdlib only: no Bundler, no DB.
+#
+#   bin/validate_content                # everything
+#   bin/validate_content content/ruby/blocks.yml
+#   bin/validate_content --no-run       # schema only, skip executing code items
+require "yaml"
+require_relative "../lib/runner"
+
+ROOT = File.expand_path("..", __dir__)
+KINDS = %w[mcq open code theory].freeze
+DIFFICULTIES = %w[junior middle senior].freeze
+LANGUAGES = %w[ruby elixir].freeze
+SLUG_RE = /\A[a-z]+-[a-z0-9-]+\z/
+MIN_PER_LANGUAGE = 500
+
+run_code = !ARGV.delete("--no-run")
+files = ARGV.empty? ? Dir[File.join(ROOT, "content", "*", "*.yml")].sort : ARGV.map { File.expand_path(_1) }
+
+errors = []
+slugs = {}
+counts = Hash.new { |h, k| h[k] = Hash.new(0) }
+code_total = 0
+code_failed = 0
+
+files.each do |file|
+  rel = file.delete_prefix("#{ROOT}/")
+  data = begin
+    YAML.safe_load_file(file, permitted_classes: [], aliases: false)
+  rescue Psych::SyntaxError => e
+    errors << "#{rel}: YAML syntax error: #{e.message}"
+    next
+  end
+  unless data.is_a?(Hash) && data["items"].is_a?(Array) && !data["items"].empty?
+    errors << "#{rel}: must be a mapping with a non-empty `items` list"
+    next
+  end
+  lang = data["language"]
+  topic = data["topic"]
+  dir_lang = File.basename(File.dirname(file))
+  errors << "#{rel}: language must be one of #{LANGUAGES.join('/')}" unless LANGUAGES.include?(lang)
+  errors << "#{rel}: language `#{lang}` does not match directory `#{dir_lang}`" if lang != dir_lang
+  errors << "#{rel}: topic must match file name `#{File.basename(file, '.yml')}`" if topic != File.basename(file, ".yml")
+
+  data["items"].each_with_index do |item, i|
+    where = "#{rel} item ##{i + 1}"
+    unless item.is_a?(Hash)
+      errors << "#{where}: not a mapping"
+      next
+    end
+    slug = item["slug"].to_s
+    where = "#{rel} [#{slug}]" unless slug.empty?
+    errors << "#{where}: slug `#{slug}` must match #{SLUG_RE.inspect}" unless slug.match?(SLUG_RE)
+    errors << "#{where}: slug must start with `#{lang}-`" unless slug.start_with?("#{lang}-")
+    if slugs[slug]
+      errors << "#{where}: duplicate slug (also in #{slugs[slug]})"
+    else
+      slugs[slug] = rel
+    end
+    kind = item["kind"]
+    errors << "#{where}: kind must be one of #{KINDS.join('/')}" unless KINDS.include?(kind)
+    errors << "#{where}: difficulty must be one of #{DIFFICULTIES.join('/')}" unless DIFFICULTIES.include?(item["difficulty"])
+    %w[title body].each { |f| errors << "#{where}: `#{f}` is required" if item[f].to_s.strip.empty? }
+    errors << "#{where}: `tags` must be a list" if item.key?("tags") && !item["tags"].is_a?(Array)
+    errors << "#{where}: `source` is required (URL or citation)" if item["source"].to_s.strip.empty?
+    errors << "#{where}: `explanation` is required" if item["explanation"].to_s.strip.empty?
+
+    case kind
+    when "mcq"
+      choices = item["choices"]
+      if !choices.is_a?(Array) || choices.size < 2 || choices.size > 6 || choices.any? { |c| c.to_s.strip.empty? }
+        errors << "#{where}: mcq needs 2-6 non-empty `choices`"
+      end
+      ans = item["answer"]
+      unless ans.is_a?(Integer) && choices.is_a?(Array) && ans.between?(0, choices.size - 1)
+        errors << "#{where}: mcq `answer` must be an integer index into choices"
+      end
+    when "open", "theory"
+      errors << "#{where}: #{kind} needs a markdown `answer`" if item["answer"].to_s.strip.empty?
+    when "code"
+      %w[starter_code tests solution].each { |f| errors << "#{where}: code needs `#{f}`" if item[f].to_s.strip.empty? }
+      marker = lang == "ruby" ? "minitest/autorun" : "ExUnit.start"
+      errors << "#{where}: code `tests` must contain `#{marker}`" unless item["tests"].to_s.include?(marker)
+      if run_code && item["tests"].to_s.include?(marker) && !item["solution"].to_s.strip.empty?
+        code_total += 1
+        res = Runner.run(lang, item["solution"], item["tests"])
+        unless res.ok
+          code_failed += 1
+          errors << "#{where}: reference solution FAILS its tests:\n#{res.output.lines.last(15).join.gsub(/^/, '    ')}"
+        end
+      end
+    end
+
+    next unless KINDS.include?(kind) && DIFFICULTIES.include?(item["difficulty"])
+    counts[lang]["total"] += 1
+    counts[lang]["topic:#{topic}"] += 1
+    counts[lang]["kind:#{kind}"] += 1
+    counts[lang]["difficulty:#{item['difficulty']}"] += 1
+  end
+end
+
+puts "Files: #{files.size}   Items: #{slugs.size}   Code items run: #{code_total} (#{code_failed} failed)"
+counts.sort.each do |lang, c|
+  puts "\n#{lang}: #{c['total']} items"
+  %w[kind difficulty topic].each do |group|
+    row = c.select { |k, _| k.start_with?("#{group}:") }.sort.map { |k, v| "#{k.split(':', 2).last}=#{v}" }
+    puts "  #{group.ljust(10)} #{row.join('  ')}" unless row.empty?
+  end
+end
+if ARGV.empty?
+  LANGUAGES.each do |l|
+    n = counts[l]["total"]
+    puts "\nWARNING: #{l} has #{n} items, target is >= #{MIN_PER_LANGUAGE}" if n < MIN_PER_LANGUAGE
+  end
+end
+
+unless errors.empty?
+  puts "\n#{errors.size} error(s):"
+  errors.each { |e| puts "  - #{e}" }
+  exit 1
+end
+puts "\nOK"

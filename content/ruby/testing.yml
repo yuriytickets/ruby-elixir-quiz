@@ -1,0 +1,1480 @@
+language: ruby
+topic: testing
+items:
+  - slug: ruby-test-let-vs-let-bang-evaluation
+    kind: mcq
+    difficulty: junior
+    title: "When does the `let` block run?"
+    body: |
+      ```ruby
+      RSpec.describe Order do
+        let(:order) { puts "built"; Order.new }
+        let!(:eager) { puts "eager"; 1 }
+
+        it "has no items" do
+          puts "start"
+          expect(order.items).to be_empty
+        end
+      end
+      ```
+
+      In what order are the three strings printed?
+    choices:
+      - "built, eager, start"
+      - "eager, start, built"
+      - "start, built, eager"
+      - "eager, built, start"
+    answer: 1
+    explanation: |
+      `let` defines a memoized helper method that is evaluated lazily, on the first call inside the
+      example, so "built" only appears when `order` is referenced. `let!` wraps the same helper in an
+      implicit `before` hook, so "eager" prints before the example body runs. The order is therefore
+      eager, start, built. Option 0 is what people expect if they think `let` behaves like an instance
+      variable assigned in `before`.
+    tags: [rspec, let]
+    source: https://rspec.info/features/3-13/rspec-core/helper-methods/let/
+
+  - slug: ruby-test-let-vs-let-bang-vs-ivars
+    kind: open
+    difficulty: middle
+    title: "`let` vs `let!` vs instance variables in `before`"
+    body: |
+      Compare `let`, `let!` and instance variables assigned in a `before` block. When would you choose each,
+      and what goes wrong with each?
+    answer: |
+      - `let(:x) { ... }` defines a memoized method: lazy (runs on first reference), cached within one example,
+        re-evaluated for every example. It can be overridden in nested `context`s, which is its main strength.
+      - `let!` is `let` plus an implicit `before` hook: evaluated eagerly before each example. Use it when the
+        side effect matters (a record must exist in the DB) even if nothing references it.
+      - `@ivar` in `before(:each)` is eager and runs for every example whether needed or not; a typo in the name
+        silently yields `nil` instead of `NameError`; it cannot be overridden per-context cleanly.
+      - `@ivar` in `before(:all)` / `before(:context)` is shared across examples, so state leaks and the test
+        suite becomes order-dependent (and records created there are outside the per-example transaction).
+      - Rule of thumb: `let` by default, `let!` when a side effect must happen, instance variables only for
+        expensive read-only setup in `before(:all)`.
+    explanation: |
+      Follow-ups interviewers ask: "What is the pitfall of lazy `let` when the test expects a DB record to
+      exist?" (it never gets created unless referenced) and "Why is a mock not allowed in `before(:context)`?"
+      (mocks are reset per example). Mentioning that `let` is thread-safe by default and can be redefined in
+      nested groups shows depth.
+    tags: [rspec, let, hooks]
+    source: https://www.codewithjason.com/?p=1322
+
+  - slug: ruby-test-eq-eql-equal-be
+    kind: mcq
+    difficulty: junior
+    title: "`eq`, `eql`, `equal` and `be`: which expectation fails?"
+    body: |
+      ```ruby
+      a = "ruby"
+      b = "ruby"
+
+      expect(a).to eq(b)      # 1
+      expect(a).to eql(b)     # 2
+      expect(a).to equal(b)   # 3
+      expect(1).to eql(1.0)   # 4
+      ```
+
+      Which lines fail?
+    choices:
+      - "Only 3"
+      - "3 and 4"
+      - "2, 3 and 4"
+      - "None, they all pass"
+    answer: 1
+    explanation: |
+      `eq` uses `==` (value equality, so `1 == 1.0` is true). `eql` uses `eql?`, which also requires the same
+      type: `1.eql?(1.0)` is false, so line 4 fails. `equal` and `be` use `equal?`, object identity: two
+      separate string literals are different objects, so line 3 fails. Line 2 passes because both strings
+      have the same value and class. People often think `eql` is identity; it is not, `equal`/`be` is.
+    tags: [rspec, matchers]
+    source: "RSpec Expectations docs: equality matchers (rspec.info)"
+
+  - slug: ruby-test-instance-double-vs-double
+    kind: mcq
+    difficulty: middle
+    title: "What does `instance_double` catch that `double` does not?"
+    body: |
+      ```ruby
+      class Mailer
+        def deliver(to:) = ...
+      end
+
+      gateway = instance_double(Mailer)
+      allow(gateway).to receive(:send_email).and_return(true)
+      ```
+
+      What happens when the `allow` line runs?
+    choices:
+      - "Nothing; the stub is registered and `gateway.send_email` returns true"
+      - "It raises immediately because `Mailer` does not implement `send_email`"
+      - "It raises only when `gateway.send_email` is actually called"
+      - "It prints a deprecation warning and continues"
+    answer: 1
+    explanation: |
+      `instance_double(Mailer)` is a verifying double: when `Mailer` is loaded, RSpec checks at stub time that
+      the method exists on instances of the class (and later that the arity of calls matches the real
+      signature). A plain `double` would accept any method name, so a test could keep passing after
+      `deliver` was renamed in production. If the constant is not loaded (e.g. an unloaded string name),
+      no verification happens, which is why `instance_double("Mailer")` with a typo'd name is a trap.
+    tags: [rspec, doubles, mocks]
+    source: https://rspec.info/features/3-13/rspec-mocks/verifying-doubles/
+
+  - slug: ruby-test-stub-mock-fake-spy-definitions
+    kind: open
+    difficulty: middle
+    title: "Stub vs mock vs fake vs spy"
+    body: |
+      Define stub, mock, fake and spy as test doubles. How does each map onto RSpec and when would you reach
+      for each?
+    answer: |
+      - Stub: canned answer to a message, no assertion about whether it was called. RSpec: `allow(x).to
+        receive(:y).and_return(z)`. Use to control inputs/collaborators.
+      - Mock: a double with an expectation that the message IS received (with given args); the test fails
+        otherwise. RSpec: `expect(x).to receive(:y).with(1)`. Use when the outgoing message is the behaviour
+        under test (command, side effect).
+      - Spy: records calls so you assert after the action, keeping arrange-act-assert order. RSpec: `spy`,
+        `instance_spy`, or `allow(...).to receive` then `expect(x).to have_received(:y)`.
+      - Fake: a working lightweight implementation (in-memory repository, fake payment gateway). No RSpec
+        helper; it is just a class you write and inject.
+      - Guidance: stub queries, mock/spy commands; prefer verifying doubles (`instance_double`) so the fake
+        interface cannot drift from the real one; over-mocking couples tests to implementation.
+    explanation: |
+      A common follow-up: "What is a partial double?" (stubbing a method on a real object, e.g.
+      `allow(User).to receive(:find)`), and "Why prefer spies over `expect(...).to receive` before the act?"
+      (readability, assertion after the action). Also worth saying: a double returned by `double("x")` is a
+      null-object only when you call `as_null_object`.
+    tags: [doubles, mocks, stubs]
+    source: https://rspec.info/features/3-13/rspec-mocks/basics/
+
+  - slug: ruby-test-allow-vs-expect-receive
+    kind: mcq
+    difficulty: junior
+    title: "`allow` vs `expect` with `receive`"
+    body: |
+      ```ruby
+      it "notifies" do
+        notifier = double("Notifier")
+        allow(notifier).to receive(:notify)
+        Service.new(notifier).run   # run never calls notify
+      end
+      ```
+
+      What is the result of this example?
+    choices:
+      - "It fails because `notify` was never received"
+      - "It passes; `allow` only permits the message, it does not require it"
+      - "It raises because `double` has no `notify` method"
+      - "It is marked pending because the double is unused"
+    answer: 1
+    explanation: |
+      `allow(...).to receive` is a stub: it permits the message and defines a return value (nil by default)
+      but never asserts. `expect(...).to receive` is a message expectation that fails at the end of the
+      example if the message was not received. The double accepts `notify` precisely because it was
+      allowed; without the `allow` line an unexpected message on a strict double would raise.
+    tags: [rspec, mocks]
+    source: https://rspec.info/features/3-13/rspec-mocks/basics/
+
+  - slug: ruby-test-hooks-order-theory
+    kind: theory
+    difficulty: middle
+    title: "RSpec hook order: `before`, `after`, `around`, scopes"
+    body: |
+      RSpec runs hooks in a fixed order:
+
+      1. `before(:suite)` – once, from `RSpec.configure`
+      2. `before(:context)` (alias `:all`) – once per example group
+      3. `around(:example)` – wraps everything below
+      4. `before(:example)` (alias `:each`) – per example, outer groups first
+      5. the example
+      6. `after(:example)` – per example, inner groups first (reverse order)
+      7. `after(:context)`, then `after(:suite)`
+
+      ```ruby
+      RSpec.configure { |c| c.before(:suite) { puts "suite" } }
+
+      RSpec.describe "order" do
+        before(:context) { puts "context" }
+        around { |ex| puts "around-in"; ex.run; puts "around-out" }
+        before { puts "before" }
+        after  { puts "after" }
+        it { puts "example" }
+      end
+      # suite, context, around-in, before, example, after, around-out
+      ```
+
+      Gotchas:
+      - `before(:context)` instance variables are shared by every example in the group: state leaks and
+        records created there are not rolled back by per-example transactions.
+      - Mocks and `let` are per-example, so they are not available in `before(:context)`.
+      - `around` hooks must call `example.run` or the example silently never executes.
+      - Hooks declared in `RSpec.configure` run before hooks in the group; `after` hooks run in reverse
+        definition order so teardown mirrors setup.
+    answer: |
+      **Q:** Where does an `around` hook sit relative to `before`/`after` hooks defined in the same group?
+      **A:** Outside them: `around` starts before any `before(:example)` and finishes after every
+      `after(:example)`, regardless of where it is declared.
+    explanation: |
+      Interviewers use hook order to probe whether you understand why `before(:all)` leaks state and why
+      database cleaning strategies interact with `before(:context)`. The reverse order of `after` hooks is
+      the detail most candidates miss.
+    tags: [rspec, hooks]
+    source: https://rspec.info/features/3-13/rspec-core/hooks/before-and-after-hooks/
+
+  - slug: ruby-test-let-laziness-pitfall
+    kind: mcq
+    difficulty: middle
+    title: "Why does this spec fail?"
+    body: |
+      ```ruby
+      RSpec.describe User, ".active" do
+        let(:user) { User.create!(name: "A", active: true) }
+
+        it "returns active users" do
+          expect(User.active.count).to eq(1)
+        end
+      end
+      ```
+
+      The example fails with `expected: 1, got: 0`. Why?
+    choices:
+      - "`User.active` is cached by ActiveRecord before the record is created"
+      - "`let` is lazy: `user` is never referenced so the record is never created"
+      - "`create!` inside `let` is rolled back before the example runs"
+      - "`count` runs in a different database transaction than `let`"
+    answer: 1
+    explanation: |
+      `let` is a lazily evaluated memoized method; since nothing in the example calls `user`, the block
+      never runs and no record is inserted. The fix is `let!` (eager) or referencing `user` in the example.
+      This is the single most common `let` bug and a favourite interview question. The other options invent
+      transaction behaviour that does not exist here.
+    tags: [rspec, let]
+    source: https://rspec.info/features/3-13/rspec-core/helper-methods/let/
+
+  - slug: ruby-test-flaky-tests-causes
+    kind: open
+    difficulty: senior
+    title: "Diagnosing and fixing flaky tests"
+    body: |
+      A CI suite passes locally but fails randomly on CI about one run in twenty. Walk through the likely
+      causes and how you would find and fix the flaky tests.
+    answer: |
+      - Causes: order dependence / shared state (class-level memoization, leaked `before(:all)` records,
+        global config mutated and not reset), time (midnight/DST/month-end boundaries, `Time.now` compared to
+        DB timestamps with different precision), randomness (unseeded `rand`, Faker uniqueness collisions),
+        async/JS in system tests (asserting before the browser finished, `sleep` instead of waiting matchers),
+        external services (network calls not stubbed), DB ordering without `ORDER BY`, parallel workers
+        sharing resources (ports, files, Redis).
+      - Find: run with `--seed <failing seed>` to reproduce, `rspec --bisect` to find the minimal set of
+        examples that reproduces the order-dependent failure, `--only-failures`, run the file in a loop.
+      - Fix: freeze time (`travel_to`/`Timecop`) or inject a clock, stub HTTP (`WebMock`/`VCR`), use
+        Capybara waiting matchers (`have_content`) instead of `sleep`, reset global state in `after`, add
+        explicit ordering, use `config.order = :random` so order dependence shows up early rather than late.
+      - Process: quarantine/tag flaky specs (`:flaky`) temporarily, but treat each one as a bug to fix, not a
+        retry to add.
+    explanation: |
+      Strong candidates distinguish "flaky because of our test" from "flaky because of infrastructure" and
+      talk about random ordering as a feature, not an annoyance. A follow-up: "Why does
+      `expect(page).to have_content` fix an async failure but `expect(page.text).to include` does not?"
+      (only the matcher form retries up to `default_max_wait_time`).
+    tags: [flaky, ci, debugging]
+    source: https://github.com/teamcapybara/capybara
+
+  - slug: ruby-test-receive-message-chain-smell
+    kind: mcq
+    difficulty: middle
+    title: "What does `receive_message_chain` usually indicate?"
+    body: |
+      ```ruby
+      allow(User).to receive_message_chain(:where, :order, :first).and_return(user)
+      ```
+
+      Why do RSpec's own docs file this under "working with legacy code"?
+    choices:
+      - "It is slower than three separate `allow` calls"
+      - "It couples the test to the exact call sequence (a Law of Demeter violation), so refactoring the query breaks the test while behaviour is unchanged"
+      - "It cannot return a value, only `nil`"
+      - "It only works with verifying doubles"
+    answer: 1
+    explanation: |
+      Stubbing a chain encodes the implementation (`where` then `order` then `first`) into the test. Any
+      equivalent rewrite (`find_by`, a scope) fails the test without a behaviour change, and the test says
+      nothing about whether the query is correct. The better design is to extract the chain into a named
+      method or scope (`User.latest_for(...)`) and stub or test that single message. Speed and return
+      values are not the issue.
+    tags: [rspec, mocks, smells]
+    source: https://rspec.info/features/3-13/rspec-mocks/basics/
+
+  - slug: ruby-test-factory-bot-build-create-stubbed
+    kind: mcq
+    difficulty: junior
+    title: "FactoryBot: `build` vs `create` vs `build_stubbed`"
+    body: |
+      Which statement about FactoryBot strategies is correct?
+    choices:
+      - "`build` saves the record but skips validations"
+      - "`build_stubbed` returns an object that behaves as persisted (has an id) and raises if you try to hit the database"
+      - "`create` returns an unsaved object with associations persisted"
+      - "`attributes_for` returns a saved record's attributes after reloading it"
+    answer: 1
+    explanation: |
+      `build` instantiates without saving (since factory_bot 5 associations follow the parent strategy, so they
+      are built too). `create` saves, running validations and callbacks. `build_stubbed` assigns an id, stubs
+      `persisted?`/`new_record?` and makes `save`, `reload`, `update` etc. raise, giving you a fast
+      "looks persisted" object for unit tests. `attributes_for` returns a plain hash of attributes, useful
+      for request params. Prefer `build_stubbed` or `build` unless the test actually needs SQL.
+    tags: [factory_bot]
+    source: https://github.com/thoughtbot/factory_bot/blob/main/GETTING_STARTED.md
+
+  - slug: ruby-test-fixtures-vs-factories
+    kind: open
+    difficulty: middle
+    title: "Fixtures vs factories"
+    body: |
+      Rails ships with fixtures; most RSpec projects use FactoryBot. Compare the two approaches and explain
+      how traits and sequences address factory pain points.
+    answer: |
+      - Fixtures: YAML rows loaded once into the test DB (bypassing validations and callbacks), accessed via
+        `users(:david)`. Very fast (one load, transactions per test), but implicit: a test depends on a
+        global dataset it does not show, and the "mystery guest" grows over time.
+      - Factories: build objects per test with sensible defaults, so each test shows exactly the data it
+        needs; run validations/callbacks (so they catch invalid defaults); slower when you `create` a lot,
+        and factories accumulating associations become slow "factory cascades".
+      - Traits bundle attribute variations (`create(:user, :admin, :unconfirmed)`) instead of one factory per
+        combination; later traits override earlier ones.
+      - Sequences (`sequence(:email) { |n| "user#{n}@example.com" }`) generate unique values so uniqueness
+        validations do not collide; `FactoryBot.rewind_sequences` resets them.
+      - Hybrid: fixtures for static reference data (countries, roles), factories for scenario data; keep
+        factories minimal (only valid defaults, no optional associations) and lint them with
+        `FactoryBot.lint`.
+    explanation: |
+      Follow-ups: "How would you speed up a suite where every test creates ten records?" (build_stubbed,
+      fewer associations, `before(:all)` with explicit cleanup, parallel tests) and "Why can fixtures contain
+      invalid data?" (they are inserted with raw SQL, skipping validations).
+    tags: [factory_bot, fixtures]
+    source: https://guides.rubyonrails.org/testing.html
+
+  - slug: ruby-test-transactional-tests-database-cleaning
+    kind: mcq
+    difficulty: middle
+    title: "Transactional tests and system specs"
+    body: |
+      Rails wraps each test in a database transaction that is rolled back afterwards. Historically, teams
+      switched to DatabaseCleaner's `:truncation` strategy for Capybara/Selenium tests. Why, and is that
+      still required on Rails 7?
+    choices:
+      - "Truncation is faster than a rollback, so it was always preferred for slow browser tests"
+      - "The browser-driven app server ran in another thread with its own DB connection, so it could not see uncommitted data; since Rails 5.1 the connection is shared across threads, so transactional tests work for system tests"
+      - "Selenium cannot run inside a transaction because WebDriver commits automatically"
+      - "Rails 7 removed transactional tests, so truncation is now the only option"
+    answer: 1
+    explanation: |
+      Per-example transactions are fast because nothing is committed. The problem was isolation: the Puma
+      thread serving Capybara requests used a different connection and could not see rows inserted in the
+      uncommitted test transaction, so people truncated tables after each test instead. Rails 5.1
+      introduced sharing the connection between the test thread and the server thread, so transactional
+      tests now work for system tests; DatabaseCleaner is only needed for special cases (multiple
+      databases, code that opens its own connections, tests that `COMMIT`).
+    tags: [rails, database, system-tests]
+    source: https://guides.rubyonrails.org/testing.html
+
+  - slug: ruby-test-pyramid-tdd-theory
+    kind: theory
+    difficulty: junior
+    title: "Test pyramid, test levels and TDD/BDD"
+    body: |
+      **Test levels** (bottom = many, fast, cheap; top = few, slow, realistic):
+
+      - Unit: one class/method in isolation, collaborators stubbed or simple. Milliseconds.
+      - Integration: several units together with real collaborators (model + DB, service + queue).
+      - System / end-to-end: the whole stack through a browser (Capybara system tests) or HTTP (request
+        specs). Catch wiring bugs, but slow and brittle, so reserve them for critical paths.
+
+      The **pyramid** says most tests should be unit tests, fewer integration, fewest end-to-end. An
+      "ice-cream cone" (mostly browser tests) is slow and flaky.
+
+      **TDD** loop: red (write a failing test), green (simplest code to pass), refactor (clean up with the
+      safety net). The test drives the design: hard-to-test code is a design smell.
+
+      **BDD** is TDD with the vocabulary of behaviour: specs read as sentences describing what the system
+      does for whom. RSpec's `describe`/`context`/`it` and `expect(x).to eq(y)` are BDD style:
+
+      ```ruby
+      RSpec.describe Cart do
+        context "when empty" do
+          it "has a zero total" do
+            expect(Cart.new.total).to eq(0)
+          end
+        end
+      end
+      ```
+
+      `describe` names the thing, `context` names the situation ("when/with/without"), `it` names the
+      behaviour. Good test names read as a specification when you run `rspec --format documentation`.
+    answer: |
+      **Q:** In the red/green/refactor cycle, why must you see the test fail first?
+      **A:** A test that has never failed proves nothing: it may be testing the wrong thing, or passing
+      for a reason unrelated to the code you are about to write. Red confirms the test can detect the
+      missing behaviour.
+    explanation: |
+      Interviewers follow with "Where do request specs sit in the pyramid?" (integration, below system
+      tests) and "What would you do if a team's suite is 80% feature specs?" (push logic down into unit
+      tests, keep a few happy-path system tests).
+    tags: [tdd, bdd, pyramid]
+    source: https://guides.rubyonrails.org/testing.html
+
+  - slug: ruby-test-change-matcher-by
+    kind: mcq
+    difficulty: middle
+    title: "Using the `change` matcher correctly"
+    body: |
+      Which expectation is written correctly and will pass when `Post.create!` inserts one row?
+    choices:
+      - "`expect(Post.create!(title: \"x\")).to change(Post, :count).by(1)`"
+      - "`expect { Post.create!(title: \"x\") }.to change { Post.count }.by(1)`"
+      - "`expect { Post.create!(title: \"x\") }.to change(Post.count).by(1)`"
+      - "`expect { Post.create!(title: \"x\") }.to change(Post.count).from(0).to(1)`"
+    answer: 1
+    explanation: |
+      `change` must wrap the action in a block (`expect { ... }`) so RSpec can evaluate the observed value
+      before and after running it. The observed value is given either as a block (`change { Post.count }`)
+      or as receiver + message (`change(Post, :count)`). Options 2 and 3 pass the already-evaluated integer
+      `Post.count` to `change`, which raises. Option 0 passes a value instead of a block, so there is no
+      "before" to compare. Related forms: `.by_at_least`, `.from(a).to(b)`, `not_to change`.
+    tags: [rspec, matchers]
+    source: "RSpec Expectations docs: change matcher (rspec.info)"
+
+  - slug: ruby-test-vcr-vs-webmock
+    kind: open
+    difficulty: middle
+    title: "Testing code that calls external HTTP APIs"
+    body: |
+      Your service calls a third-party payments API. How do you test it without hitting the network? Compare
+      WebMock and VCR and describe the trade-offs.
+    answer: |
+      - Never hit the real network in tests: slow, flaky, may cost money, and CI often has no access.
+        `WebMock.disable_net_connect!(allow_localhost: true)` makes any unstubbed request raise.
+      - WebMock: stub requests explicitly, `stub_request(:post, /api.example/).with(body: hash_including(...))
+        .to_return(status: 200, body: {...}.to_json)`, and assert with `expect(a_request(...)).to have_been_made`.
+        Precise and readable, but you hand-write responses that may drift from the real API.
+      - VCR: records real HTTP interactions into YAML cassettes on first run and replays them afterwards
+        (`VCR.use_cassette("charge") { ... }`). Real response shapes, but cassettes go stale, contain secrets
+        unless filtered (`filter_sensitive_data`), and re-recording needs credentials.
+      - Better design: wrap the API in a small client class (adapter), unit-test the client with WebMock/VCR,
+        and inject a fake client into everything else, so most tests never touch HTTP at all.
+      - Contract tests (e.g. Pact, or a nightly job that runs the client against the sandbox API) catch
+        drift that stubs and cassettes hide.
+    explanation: |
+      Follow-up: "What happens when the provider changes a field name?" Stubs and cassettes keep passing,
+      which is why a contract or smoke test against the real sandbox matters. Also mention `VCR`'s
+      `record: :none` on CI to fail fast on unexpected requests.
+    tags: [webmock, vcr, http]
+    source: "WebMock README (github.com/bblimke/webmock) and VCR README (github.com/vcr/vcr)"
+
+  - slug: ruby-test-capybara-waiting-matchers
+    kind: mcq
+    difficulty: junior
+    title: "Capybara: which assertion waits?"
+    body: |
+      After `click_on "Save"` the page updates via JavaScript a few hundred milliseconds later. Which
+      assertion is reliable?
+    choices:
+      - "`expect(page.text).to include(\"Saved\")`"
+      - "`expect(page.has_content?(\"Saved\")).to eq(true)`"
+      - "`expect(page).to have_content(\"Saved\")`"
+      - "`sleep 1; expect(page.text).to include(\"Saved\")`"
+    answer: 2
+    explanation: |
+      `have_content` (and the other `have_*` matchers, `find`, `click_on`) retry until the condition holds or
+      `Capybara.default_max_wait_time` (2 s by default) expires. `page.text` is read once, immediately, so
+      option 0 races with the browser. Option 1 does wait inside `has_content?` but asserting on the boolean
+      gives a useless failure message ("expected true, got false") and the negated form `has_no_content?`
+      is the only correct way to negate. `sleep` works until the CI box is slower than your laptop.
+    tags: [capybara, system-tests]
+    source: https://github.com/teamcapybara/capybara
+
+  - slug: ruby-test-request-vs-controller-specs
+    kind: open
+    difficulty: middle
+    title: "Request specs vs controller specs"
+    body: |
+      Why do both the Rails and RSpec teams recommend request specs over controller specs? What does each
+      exercise, and when would you still write a controller spec?
+    answer: |
+      - Controller specs (`type: :controller`, wrapping `ActionController::TestCase`) call the action directly
+        with simulated params, bypass routing and the full middleware stack, and by default do not render views
+        (`render_views` to opt in). They tend to assert on `assigns` and `response` internals.
+      - Request specs (`type: :request`, wrapping `ActionDispatch::IntegrationTest`) issue a real HTTP request
+        through routing, middleware, controller and views, and assert on status, body, headers, redirects
+        and side effects. Faster than browser tests, no JavaScript.
+      - Rails 5 deprecated `assigns`/`assert_template` (moved to `rails-controller-testing`) precisely to push
+        people toward testing behaviour via the response rather than controller instance variables.
+      - Request specs catch routing, before_action, CSRF/format negotiation and serialization bugs that
+        controller specs miss.
+      - A controller spec is still occasionally useful for testing a concern or `rescue_from` behaviour in
+        isolation with an anonymous controller (`controller(ApplicationController) { ... }`).
+    explanation: |
+      Follow-up: "Where do you put JSON API tests?" (request specs asserting on `response.parsed_body`) and
+      "How do you keep request specs fast?" (`build_stubbed` where possible, do not create more records than
+      the response needs, avoid logging in through the UI; use helper methods or `sign_in`).
+    tags: [rspec-rails, request-specs]
+    source: https://github.com/rspec/rspec-rails
+
+  - slug: ruby-test-active-job-matchers
+    kind: mcq
+    difficulty: middle
+    title: "Testing background jobs"
+    body: |
+      ```ruby
+      it "enqueues a welcome job" do
+        expect { User.create!(email: "a@b.c") }
+          .to have_enqueued_job(WelcomeJob).with(kind_of(Integer))
+      end
+      ```
+
+      What must be true for this spec to work, and what would you add to assert the job's effect?
+    choices:
+      - "`ActiveJob::Base.queue_adapter` must be `:inline`; wrap the create in `perform_enqueued_jobs` to assert the effect"
+      - "`queue_adapter` must be `:test`; wrap the action in `perform_enqueued_jobs { ... }` (or call `perform_enqueued_jobs` after) to run the jobs and assert the effect"
+      - "`queue_adapter` must be `:sidekiq`; use `Sidekiq::Testing.inline!`"
+      - "Nothing special; `have_enqueued_job` works with any adapter"
+    answer: 1
+    explanation: |
+      `have_enqueued_job`/`have_been_enqueued` inspect the test adapter's queue, so the adapter must be
+      `:test` (the default in `test` env since Rails 7; otherwise set it in config or with
+      `ActiveJob::Base.queue_adapter = :test`). To test what the job does, either unit-test
+      `WelcomeJob.new.perform(id)` directly or use `perform_enqueued_jobs { ... }` from
+      `ActiveJob::TestHelper`. `:inline` executes immediately, so nothing is ever "enqueued" and the matcher
+      fails. Mailers: `deliver_later` becomes `have_enqueued_mail(UserMailer, :welcome)`, and with
+      `delivery_method = :test` sent mail lands in `ActionMailer::Base.deliveries`.
+    tags: [active_job, rspec-rails]
+    source: https://github.com/rspec/rspec-rails
+
+  - slug: ruby-test-time-dependent-code
+    kind: open
+    difficulty: senior
+    title: "Testing time-dependent code"
+    body: |
+      A subscription expires 30 days after creation and a report groups events by "today". How do you test
+      this reliably, and what are the trade-offs of `Timecop`, `travel_to` and dependency injection?
+    answer: |
+      - Never compare against the real `Time.now`/`Date.today` in assertions; tests then fail at midnight,
+        on DST switches, at month end, or when CI runs in another time zone.
+      - `ActiveSupport::Testing::TimeHelpers`: `travel_to(Time.zone.local(2024, 1, 31, 23, 59)) { ... }`,
+        `travel 1.day`, `freeze_time`. Stubs `Time.now`, `Date.today`, `DateTime.now`; block form restores
+        automatically, otherwise call `travel_back` (rspec-rails adds an `after` hook when included).
+        Note `travel_to` truncates to seconds (usec = 0) unless `with_usec: true`, which bites when comparing
+        with DB timestamps.
+      - `Timecop.freeze`/`travel`/`scale` do the same outside Rails and can nest; `Timecop.safe_mode` forces
+        block form so a forgotten `return` cannot leak frozen time into other tests.
+      - Dependency injection: `Subscription.new(clock: -> { Time.current })` or a `now:` keyword makes the
+        code testable without global stubbing and is the cleanest design for domain logic.
+      - Pick boundary cases deliberately: DST days, Feb 29, 23:59:59 at the end of a month, UTC vs local.
+      - Use `Time.current`/`Time.zone` consistently in app code; mixing `Time.now` and `Time.zone.now`
+        produces off-by-timezone bugs that only tests with a non-UTC zone catch.
+    explanation: |
+      Follow-up: "Why did a test with `travel_to` pass but the record's `created_at` differ by
+      milliseconds?" (second truncation vs DB precision). Also: "Would you freeze time globally in
+      `spec_helper`?" (no, it hides time bugs and slows the suite; freeze per example).
+    tags: [time, travel_to, timecop]
+    source: https://guides.rubyonrails.org/testing.html
+
+  - slug: ruby-test-allow-any-instance-of-smell
+    kind: mcq
+    difficulty: middle
+    title: "Why is `allow_any_instance_of` discouraged?"
+    body: |
+      ```ruby
+      allow_any_instance_of(PaymentGateway).to receive(:charge).and_return(true)
+      ```
+
+      Pick the best explanation of why RSpec documents this under "legacy code" and recommends alternatives.
+    choices:
+      - "It is not thread-safe and breaks under parallel tests"
+      - "It stubs every instance (including ones you did not intend), hides that the object is not injected, and the stubbed block receives the instance as a hidden first argument, so it is a design smell pointing at a missing seam"
+      - "It cannot be combined with `and_return`"
+      - "It only works on classes that define `initialize` without arguments"
+    answer: 1
+    explanation: |
+      `any_instance` exists for code where you cannot get a reference to the object under test, i.e. the
+      collaborator is instantiated inside the method instead of being injected. The stub applies to all
+      instances, so expectations like "received once" become ambiguous and the block's first argument is
+      the instance. The remedy is a seam: inject the gateway, or stub the constructor
+      (`allow(PaymentGateway).to receive(:new).and_return(instance_double(PaymentGateway, charge: true))`).
+      Thread safety is not the documented objection.
+    tags: [rspec, mocks, smells]
+    source: https://rspec.info/features/3-13/rspec-mocks/basics/
+
+  - slug: ruby-test-mutation-testing-and-coverage
+    kind: open
+    difficulty: senior
+    title: "Code coverage vs mutation testing"
+    body: |
+      Your suite reports 95% line coverage with SimpleCov. A colleague says that proves the tests are good.
+      Explain what coverage does and does not tell you, and what mutation testing adds.
+    answer: |
+      - Line/branch coverage measures which code *executed* during tests, not whether any assertion
+        checked its result. A test that calls a method and asserts nothing yields 100% coverage for it.
+      - SimpleCov hooks the Ruby `Coverage` module; enable `enable_coverage :branch` because line coverage
+        marks a one-line `a ? b : c` as covered even if only one branch ran. Set `minimum_coverage` in CI to
+        prevent regressions, but treat the number as a smell detector (uncovered code), not a quality score.
+      - Coverage misses: untested edge cases on covered lines, wrong assertions, integration gaps, and code
+        that is only "covered" by being loaded at boot.
+      - Mutation testing (e.g. the `mutant` gem) rewrites the code under test (flip `<` to `<=`, remove a
+        statement, replace a return with `nil`) and runs the relevant tests; a mutant that survives means no
+        test detected that change. It measures test *strength*, not just reach.
+      - Costs: slow (many mutants x test runs), so target it at critical modules, and it produces noise
+        for equivalent mutants. Use it to find missing assertions, not as a CI gate for everything.
+    explanation: |
+      Follow-up: "What would you do with a surviving mutant that changes `>=` to `>`?" (add the boundary
+      test). Also: SimpleCov under parallel tests needs result merging (`SimpleCov.command_name` per worker
+      and `merge_timeout`), which many teams get wrong and then report wrong numbers.
+    tags: [coverage, simplecov, mutant]
+    source: "SimpleCov README (github.com/simplecov-ruby/simplecov) and mutant README (github.com/mbj/mutant)"
+
+  - slug: ruby-test-shared-examples-theory
+    kind: theory
+    difficulty: middle
+    title: "Shared examples and shared contexts"
+    body: |
+      Shared examples let several classes prove they honour the same contract; shared contexts share setup.
+
+      ```ruby
+      RSpec.shared_examples "an enumerable collection" do |expected_size|
+        it "responds to each" do
+          expect(subject).to respond_to(:each)
+        end
+
+        it "has the expected size" do
+          expect(subject.count).to eq(expected_size)
+        end
+      end
+
+      RSpec.shared_context "with a logged in admin" do
+        let(:admin) { build_stubbed(:user, :admin) }
+        before { sign_in admin }
+      end
+
+      RSpec.describe Playlist do
+        subject { Playlist.new([1, 2, 3]) }
+        it_behaves_like "an enumerable collection", 3
+      end
+
+      RSpec.describe Admin::UsersController, type: :request do
+        include_context "with a logged in admin"
+        ...
+      end
+      ```
+
+      - `it_behaves_like` creates a nested example group, so `let`/`subject` overrides inside it do not leak
+        into the including group and failure output shows "behaves like ...".
+      - `include_examples` inlines the examples into the current group; repeated includes with different
+        `let`s would overwrite each other, so prefer `it_behaves_like` when parametrising.
+      - Shared examples accept block arguments (as above) or a block that defines `let`s for customisation.
+      - Shared contexts can also be auto-included by metadata:
+        `config.include_context "with a logged in admin", :admin` plus `describe "...", :admin`.
+      - Keep them in `spec/support` and load with `Dir[...].each { require }` from `rails_helper`.
+    answer: |
+      **Q:** What is the practical difference between `it_behaves_like` and `include_examples`?
+      **A:** `it_behaves_like` wraps the shared examples in a nested group (isolated `let`/`subject`
+      overrides, descriptive output); `include_examples` pastes them into the current group, so later
+      definitions override earlier ones.
+    explanation: |
+      Interviewers like shared examples as a lead-in to "duck typing contracts": the same examples run
+      against each adapter implementation, which is a lightweight form of contract test.
+    tags: [rspec, shared-examples]
+    source: "RSpec Core docs: shared examples and shared context (rspec.info)"
+
+  - slug: ruby-test-aggregate-failures-metadata
+    kind: mcq
+    difficulty: middle
+    title: "What does `:aggregate_failures` change?"
+    body: |
+      ```ruby
+      it "returns a well-formed response", :aggregate_failures do
+        get "/api/users/1"
+        expect(response).to have_http_status(:ok)
+        expect(response.parsed_body["name"]).to eq("A")
+        expect(response.parsed_body["role"]).to eq("admin")
+      end
+      ```
+
+      What is the effect of the metadata tag?
+    choices:
+      - "The example is retried up to three times before being reported as failed"
+      - "All three expectations run even if the first fails, and the failures are reported together instead of stopping at the first one"
+      - "The three expectations are executed in parallel threads"
+      - "RSpec collapses the three expectations into one matcher for faster execution"
+    answer: 1
+    explanation: |
+      By default an expectation failure raises immediately, so you see only the first problem per run.
+      `:aggregate_failures` (metadata, or the `aggregate_failures do ... end` block form) collects every
+      failing expectation and reports them all, which is especially useful in request specs with several
+      assertions on one response. Metadata is also how tags work in general: `it "...", :slow` plus
+      `rspec --tag ~slow` to exclude, `config.define_derived_metadata` to add it automatically, and
+      `config.filter_run_when_matching :focus` for `fit`/`fdescribe`.
+    tags: [rspec, metadata]
+    source: "RSpec Expectations docs: aggregating failures (rspec.info)"
+
+  - slug: ruby-test-pending-skip-xit
+    kind: mcq
+    difficulty: junior
+    title: "`pending` vs `skip` vs `xit`"
+    body: |
+      Which statement is correct about these three ways of not running an example normally?
+    choices:
+      - "`pending` executes the example and fails the run if the example unexpectedly passes; `skip` and `xit` never execute the body"
+      - "`pending` and `skip` are synonyms; `xit` deletes the example from the report"
+      - "`skip` executes the example but ignores its result; `pending` does not execute it"
+      - "`xit` runs the example but suppresses failures; `pending` and `skip` do not run it"
+    answer: 0
+    explanation: |
+      `pending` runs the example body and expects it to fail: if it fails, it is reported as pending; if
+      it passes, RSpec fails the example ("Expected pending ... to fail. No error was raised.") so you
+      remember to remove the `pending`. `skip` (and `xit`/`xdescribe`/`xcontext`, which are `skip` with
+      metadata) do not run the body at all. Use `pending` for known-broken behaviour you intend to fix,
+      `skip` for examples that cannot run in this environment.
+    tags: [rspec]
+    source: "RSpec Core docs: pending and skipped examples (rspec.info)"
+
+  - slug: ruby-test-rspec-bisect-order-randomization
+    kind: mcq
+    difficulty: senior
+    title: "What does `rspec --bisect` do?"
+    body: |
+      A spec passes alone but fails when the whole suite runs with `--seed 1234`. What does
+      `rspec --seed 1234 --bisect` give you?
+    choices:
+      - "It re-runs the failing example repeatedly until it passes, then reports the flake rate"
+      - "It repeatedly runs subsets of the suite in the same order to find the minimal set of examples that must run before the failing one to reproduce the failure, and prints that command"
+      - "It splits the suite into two halves and runs them in parallel processes"
+      - "It diffs the output of the passing and failing run and highlights the differing assertions"
+    answer: 1
+    explanation: |
+      Order-dependent failures come from state leaking between examples. `--bisect` automates the search:
+      starting from the full set of examples (with the given seed, so order is reproducible), it keeps
+      halving the "other" examples while the failure still reproduces, ending with something like
+      "rspec ./spec/a_spec.rb[1:2] ./spec/b_spec.rb[1:1] --seed 1234". That minimal pair tells you which
+      earlier example leaks state. Random ordering (`config.order = :random`, `Kernel.srand config.seed`)
+      is what surfaces such coupling in the first place; always print the seed in CI output.
+    tags: [rspec, bisect, flaky]
+    source: "RSpec Core docs: --bisect and --seed (rspec.info)"
+
+  - slug: ruby-test-subject-described-class
+    kind: mcq
+    difficulty: junior
+    title: "`subject`, `described_class` and `is_expected`"
+    body: |
+      ```ruby
+      RSpec.describe Calculator do
+        subject { described_class.new(precision: 2) }
+
+        describe "#add" do
+          it { is_expected.to respond_to(:add) }
+        end
+      end
+      ```
+
+      Which statement is correct?
+    choices:
+      - "`described_class` is only available when `describe` receives a string"
+      - "`subject` is eager like `let!`, so the Calculator is built before every example"
+      - "`described_class` returns `Calculator`, the explicit `subject` is memoized per example like `let`, and `is_expected` is shorthand for `expect(subject)`"
+      - "Without an explicit `subject`, RSpec cannot run `is_expected` at all"
+    answer: 2
+    explanation: |
+      When `describe` receives a class, `described_class` returns it (useful when you rename or move the
+      class, and in shared examples). `subject` is a lazily evaluated, memoized helper, the same mechanism
+      as `let`; `subject(:calc)` also gives it a name. Without an explicit subject, RSpec builds
+      `described_class.new` implicitly, so one-liner `it { is_expected.to ... }` works out of the box.
+      `is_expected` wraps `expect(subject)` so the one-liner generates its own description.
+    tags: [rspec, subject]
+    source: "RSpec Core docs: subject and described_class (rspec.info)"
+
+  - slug: ruby-test-behaviour-not-implementation
+    kind: open
+    difficulty: senior
+    title: "Testing behaviour, not implementation"
+    body: |
+      Review this spec. What is wrong with it, and how would you rewrite it so a refactor of `Report`
+      does not break the test while a real bug still would?
+
+      ```ruby
+      it "generates the report" do
+        expect(report).to receive(:load_rows).and_return([row])
+        expect(report).to receive(:format_row).with(row).and_return("x")
+        expect(report.generate).to eq("x")
+      end
+      ```
+    answer: |
+      - The spec mocks the object under test's own private collaborators (`load_rows`, `format_row`), so it
+        asserts *how* `generate` is implemented, not *what* it produces. Rename or inline a method and the
+        test fails with no behaviour change; conversely a bug inside `format_row` is invisible because it is
+        stubbed out.
+      - Test through the public interface: give `Report` real input (rows via constructor or an injected
+        repository double at the boundary) and assert on the output: `expect(report.generate).to eq(
+        "Name,Total\nA,10")`.
+      - Mock only at architectural boundaries (HTTP, mail, queue, clock) and only for commands whose
+        side effect is the behaviour ("sends an email"); for queries, stub returns and assert on results.
+      - Use verifying doubles (`instance_double`) at those boundaries so the interface cannot drift.
+      - Heuristic: if your test must change when you refactor without changing behaviour, it is
+        testing implementation; if a change that users would notice does not fail a test, coverage is weak.
+      - Related smells: `allow_any_instance_of`, `receive_message_chain`, asserting on `assigns`, testing
+        private methods with `send`.
+    explanation: |
+      Follow-up: "Is it ever right to test a private method?" (extract it into a class with its own public
+      interface if it is complex enough to need tests). Interviewers also probe the "London (mockist) vs
+      Chicago (classicist)" schools: know that both exist and when each is useful.
+    tags: [design, mocks, refactoring]
+    source: https://rspec.info/features/3-13/rspec-mocks/basics/
+
+  - slug: ruby-test-speed-strategies
+    kind: open
+    difficulty: senior
+    title: "Making a slow test suite fast"
+    body: |
+      A Rails suite takes 40 minutes on CI. Lay out how you would diagnose and speed it up, from cheapest
+      change to most invasive.
+    answer: |
+      - Measure first: `rspec --profile 20` for slowest examples/groups, `test-prof` (`EventProf`,
+        `FactoryProf` to count factory creations, `TagProf`), check DB query counts.
+      - Factories: replace `create` with `build_stubbed`/`build` where no SQL is needed; trim factory
+        associations and callbacks; `let_it_be` / `before_all` (test-prof) for expensive shared data inside
+        a transaction.
+      - Push tests down the pyramid: convert slow system specs that test logic into model/service unit
+        specs; keep a few system specs for critical paths; run JS tests headless.
+      - Parallelism: Rails `parallelize(workers: :number_of_processors)` (Minitest) or
+        `parallel_tests`/`turbo_tests` for RSpec, with one database per worker; split across CI nodes by
+        timing data.
+      - Boot time: `bootsnap` caches `require` path resolution and ISeq compilation; `spring` keeps a
+        preloaded app for repeated local runs (not for CI); avoid loading Rails in pure-Ruby unit specs
+        (`spec_helper` vs `rails_helper`).
+      - Stop doing I/O: stub HTTP (WebMock), `ActionMailer` test delivery, in-memory cache/queue adapters,
+        `travel_to` instead of `sleep`.
+      - Database: transactional tests instead of truncation, index test DB like production, avoid
+        `DatabaseCleaner` where not needed, `config.active_record.dump_schema_after_migration = false`.
+    explanation: |
+      Follow-up: "What goes wrong with parallel tests?" (shared fixtures files, ports, Redis/ElasticSearch
+      state, sequences colliding on unique columns, SimpleCov merging). Also: speed-ups that hide bugs,
+      like freezing time globally or disabling callbacks in factories, should be called out as trade-offs.
+    tags: [performance, parallel, bootsnap, spring]
+    source: https://guides.rubyonrails.org/testing.html
+
+  - slug: ruby-test-property-based-and-contract-testing
+    kind: open
+    difficulty: senior
+    title: "Property-based testing and contract testing"
+    body: |
+      Explain property-based testing and contract testing. For each, give one example where it finds a bug
+      that example-based unit tests typically miss, and name the trade-offs.
+    answer: |
+      - Property-based: instead of fixed examples you state invariants ("for all inputs...") and a library
+        (Ruby: `rantly`, `propr`, `hypothesis`-style gems) generates hundreds of random inputs, then shrinks a
+        failing input to the smallest reproducer. Classic properties: round-trip (`decode(encode(x)) == x`),
+        idempotence (`sort(sort(x)) == sort(x)`), commutativity, comparison with a naive reference
+        implementation, invariants (output length, no exceptions on any valid input).
+      - Finds: edge cases you did not think of (empty strings, unicode, negative zero, huge numbers,
+        duplicate keys) in parsers, serializers, money/rounding code.
+      - Costs: slower, non-deterministic unless you fix the seed and record failing cases, properties are
+        harder to formulate than examples, generators for complex domain objects take work.
+      - Contract testing: verifies that two services agree on an interface. Consumer-driven contracts
+        (Pact): the consumer's tests record the requests it makes and the responses it expects; the provider
+        runs those contracts against itself in its own CI. Catches "provider renamed a JSON field" that
+        mocks, cassettes and stubs on the consumer side cannot.
+      - In-process form: shared examples run against every adapter implementation (e.g. every storage
+        backend "behaves like a store"), ensuring fakes used in tests honour the real interface.
+      - Trade-offs: a broker/infrastructure to share contracts, versioning discipline, and contracts test
+        shape, not business behaviour, so they complement rather than replace integration tests.
+    explanation: |
+      Follow-up: "How would you test a fake `PaymentGateway` you inject everywhere actually behaves like
+      the real one?" (run the same shared examples against both, with the real one hitting a sandbox
+      nightly). Interviewers rarely expect library names; they expect the idea of invariants and shrinking.
+    tags: [property-based, contract-testing]
+    source: "Pact docs (docs.pact.io) and the Hypothesis / QuickCheck concept"
+
+  - slug: ruby-test-minitest-basics-theory
+    kind: theory
+    difficulty: junior
+    title: "Minitest: assertions, `Minitest::Mock`, `stub` and the spec DSL"
+    body: |
+      Minitest ships with Ruby and is the Rails default. It is plain Ruby: a test is a class, a test case
+      is a method starting with `test_`.
+
+      ```ruby
+      require "minitest/autorun"
+
+      class CartTest < Minitest::Test
+        def setup           # runs before every test method
+          @cart = Cart.new
+        end
+
+        def test_total_is_zero_when_empty
+          assert_equal 0, @cart.total          # expected first, then actual
+          assert_empty @cart.items
+          assert_raises(ArgumentError) { @cart.add(nil) }
+          assert_in_delta 0.3, 0.1 + 0.2, 0.0001
+        end
+
+        def test_charges_gateway
+          gateway = Minitest::Mock.new
+          gateway.expect(:charge, true, [100])   # name, return value, expected args
+          Checkout.new(gateway).pay(@cart, 100)
+          gateway.verify                          # fails if charge(100) was not called
+        end
+
+        def test_uses_current_time
+          Time.stub(:now, Time.new(2024, 1, 1)) do   # stub only within the block
+            assert_equal 2024, Clock.year
+          end
+        end
+      end
+      ```
+
+      - Argument order matters: `assert_equal expected, actual`; swapping them produces misleading
+        diffs ("Expected: 5, Actual: 0" when it is the other way round).
+      - `Minitest::Mock#expect` is a strict mock: unexpected messages raise `NoMethodError`, missing calls
+        fail at `verify`. Each `expect` satisfies exactly one call; call `expect` twice for two calls.
+      - `Object#stub` (from `minitest/mock`) replaces a method for the duration of the block and restores
+        it afterwards, no global monkey patch.
+      - The spec DSL (`describe`/`it`/`_(x).must_equal`) is sugar over the same classes; `describe` creates
+        a `Minitest::Spec` subclass, `let` and `before` exist too.
+      - Tests run in random order by default (`--seed`), and `-n /pattern/` filters by name.
+    answer: |
+      **Q:** What happens if `gateway.verify` is omitted in the mock example above?
+      **A:** The test passes even if `charge` was never called: `expect` only registers the expectation;
+      `verify` is the assertion.
+    explanation: |
+      Interviewers ask Minitest vs RSpec: Minitest is smaller, faster to boot, plain Ruby (no DSL to learn,
+      easy to debug); RSpec has richer matchers, verifying doubles, metadata and better failure messages.
+      Both can do everything; the choice is team convention.
+    tags: [minitest]
+    source: https://github.com/minitest/minitest
+
+  - slug: ruby-test-custom-matchers-theory
+    kind: theory
+    difficulty: senior
+    title: "Custom and composable matchers"
+    body: |
+      RSpec matchers are objects with `matches?`, `failure_message` and `description`. You rarely write
+      them by hand: `RSpec::Matchers.define` builds one from a block.
+
+      ```ruby
+      RSpec::Matchers.define :be_a_valid_slug do
+        match { |actual| actual.is_a?(String) && actual.match?(/\A[a-z0-9-]+\z/) }
+
+        failure_message { |actual| "expected #{actual.inspect} to be a lowercase kebab-case slug" }
+        failure_message_when_negated { |actual| "expected #{actual.inspect} not to be a slug" }
+        description { "be a valid slug" }
+      end
+
+      expect(post.slug).to be_a_valid_slug
+      ```
+
+      - `match` receives `actual`; `expected` args come from the matcher call: `define(:be_within_days)
+        { |days| match { |actual| ... days ... } }`.
+      - `chain :of, :target` adds fluent modifiers (`be_within_days(3).of(date)`).
+      - `match_unless_raises` lets you reuse other assertions inside the block.
+      - Make matchers composable with `supports_block_expectations` (for `expect { }`) and by using
+        `values_match?` so nested matchers work.
+
+      Composable (built-in) matchers can be nested and aliased to read like a sentence:
+
+      ```ruby
+      expect(user).to have_attributes(name: a_string_starting_with("A"), age: be > 18)
+      expect(list).to include(a_hash_including(id: an_instance_of(Integer)))
+      expect(result).to match([1, a_value_within(0.1).of(2.0), anything])
+      expect(x).to satisfy("be even") { |v| v.even? }
+      expect { warn "x" }.to output(/x/).to_stderr
+      expect(5).to (be > 3).and be_odd
+      expect(x).to eq(1).or eq(2)
+      ```
+
+      `satisfy` is the escape hatch for one-off predicates; a named custom matcher wins once the predicate
+      is reused or needs a readable failure message. `output(...).to_stdout` captures `$stdout` in-process;
+      use `to_stdout_from_any_process` when a subprocess writes.
+    answer: |
+      **Q:** Why define a custom matcher instead of writing a helper method that calls `expect` inside?
+      **A:** A matcher gives you a descriptive failure message, a generated example description for
+      one-liners, negation (`not_to`), and composability with `and`/`or`/`include`; a helper method only
+      gives you a generic "expected true, got false" and cannot be nested in other matchers.
+    explanation: |
+      Follow-up: "What does `have_attributes` use to compare?" (`values_match?`, so nested matchers and
+      `===` work, e.g. ranges and regexes). Also: `RSpec::Matchers.define` matchers are available in all
+      example groups once loaded from `spec/support`.
+    tags: [rspec, matchers]
+    source: "RSpec Expectations docs: custom matchers and composing matchers (rspec.info)"
+
+  - slug: ruby-test-code-tiny-mock
+    kind: code
+    difficulty: middle
+    title: "Implement a tiny strict mock object"
+    body: |
+      Implement `TinyMock`, a minimal strict test double in the spirit of `Minitest::Mock`:
+
+      - `mock.expect(:name)` registers an expectation and returns a builder with `.with(*args)` and
+        `.returns(value)` (both chainable, both optional). Without `.with`, any arguments are accepted.
+      - Calling `mock.name(*args)` consumes the first unconsumed matching expectation and returns its value
+        (`nil` if none was set). If no unconsumed expectation matches the name and args, raise
+        `TinyMock::ExpectationError`.
+      - `mock.verify` returns `true` when every expectation has been consumed, otherwise raises
+        `TinyMock::ExpectationError`.
+
+      ```ruby
+      m = TinyMock.new
+      m.expect(:charge).with(100).returns(:ok)
+      m.charge(100)   # => :ok
+      m.charge(100)   # raises TinyMock::ExpectationError (already consumed)
+      m.verify        # => true
+      ```
+    starter_code: |
+      class TinyMock
+        class ExpectationError < StandardError; end
+
+        def initialize
+          # your code here
+        end
+
+        def expect(name)
+          # return a builder supporting .with(*args) and .returns(value)
+        end
+
+        def verify
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class TinyMockTest < Minitest::Test
+        def test_returns_configured_value
+          m = TinyMock.new
+          m.expect(:charge).with(100).returns(:ok)
+          assert_equal :ok, m.charge(100)
+          assert_equal true, m.verify
+        end
+
+        def test_without_with_accepts_any_args_and_returns_nil
+          m = TinyMock.new
+          m.expect(:log)
+          assert_nil m.log("anything", 1)
+          assert_equal true, m.verify
+        end
+
+        def test_wrong_args_raise
+          m = TinyMock.new
+          m.expect(:charge).with(100)
+          assert_raises(TinyMock::ExpectationError) { m.charge(1) }
+        end
+
+        def test_unexpected_message_raises
+          m = TinyMock.new
+          assert_raises(TinyMock::ExpectationError) { m.refund }
+        end
+
+        def test_second_call_raises_and_verify_fails_when_unconsumed
+          m = TinyMock.new
+          m.expect(:ping).returns(1)
+          m.expect(:ping).returns(2)
+          assert_equal 1, m.ping
+          assert_raises(TinyMock::ExpectationError) { m.verify }
+          assert_equal 2, m.ping
+          assert_raises(TinyMock::ExpectationError) { m.ping }
+          assert_equal true, m.verify
+        end
+      end
+    solution: |
+      class TinyMock
+        class ExpectationError < StandardError; end
+
+        Expectation = Struct.new(:name, :args, :value, :consumed)
+
+        class Builder
+          def initialize(exp) = @exp = exp
+          def with(*args) = (@exp.args = args; self)
+          def returns(value) = (@exp.value = value; self)
+        end
+
+        def initialize
+          @expectations = []
+        end
+
+        def expect(name)
+          exp = Expectation.new(name, nil, nil, false)
+          @expectations << exp
+          Builder.new(exp)
+        end
+
+        def verify
+          pending = @expectations.reject(&:consumed)
+          return true if pending.empty?
+
+          raise ExpectationError, "not received: #{pending.map(&:name).inspect}"
+        end
+
+        def method_missing(name, *args)
+          exp = @expectations.find { |e| e.name == name && !e.consumed && (e.args.nil? || e.args == args) }
+          raise ExpectationError, "unexpected #{name}(#{args.map(&:inspect).join(', ')})" unless exp
+
+          exp.consumed = true
+          exp.value
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @expectations.any? { |e| e.name == name } || super
+        end
+      end
+    explanation: |
+      A strict mock fails on unexpected messages and on missing ones, which is exactly the difference
+      between a mock and a stub. Note the design points: expectations are consumed in order, `verify` is
+      a separate step (as in `Minitest::Mock`), and `respond_to_missing?` keeps `respond_to?` honest.
+      In RSpec the equivalent is `expect(dbl).to receive(:charge).with(100).and_return(:ok)` verified
+      automatically at the end of the example.
+    tags: [code, mocks, minitest]
+    source: https://github.com/minitest/minitest
+
+  - slug: ruby-test-code-stub-const
+    kind: code
+    difficulty: middle
+    title: "Implement a `stub_const` helper"
+    body: |
+      Write a method `stub_const(name, value) { ... }` that temporarily sets the top-level constant
+      `name` (a Symbol or String such as `:MAX_RETRIES`) to `value` for the duration of the block, then
+      restores the previous value. If the constant did not exist before, it must not exist afterwards. The
+      restore must happen even when the block raises. The method returns the block's value.
+
+      ```ruby
+      MAX_RETRIES = 3
+      stub_const(:MAX_RETRIES, 10) { MAX_RETRIES }   # => 10
+      MAX_RETRIES                                    # => 3
+      ```
+    starter_code: |
+      def stub_const(name, value)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      MAX_RETRIES = 3
+
+      class StubConstTest < Minitest::Test
+        def test_overrides_inside_block_and_restores
+          result = stub_const(:MAX_RETRIES, 10) { Object.const_get(:MAX_RETRIES) }
+          assert_equal 10, result
+          assert_equal 3, MAX_RETRIES
+        end
+
+        def test_restores_when_block_raises
+          assert_raises(RuntimeError) { stub_const("MAX_RETRIES", 99) { raise "boom" } }
+          assert_equal 3, MAX_RETRIES
+        end
+
+        def test_defines_and_removes_missing_constant
+          refute Object.const_defined?(:TEMP_FLAG)
+          stub_const(:TEMP_FLAG, true) { assert_equal true, Object.const_get(:TEMP_FLAG) }
+          refute Object.const_defined?(:TEMP_FLAG)
+        end
+      end
+    solution: |
+      def stub_const(name, value)
+        name = name.to_sym
+        existed = Object.const_defined?(name)
+        original = Object.const_get(name) if existed
+        Object.send(:remove_const, name) if existed
+        Object.const_set(name, value)
+        yield
+      ensure
+        Object.send(:remove_const, name) if Object.const_defined?(name)
+        Object.const_set(name, original) if existed
+      end
+    explanation: |
+      This is what RSpec's `stub_const` does (with extra handling for nested names like `"A::B"` and
+      `transfer_nested_constants`). The important parts are `ensure` so a raising block cannot leak the
+      stub into later tests, `remove_const` before `const_set` (otherwise Ruby warns about reassigning a
+      constant), and tracking whether the constant existed so you can undefine rather than restore `nil`.
+      Constants are global state; stubbing them is a classic source of order-dependent failures when the
+      cleanup is wrong.
+    tags: [code, stubbing, constants]
+    source: "RSpec Mocks docs: stub_const (rspec.info)"
+
+  - slug: ruby-test-code-freeze-time
+    kind: code
+    difficulty: senior
+    title: "Implement a `freeze_time` block helper"
+    body: |
+      Implement `freeze_time(time) { ... }` so that inside the block `Time.now` always returns `time`,
+      and after the block (even if it raises) `Time.now` behaves normally again. Return the block's value.
+
+      ```ruby
+      t = Time.new(2000, 1, 1, 12, 0, 0)
+      freeze_time(t) { Time.now }   # => 2000-01-01 12:00:00
+      Time.now.year > 2000          # => true
+      ```
+
+      Only `Time.now` needs to be frozen (not `Time.new` without arguments or `Date.today`).
+    starter_code: |
+      def freeze_time(time)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FreezeTimeTest < Minitest::Test
+        FROZEN = Time.new(2000, 1, 1, 12, 0, 0)
+
+        def test_now_is_frozen_inside_block
+          inside = freeze_time(FROZEN) { [Time.now, Time.now] }
+          assert_equal [FROZEN, FROZEN], inside
+        end
+
+        def test_returns_block_value_and_restores
+          assert_equal :done, freeze_time(FROZEN) { :done }
+          assert_operator Time.now.year, :>, 2000
+        end
+
+        def test_restores_after_exception
+          assert_raises(RuntimeError) { freeze_time(FROZEN) { raise "boom" } }
+          assert_operator Time.now.year, :>, 2000
+          assert_operator Time.now, :>, FROZEN
+        end
+      end
+    solution: |
+      def freeze_time(time)
+        Time.singleton_class.class_eval do
+          alias_method :__unfrozen_now, :now
+          define_method(:now) { time }
+        end
+        yield
+      ensure
+        Time.singleton_class.class_eval do
+          alias_method :now, :__unfrozen_now
+          remove_method :__unfrozen_now
+        end
+      end
+    explanation: |
+      Timecop and Rails' `travel_to` work the same way at heart: they redefine `Time.now` (plus `Date.today`,
+      `DateTime.now`, and `Time.new` without arguments) on the singleton class and restore the original in
+      `ensure`. The alias trick keeps a handle on the original method; a `define_method` referencing a
+      captured `time` returns the frozen value. The helper is not nest-safe or thread-safe, which is why
+      Timecop keeps a stack and why freezing time globally in `spec_helper` is a bad idea. The cleaner
+      design, when you own the code, is to inject a clock instead of patching `Time`.
+    tags: [code, time, monkey-patching]
+    source: https://guides.rubyonrails.org/testing.html
+
+  - slug: ruby-test-code-spy
+    kind: code
+    difficulty: junior
+    title: "Implement a recording spy"
+    body: |
+      Implement `Spy`, a test double that accepts any message, records it, and returns `nil`:
+
+      - `spy.calls` returns an array of `[name, args]` pairs in call order.
+      - `spy.received?(name)` is true if the message was received at least once.
+      - `spy.received?(name, with: args)` is true only if it was received with exactly those arguments.
+      - `spy.respond_to?(:anything)` must be true.
+
+      ```ruby
+      s = Spy.new
+      s.save(1, "x")
+      s.calls                           # => [[:save, [1, "x"]]]
+      s.received?(:save, with: [1, "x"]) # => true
+      s.received?(:delete)              # => false
+      ```
+    starter_code: |
+      class Spy
+        def initialize
+          # your code here
+        end
+
+        def calls
+        end
+
+        def received?(name, with: nil)
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SpyTest < Minitest::Test
+        def test_records_calls_in_order_and_returns_nil
+          s = Spy.new
+          assert_nil s.save(1, "x")
+          assert_nil s.delete
+          assert_equal [[:save, [1, "x"]], [:delete, []]], s.calls
+        end
+
+        def test_received_predicate
+          s = Spy.new
+          s.notify(:admin, urgent: true)
+          assert s.received?(:notify)
+          assert s.received?(:notify, with: [:admin, { urgent: true }])
+          refute s.received?(:notify, with: [:admin])
+          refute s.received?(:save)
+        end
+
+        def test_responds_to_anything
+          assert Spy.new.respond_to?(:whatever)
+        end
+      end
+    solution: |
+      class Spy
+        def initialize
+          @calls = []
+        end
+
+        def calls
+          @calls
+        end
+
+        def received?(name, with: nil)
+          @calls.any? { |n, args| n == name && (with.nil? || args == with) }
+        end
+
+        def method_missing(name, *args)
+          @calls << [name, args]
+          nil
+        end
+
+        def respond_to_missing?(_name, _include_private = false)
+          true
+        end
+      end
+    explanation: |
+      A spy lets the test keep arrange-act-assert order: you act first, then ask what happened. RSpec's
+      `spy` / `instance_spy` plus `have_received` do the same; `instance_spy(Klass)` additionally verifies
+      that the recorded messages exist on the real class. Keyword arguments arrive in `*args` as a trailing
+      hash here, which is fine for a toy; a production spy would capture `**kwargs` and the block too.
+    tags: [code, spies, doubles]
+    source: https://rspec.info/features/3-13/rspec-mocks/basics/
+
+  - slug: ruby-test-code-capture-output
+    kind: code
+    difficulty: junior
+    title: "Implement `capture_output`"
+    body: |
+      Implement `capture_output { ... }` which runs the block with `$stdout` and `$stderr` redirected to
+      in-memory buffers and returns `[stdout_string, stderr_string]`. The original streams must be restored
+      afterwards, even if the block raises.
+
+      ```ruby
+      capture_output { puts "hi"; $stderr.puts "oops" }   # => ["hi\n", "oops\n"]
+      ```
+    starter_code: |
+      require "stringio"
+
+      def capture_output
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class CaptureOutputTest < Minitest::Test
+        def test_captures_both_streams
+          out, err = capture_output { puts "hi"; $stderr.puts "oops"; $stdout.print "!" }
+          assert_equal "hi\n!", out
+          assert_equal "oops\n", err
+        end
+
+        def test_restores_streams_after_block
+          original_out, original_err = $stdout, $stderr
+          capture_output { puts "x" }
+          assert_same original_out, $stdout
+          assert_same original_err, $stderr
+        end
+
+        def test_restores_streams_after_exception
+          original_out = $stdout
+          assert_raises(RuntimeError) { capture_output { puts "x"; raise "boom" } }
+          assert_same original_out, $stdout
+        end
+      end
+    solution: |
+      require "stringio"
+
+      def capture_output
+        out, err = StringIO.new, StringIO.new
+        original_out, original_err = $stdout, $stderr
+        $stdout, $stderr = out, err
+        yield
+        [out.string, err.string]
+      ensure
+        $stdout, $stderr = original_out, original_err
+      end
+    explanation: |
+      This is what `expect { }.to output("hi\n").to_stdout` does under the hood (and what Minitest's
+      `capture_io` provides). It only sees writes that go through the Ruby `$stdout` object; a C extension
+      or subprocess writing to file descriptor 1 is not captured, which is why RSpec also offers
+      `to_stdout_from_any_process` (it reopens `STDOUT` to a temp file). `puts` writes to `$stdout`, `$stderr.puts`
+      to `$stderr` (`warn` is silenced under `ruby -W0`, so it is not used here). The `ensure` restore is mandatory, or one failing test silences every later one.
+    tags: [code, output, stringio]
+    source: "RSpec Expectations docs: output matcher (rspec.info)"
+
+  - slug: ruby-test-code-assert-change
+    kind: code
+    difficulty: middle
+    title: "Write a custom `assert_change` assertion for Minitest"
+    body: |
+      Create a module `ChangeAssertions` (to be included in a `Minitest::Test`) with:
+
+      ```ruby
+      assert_change(by:, &action)   # => yields a reader proc via `assert_change(-> { x }, by: 1) { ... }`
+      ```
+
+      Precisely: `assert_change(reader, by:) { action }` calls `reader` before and after running the
+      block and passes when `after - before == by`. Otherwise it must fail the test by calling `flunk`
+      (or raising `Minitest::Assertion`) with a message containing the expected and actual delta, e.g.
+      `"expected change by 1, got 0"`. On success it returns `true`.
+    starter_code: |
+      module ChangeAssertions
+        def assert_change(reader, by:)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class Counter
+        attr_reader :count
+        def initialize = @count = 0
+        def increment = @count += 1
+      end
+
+      class AssertChangeTest < Minitest::Test
+        include ChangeAssertions
+
+        def test_passes_when_delta_matches
+          c = Counter.new
+          assert_equal true, assert_change(-> { c.count }, by: 2) { c.increment; c.increment }
+        end
+
+        def test_fails_with_message_when_delta_differs
+          c = Counter.new
+          error = assert_raises(Minitest::Assertion) do
+            assert_change(-> { c.count }, by: 1) { c.increment; c.increment }
+          end
+          assert_match(/expected change by 1, got 2/, error.message)
+        end
+
+        def test_fails_when_nothing_changes
+          c = Counter.new
+          error = assert_raises(Minitest::Assertion) { assert_change(-> { c.count }, by: 1) {} }
+          assert_match(/got 0/, error.message)
+        end
+      end
+    solution: |
+      module ChangeAssertions
+        def assert_change(reader, by:)
+          before = reader.call
+          yield
+          delta = reader.call - before
+          flunk "expected change by #{by}, got #{delta}" unless delta == by
+          true
+        end
+      end
+    explanation: |
+      Custom assertions in Minitest are just methods that end up calling `assert`/`flunk`, which raise
+      `Minitest::Assertion`; mixing them in via a module keeps them reusable across test classes. This
+      mirrors RSpec's `expect { }.to change { }.by(n)`: evaluate the observed value, run the action,
+      evaluate again, compare. Capturing the reader as a lambda rather than a value is the whole point,
+      and the exact pitfall of writing `change(Post.count)` in RSpec.
+    tags: [code, minitest, assertions]
+    source: https://github.com/minitest/minitest

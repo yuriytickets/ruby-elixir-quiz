@@ -1,0 +1,2102 @@
+language: ruby
+topic: rails-activerecord
+items:
+  - slug: ruby-ar-pattern-vs-data-mapper
+    kind: theory
+    difficulty: junior
+    title: "Active Record pattern vs Data Mapper"
+    body: |
+      ActiveRecord implements Fowler's **Active Record** pattern: an object wraps one row of a
+      table, knows how to load and persist itself, and carries domain logic. Class ↔ table,
+      instance ↔ row, attribute ↔ column, all derived by convention (`Book` ↔ `books`,
+      `BookClub` ↔ `book_clubs`, foreign key `author_id`).
+
+      ```ruby
+      class Book < ApplicationRecord
+        belongs_to :author
+        validates :title, presence: true
+
+        def discounted_price = price * 0.9   # domain logic lives next to persistence
+      end
+
+      Book.find(1).update!(title: "New")       # the object persists itself
+      ```
+
+      **Data Mapper** (Ecto, Hibernate, ROM.rb) keeps domain objects ignorant of the database;
+      a separate mapper/repository moves data between objects and tables. Trade-offs:
+
+      - Active Record: fast to write, little ceremony, great when the domain mirrors the schema.
+        Cost: models grow fat, persistence and business logic are coupled, tests touch the DB.
+      - Data Mapper: domain objects are plain, easy to test in isolation, schema can diverge
+        from the object model. Cost: more boilerplate and an explicit mapping layer.
+
+      In Rails interviews the expected follow-up is "how do you keep AR models thin" — service
+      objects, query objects, concerns, form objects, `ActiveModel` for non-persisted things.
+    answer: |
+      **Q:** Name one structural consequence of the Active Record pattern that a Data Mapper avoids.
+      **A:** The domain object is coupled to the schema and the DB: each model class *is* a table,
+      so business logic, validations and persistence live in one object and unit tests usually
+      need a database. A mapper keeps plain domain objects and moves persistence into a separate layer.
+    explanation: |
+      Interviewers use this to see whether you can name the coupling cost of Active Record and
+      the mitigation patterns (service/query/form objects, ActiveModel) rather than just define the term.
+    tags: [pattern, architecture]
+    source: https://guides.rubyonrails.org/active_record_basics.html
+
+  - slug: ruby-ar-belongs-to-required-default
+    kind: mcq
+    difficulty: junior
+    title: "belongs_to is required by default"
+    body: |
+      ```ruby
+      class Comment < ApplicationRecord
+        belongs_to :post
+      end
+
+      Comment.create(body: "hi")   # no post given
+      ```
+
+      In a Rails 5+ app with default configuration, what happens?
+    choices:
+      - "The row is inserted with `post_id = NULL`"
+      - "The record is not saved; `errors[:post]` contains \"must exist\""
+      - "`ActiveRecord::RecordNotFound` is raised"
+      - "A database foreign-key violation is raised"
+    answer: 1
+    explanation: |
+      Since Rails 5 `belongs_to` adds a presence validation on the association
+      (`config.active_record.belongs_to_required_by_default = true` in new apps). `create`
+      returns an unsaved record with `errors.full_messages == ["Post must exist"]`. Nothing
+      reaches the database, so neither a NULL row nor a FK error can occur; `RecordNotFound`
+      only comes from `find`. Use `belongs_to :post, optional: true` to allow a missing parent,
+      and still add a real foreign key in the migration (`t.references :post, foreign_key: true`)
+      because the validation is application-level only.
+    tags: [associations, validations]
+    source: https://guides.rubyonrails.org/association_basics.html
+
+  - slug: ruby-ar-has-many-through-vs-habtm
+    kind: open
+    difficulty: middle
+    title: "has_many :through vs has_and_belongs_to_many"
+    body: |
+      You need a many-to-many between `Student` and `Course`. An interviewer asks: when would
+      you pick `has_many :through` over `has_and_belongs_to_many`, and what are the practical
+      differences?
+    answer: |
+      - `has_and_belongs_to_many` uses a bare join table (no model, no primary key, no
+        timestamps); you can't validate, add callbacks or store extra columns on the link.
+      - `has_many :through` uses an explicit join model (`Enrollment`), so the link can carry
+        attributes (`grade`, `enrolled_at`), validations, scopes and callbacks, and you can
+        query it directly (`Enrollment.where(grade: "A")`).
+      - `:through` also works for indirect one-to-many / nested chains
+        (`has_many :teachers, through: :courses`), HABTM cannot.
+      - The default advice is "always `:through`"; HABTM is only a shortcut for a link that will
+        *never* need data. Migrating HABTM → through later means a table rename and backfill.
+      - Gotcha: `student.courses.delete(course)` deletes the join row without running the join
+        model's `destroy` callbacks; use `student.enrollments.find_by(course:).destroy` if you need them.
+    explanation: |
+      Follow-ups: "How do you add a record through the association?" (`student.courses << course`
+      inserts an `Enrollment` immediately if the student is persisted), "What does
+      `source:` do on a through association?" (names the association on the join model when it
+      can't be inferred), "Why does a `:through` join table need a primary key?" (AR needs an id
+      to load and delete rows individually).
+    tags: [associations]
+    source: https://guides.rubyonrails.org/association_basics.html
+
+  - slug: ruby-ar-dependent-options
+    kind: mcq
+    difficulty: middle
+    title: "dependent: :destroy vs :delete_all"
+    body: |
+      ```ruby
+      class Post < ApplicationRecord
+        has_many :comments, dependent: :delete_all
+      end
+
+      class Comment < ApplicationRecord
+        belongs_to :post
+        after_destroy :notify_moderators
+      end
+
+      post.destroy
+      ```
+
+      What is true about the comments?
+    choices:
+      - "Each comment is loaded and destroyed, so `notify_moderators` runs per comment"
+      - "Comments are deleted with one `DELETE ... WHERE post_id = ?`; `notify_moderators` never runs"
+      - "Comments are left in place with `post_id` set to NULL"
+      - "`post.destroy` returns `false` because comments exist"
+    answer: 1
+    explanation: |
+      `:delete_all` issues a single SQL delete and skips instantiation, so no model callbacks run.
+      `:destroy` (and `:destroy_async`, which enqueues a job) loads each child and calls
+      `destroy` on it, running callbacks, which is correct but O(n) queries. `:nullify` sets the
+      foreign key to NULL. `:restrict_with_error` makes `destroy` return `false` with an error on
+      the parent and `:restrict_with_exception` raises `ActiveRecord::DeleteRestrictionError`.
+      Interviewers also expect you to mention that none of these replace a database foreign key
+      with `on_delete: :cascade`, which is what protects you when rows are deleted outside Rails.
+    tags: [associations, callbacks]
+    source: https://guides.rubyonrails.org/association_basics.html
+
+  - slug: ruby-ar-inverse-of
+    kind: open
+    difficulty: middle
+    title: "What problem does inverse_of solve?"
+    body: |
+      ```ruby
+      class Author < ApplicationRecord
+        has_many :books
+      end
+
+      class Book < ApplicationRecord
+        belongs_to :writer, class_name: "Author", foreign_key: :author_id
+      end
+
+      author = Author.first
+      book = author.books.first
+      book.writer.equal?(author)   # => ?
+      ```
+
+      Explain what `inverse_of` does, when Rails infers it automatically, and when you must set it.
+    answer: |
+      - `inverse_of` tells Rails that two associations are the two ends of the same relationship,
+        so loading one side sets the other in memory instead of running a query and building a
+        second object.
+      - Without it, `book.writer` above fires `SELECT authors WHERE id = ?` and returns a *different*
+        Ruby object; `equal?` is false, and in-memory changes on `author` are invisible on `book.writer`.
+      - Rails detects the inverse automatically when the names match the conventions
+        (`has_many :books` ↔ `belongs_to :author`). Detection fails with `class_name`,
+        `foreign_key`, `through`, or a scope on the association, so you declare
+        `has_many :books, inverse_of: :writer` and `belongs_to :writer, ..., inverse_of: :books`.
+      - It also matters for validation and building: `author.books.build` sets `book.writer`
+        in memory, so `validates :writer, presence: true` passes before the author is saved,
+        and `accepts_nested_attributes_for` works without an extra query.
+      - `config.active_record.automatic_scope_inversing` (7.0+) lets inverses be inferred even
+        when the association has a simple scope.
+    explanation: |
+      Follow-up: "How would you prove the extra query exists?" — enable `strict_loading`, or
+      count queries with `ActiveSupport::Notifications.subscribe("sql.active_record")`. Common
+      mistake: thinking `inverse_of` changes SQL joins; it only affects in-memory object identity.
+    tags: [associations, performance]
+    source: https://guides.rubyonrails.org/association_basics.html
+
+  - slug: ruby-ar-polymorphic-columns
+    kind: mcq
+    difficulty: junior
+    title: "Columns behind a polymorphic belongs_to"
+    body: |
+      ```ruby
+      class Comment < ApplicationRecord
+        belongs_to :commentable, polymorphic: true
+      end
+      ```
+
+      Which columns must the `comments` table have for this to work?
+    choices:
+      - "`commentable_id` only; Rails stores the class in a lookup table"
+      - "`post_id` and `photo_id`, one per commentable model"
+      - "`commentable_id` and `commentable_type` (the class name as a string)"
+      - "`commentable_id` and `commentable_class` (the class name as a symbol)"
+    answer: 2
+    explanation: |
+      A polymorphic `belongs_to :commentable` reads `commentable_type` (e.g. `"Post"`) to pick
+      the class and `commentable_id` for the row; `t.references :commentable, polymorphic: true`
+      creates both plus a composite index. The owners declare `has_many :comments, as: :commentable`.
+      Because the type column stores class names, renaming `Post` requires a data migration.
+      You also cannot add a real database foreign key to a polymorphic column (there is no single
+      target table), which is the main argument against it in interviews; the alternative is one
+      nullable `belongs_to` per target or a `delegated_type`.
+    tags: [associations]
+    source: https://guides.rubyonrails.org/association_basics.html
+
+  - slug: ruby-ar-includes-preload-eager-load-joins
+    kind: theory
+    difficulty: middle
+    title: "includes vs preload vs eager_load vs joins"
+    body: |
+      All four appear in N+1 discussions, but they do different things:
+
+      | method | SQL | loads association? | can filter on it? |
+      |---|---|---|---|
+      | `joins(:author)` | `INNER JOIN` | no | yes |
+      | `preload(:author)` | 2 queries (`WHERE id IN (...)`) | yes | no |
+      | `eager_load(:author)` | 1 query, `LEFT OUTER JOIN` | yes | yes |
+      | `includes(:author)` | preload **unless** you reference the table | yes | with `references` |
+
+      ```ruby
+      Book.joins(:author).where(authors: { country: "PL" })   # filter only; book.author still queries
+      Book.preload(:author)                                   # SELECT books; SELECT authors WHERE id IN (...)
+      Book.eager_load(:author).where(authors: { country: "PL" })  # one LEFT JOIN, author loaded
+      Book.includes(:author).where("authors.country = ?", "PL").references(:authors)
+      ```
+
+      Rules of thumb:
+      - Need the data in Ruby → `preload` (cheap, no row multiplication, works with `limit`).
+      - Need to filter/sort by the association *and* use it → `eager_load`.
+      - Only filtering → `joins` (plus `distinct` for has_many to avoid duplicate parents).
+      - `includes` is "let Rails decide"; it silently switches to a JOIN when it sees a hash
+        condition on the table, which changes performance characteristics.
+
+      `eager_load` with `has_many` + `limit` is a classic trap: the LIMIT applies to joined rows,
+      so Rails runs a separate query for ids first.
+    answer: |
+      **Q:** `Book.includes(:author).where(authors: { name: "X" })` — how many queries and what kind?
+      **A:** One query with `LEFT OUTER JOIN authors`: the hash condition on `authors` makes
+      `includes` behave like `eager_load`. With `preload` the same `where` would raise because
+      there is no `authors` table in the statement.
+    explanation: |
+      The decision is driven by two questions: do you need the associated objects in Ruby, and do you
+      need to filter or sort by them in SQL. Answer both and the method picks itself; `includes` is the
+      only one whose behaviour changes depending on the rest of the chain.
+    tags: [n+1, performance, querying]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-includes-string-condition-references
+    kind: open
+    difficulty: middle
+    title: "What goes wrong with includes + string condition?"
+    body: |
+      ```ruby
+      Order.includes(:customer).where("customers.vip = ?", true)
+      ```
+
+      This raises `ActiveRecord::StatementInvalid: no such column: customers.vip` (SQLite) /
+      `missing FROM-clause entry` (PostgreSQL). Explain why, and give two ways to fix it.
+    answer: |
+      - `includes` defaults to the *preload* strategy: `SELECT orders ...` then
+        `SELECT customers WHERE id IN (...)`. The string `where` is appended to the **orders**
+        query, where there is no `customers` table, so the DB rejects it.
+      - Rails cannot parse SQL strings, so it doesn't know the condition references
+        `customers`. With a hash condition (`where(customers: { vip: true })`) it *does* know
+        and switches to a LEFT OUTER JOIN automatically.
+      - Fix 1: tell it explicitly — `.includes(:customer).where("customers.vip = ?", true).references(:customers)`.
+      - Fix 2: be explicit about the strategy — `.eager_load(:customer).where("customers.vip = ?", true)`,
+        or use `joins(:customer).where(customers: { vip: true }).preload(:customer)` (filter with
+        an inner join, load with a separate query; often the fastest for has_many).
+      - Prefer the hash form or a scope on `Customer` merged in (`.joins(:customer).merge(Customer.vip)`)
+        so the condition is composable and injection-safe.
+    explanation: |
+      Follow-up: "Why might the eager_load version be slower?" — a LEFT JOIN duplicates parent
+      columns per child row and prevents using `limit` directly; for wide tables preload wins.
+      Mistake to avoid: reaching for `references` without understanding it just forces the JOIN.
+    tags: [n+1, querying]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-strict-loading-n-plus-one-debugging
+    kind: open
+    difficulty: senior
+    title: "Rolling out N+1 detection with strict_loading"
+    body: |
+      A large app has hundreds of N+1 queries. How would you find them, and how would you use
+      `strict_loading` to stop new ones from being introduced without breaking production?
+    answer: |
+      - Finding: `bullet` gem in dev/test, `rack-mini-profiler`, logs with
+        `config.active_record.verbose_query_logs`, counting `sql.active_record` notifications in
+        tests, and APM traces showing repeated identical statements.
+      - `strict_loading` raises `ActiveRecord::StrictLoadingViolationError` whenever an
+        association is lazily loaded. It can be enabled per relation (`Post.strict_loading`),
+        per record (`post.strict_loading!`), per association (`has_many :comments, strict_loading: true`)
+        or per model (`self.strict_loading_by_default = true`).
+      - Safe rollout: set `config.active_record.action_on_strict_loading_violation = :log` in
+        production so violations go to the log / `ActiveSupport::Notifications`
+        (`strict_loading_violation.active_record`) instead of raising; raise in test and
+        development; fix hot spots; then flip to `:raise` globally or per model.
+      - Set `strict_loading_mode = :n_plus_one_only` (7.0+) if you only want to catch the
+        "load each child of a collection" case and still allow single lazy loads.
+      - Caveat: `strict_loading` also blocks legitimate lazy loads on a single record
+        (e.g. in a mailer), so some call sites need explicit `preload` or `strict_loading(false)`.
+      - Use `explain` / `explain(:analyze)` (7.1) on the slow queries you discover, and
+        remember the query cache only dedupes *identical* statements inside one request,
+        so it doesn't hide N+1 with differing ids.
+    explanation: |
+      Follow-up: "Is eliminating every N+1 always a win?" No: `preload` of a huge association for a
+      page that shows two children can be worse than 2 lazy loads; measure. "What is
+      `strict_loading!(false)`?" Opt a specific record out.
+    tags: [n+1, performance, strict_loading]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-scope-returns-relation
+    kind: mcq
+    difficulty: junior
+    title: "A scope whose body returns nil"
+    body: |
+      ```ruby
+      class Post < ApplicationRecord
+        scope :featured, -> { where(featured: true) if Rails.env.production? }
+      end
+
+      Post.featured.count   # in development
+      ```
+
+      What happens in development, where the lambda returns `nil`?
+    choices:
+      - "`NoMethodError: undefined method 'count' for nil`"
+      - "It returns 0 because a nil scope matches nothing"
+      - "It returns `Post.all.count`: a scope that yields nil falls back to the unfiltered relation"
+      - "`ArgumentError: scope must return a relation`"
+    answer: 2
+    explanation: |
+      A `scope` is always chainable: if the body returns `nil` (or `false`) Rails substitutes
+      `all`, so `Post.featured` is simply `Post.all`. That is the key behavioural difference from
+      an equivalent class method, which would return `nil` and blow up on `.count`. It is also a
+      source of bugs: a conditional scope that silently returns *everything* instead of nothing.
+      If "nothing" is intended, return `none` explicitly.
+    tags: [scopes, querying]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-scopes-vs-class-methods
+    kind: open
+    difficulty: middle
+    title: "Scopes vs class methods"
+    body: |
+      ```ruby
+      scope :recent, -> { where("created_at > ?", 1.week.ago) }
+
+      def self.recent
+        where("created_at > ?", 1.week.ago)
+      end
+      ```
+
+      These look equivalent. What are the actual differences, and when do you prefer one?
+    answer: |
+      - Both are callable on the class and on any relation (`Post.published.recent`), because
+        relations delegate unknown class methods to the model inside their own scope.
+      - A `scope` is guaranteed to return a relation: a `nil`/`false` body becomes `all`. A class
+        method returns whatever you return, so a conditional one can break the chain.
+      - `scope` bodies are lambdas evaluated lazily at call time, so `1.week.ago` is computed per
+        call; a class method is also evaluated per call. The pitfall is `scope :recent,
+        where(...)` (no lambda), which was removed in Rails 4 precisely because it froze the time.
+      - Scopes can be combined with `merge` and are used by `default_scope`, `unscope` and
+        `includes(...).merge`; class methods work the same when they return relations.
+      - Prefer `scope` for simple, named, composable query fragments; prefer a class method when
+        there is real logic (branches, early returns, several steps) because you can make the
+        return value explicit (`none` for the empty case) and it reads as ordinary Ruby.
+      - Scopes on associations (`author.posts.recent`) are automatically merged with the
+        association's conditions.
+    explanation: |
+      Follow-up: "What does `scope :foo, -> { ... }` actually define?" a singleton method that
+      calls `all.scoping { instance_exec(&body) }`, and it also defines the method on the
+      relation class. Common mistake: `scope :active, -> { where(active: true) if condition }`
+      returning everything when the condition is false.
+    tags: [scopes, querying]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-lazy-relation-when-query-runs
+    kind: mcq
+    difficulty: junior
+    title: "When does a relation hit the database?"
+    body: |
+      ```ruby
+      posts = Post.where(published: true)   # (1)
+      posts = posts.order(:created_at)      # (2)
+      posts.each { |p| puts p.title }       # (3)
+      posts.each { |p| puts p.id }          # (4)
+      ```
+
+      How many SQL queries run, and at which lines?
+    choices:
+      - "Three: at (1), (2) and (3)"
+      - "Two: at (3) and (4)"
+      - "One: at (3); (4) reuses the loaded records"
+      - "Four: one per line"
+    answer: 2
+    explanation: |
+      `where` and `order` build an `ActiveRecord::Relation` without executing anything. The
+      query runs when records are needed: `each`, `to_a`, `first`, `map`, `load`, inspecting in
+      the console, etc. After that the relation is `loaded?` and caches its records, so (4) does
+      not query again. `count`, `exists?`, `pluck` and `update_all` always go to the DB even on a
+      loaded relation. `reload` or building a new relation (`posts.where(...)`) discards the cache.
+    tags: [querying, lazy]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-find-vs-find-by-vs-where-first
+    kind: mcq
+    difficulty: junior
+    title: "find vs find_by vs where.first when nothing matches"
+    body: |
+      ```ruby
+      a = User.find(999)
+      b = User.find_by(id: 999)
+      c = User.where(id: 999).first
+      ```
+
+      Assuming no user 999 exists, which statement is correct?
+    choices:
+      - "`a` raises `ActiveRecord::RecordNotFound`; `b` and `c` return `nil`"
+      - "All three return `nil`"
+      - "All three raise `ActiveRecord::RecordNotFound`"
+      - "`a` and `b` raise; `c` returns `nil`"
+    answer: 0
+    explanation: |
+      `find` is the only one that raises on a miss (a controller typically lets this bubble up to
+      a 404). `find_by` is `where(...).take`: returns `nil` (`find_by!` raises). `where(...).first`
+      also returns `nil` but adds `ORDER BY id` (primary key) when no order is present, so it is
+      deterministic; `take` has no ORDER BY. A subtle interview point: `find` with an array
+      requires *all* ids to exist, and `find` ignores `default_scope`-free `where` only if you
+      call `unscoped.find`.
+    tags: [querying, finders]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-exists-any-present
+    kind: theory
+    difficulty: middle
+    title: "exists? vs any? vs present? on a relation"
+    body: |
+      Three ways to ask "are there rows?", three different costs:
+
+      ```ruby
+      scope = User.where(active: true)
+
+      scope.exists?   # SELECT 1 AS one FROM users WHERE active = true LIMIT 1
+      scope.any?      # SELECT 1 ... LIMIT 1  (same, unless already loaded)
+      scope.present?  # SELECT users.* FROM users WHERE active = true  -> loads everything!
+      ```
+
+      - `exists?` always runs a `SELECT 1 ... LIMIT 1`, never instantiates models, never uses
+        a loaded cache. Best when you only need the boolean. Also takes conditions:
+        `User.exists?(email: x)`.
+      - `any?` / `empty?` / `none?` use the loaded records if the relation is already loaded,
+        otherwise run `exists?`-style SQL. `many?` runs a `COUNT` unless loaded.
+      - `present?` / `blank?` come from `Object`, not AR: they call `to_a`, so they **load every
+        row** of the relation into memory. On a big table in a view (`if @users.present?`) this is a
+        common performance bug. Same for `!relation.empty?` vs `relation.present?` — the first is cheap.
+      - If you will iterate the records right after the check, `load` them once and then use
+        `any?` so the check reuses the same objects:
+
+      ```ruby
+      users = User.active.load
+      if users.any?            # no extra query
+        users.each { ... }     # no extra query
+      end
+      ```
+    answer: |
+      **Q:** `@orders.present?` in a view: what SQL does it run and what should you use instead?
+      **A:** It loads the whole relation (`SELECT orders.*`). Use `@orders.any?` / `@orders.exists?`
+      for a cheap `SELECT 1 LIMIT 1`, or `load` the relation once if you also render the rows.
+    explanation: |
+      Interviewers ask this because `present?` is in every Rails codebase and few people realise it
+      is a plain Ruby method that forces the query. Know which methods respect a loaded relation
+      (`any?`, `size`, `empty?`) and which always query (`exists?`, `count`, `pluck`).
+    tags: [querying, performance]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-pluck-vs-map
+    kind: mcq
+    difficulty: junior
+    title: "pluck vs map for a column"
+    body: |
+      ```ruby
+      User.where(active: true).map(&:email)
+      User.where(active: true).pluck(:email)
+      ```
+
+      Which statement is correct?
+    choices:
+      - "They are identical; `pluck` is just shorter"
+      - "`pluck` runs `SELECT email ...` and returns strings without building User objects; `map` loads full rows and instantiates each model"
+      - "`map` is faster because it uses the query cache"
+      - "`pluck` returns a relation, so it can be chained with `where`"
+    answer: 1
+    explanation: |
+      `pluck` executes immediately with only the requested columns and returns an Array of raw
+      typed values (multiple columns → array of arrays), skipping model instantiation and any
+      overridden reader methods. `map(&:email)` first runs `SELECT users.*`, builds a `User` per
+      row, then calls the method, so it respects a custom `email` method and works on an
+      already-loaded relation without a new query. Rule: `pluck` when you need raw values from
+      the DB, `map` when the records are already loaded or you need Ruby-level logic. `pluck`
+      returns an Array, so nothing can be chained after it; use `select(:email)` for a relation,
+      or `pick(:email)` for a single value (`pluck(...).first` with `LIMIT 1`).
+    tags: [querying, performance]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-count-size-length
+    kind: mcq
+    difficulty: middle
+    title: "count vs size vs length"
+    body: |
+      ```ruby
+      comments = post.comments.to_a   # association loaded, 3 records
+      post.comments.count
+      post.comments.size
+      post.comments.length
+      ```
+
+      After the association has been loaded, which calls hit the database?
+    choices:
+      - "All three run `SELECT COUNT(*)`"
+      - "Only `count`; `size` and `length` use the loaded records"
+      - "Only `length`; `count` and `size` use the loaded records"
+      - "None, the association is loaded"
+    answer: 1
+    explanation: |
+      `count` always issues `SELECT COUNT(*)` (and respects `select`, `distinct`, `group`).
+      `length` always loads the records (`to_a.length`) — if not loaded, it loads them all.
+      `size` is the adaptive one: loaded → `length`; not loaded → `count`; and for a
+      `has_many` with a `counter_cache` it reads the cached column without any query. So in a
+      view that also renders the comments, `size` is the right call; for a pure number on an
+      unloaded relation, `count`; `length` only when you know you need the objects anyway.
+    tags: [querying, performance]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-update-update-attribute-update-column
+    kind: theory
+    difficulty: middle
+    title: "update vs update_attribute vs update_column(s)"
+    body: |
+      Four ways to change one attribute, each skipping a different part of the lifecycle:
+
+      | method | validations | callbacks | `updated_at` | SQL |
+      |---|---|---|---|---|
+      | `update(attrs)` / `update!` | yes | yes | touched | UPDATE via `save` |
+      | `update_attribute(name, v)` | **no** | yes | touched | UPDATE via `save(validate: false)` |
+      | `update_column(name, v)` / `update_columns` | no | **no** | **not** touched | direct `UPDATE ... WHERE id = ?` |
+      | `update_all(attrs)` on a relation | no | no | not touched | one `UPDATE` for all rows, no instantiation |
+
+      ```ruby
+      user.update(email: "bad")            # => false, errors populated
+      user.update_attribute(:email, "bad") # => true, saved despite the validation
+      user.update_column(:views, 10)       # direct SQL, dirty tracking cleared, object must be persisted
+      User.where(active: false).update_all(archived: true)
+      ```
+
+      Also: `update_attribute` and `update_column` raise on a new (unsaved) record; `update_columns`
+      is what `touch` uses under the hood (without callbacks except `after_touch`). `increment!`,
+      `toggle!`, `touch` all skip validations.
+
+      In interviews the expected answer to "when is `update_column` acceptable?" is: bookkeeping
+      fields (counters, flags, timestamps) where callbacks and validations are irrelevant and the
+      extra `updated_at` bump would wrongly bust caches; never for user-facing data.
+    answer: |
+      **Q:** You need to set `last_seen_at` on every request without running validations or
+      callbacks and without changing `updated_at`. Which method, and why not `update_attribute`?
+      **A:** `update_column(:last_seen_at, Time.current)` (or `update_columns`). `update_attribute`
+      still runs callbacks and `touch`es `updated_at`, which would invalidate every cache key built
+      from `cache_key_with_version`.
+    explanation: |
+      Candidates often remember "skips validations" but not which ones also skip callbacks and
+      `updated_at`; the table is the thing to internalise. `update_all` is the relation-level sibling.
+    tags: [persistence, callbacks, validations]
+    source: https://guides.rubyonrails.org/active_record_validations.html
+
+  - slug: ruby-ar-callbacks-order
+    kind: theory
+    difficulty: middle
+    title: "ActiveRecord callback order"
+    body: |
+      For `save` on a new record (create):
+
+      ```text
+      before_validation → [validate] → after_validation
+        → before_save → around_save
+          → before_create → around_create → [INSERT] → after_create
+        → after_save
+      → after_commit / after_rollback          (after the transaction ends)
+      ```
+
+      For update replace `create` with `update`; for `destroy`:
+      `before_destroy → around_destroy → [DELETE] → after_destroy → after_commit`.
+
+      Rules worth stating in an interview:
+
+      - `save` wraps the whole chain in a transaction; `before_*` callbacks that `throw :abort`
+        roll it back and make `save` return `false` (`save!` raises `RecordNotSaved`).
+        Raising any other exception also rolls back and re-raises.
+      - `after_save` runs **inside** the transaction, so the row is not yet visible to other
+        connections; `after_commit` runs after COMMIT (and is skipped on rollback).
+      - `save` callbacks always wrap the create/update callbacks regardless of declaration order;
+        within one kind, callbacks run in the order defined (`prepend: true` to go first).
+      - `before_destroy` should be declared **before** `dependent: :destroy` associations
+        (or use `prepend: true`), otherwise children are already gone when it runs.
+      - Since 7.1, transactional callbacks (`after_commit` etc.) run in definition order
+        (`run_after_transaction_callbacks_in_order_defined`); before that they ran in reverse.
+      - `after_commit` fires once per record per transaction, for the *first* in-memory
+        instance of that record.
+    answer: |
+      **Q:** A `before_create` sets `self.slug = title.parameterize`, but `validates :slug, presence: true`
+      fails. Why?
+      **A:** Validation runs before `before_create` (and before `before_save`). Set the slug in
+      `before_validation` instead.
+    explanation: |
+      The most common slip is the position of validation relative to `before_save`/`before_create`,
+      followed by "after_save vs after_commit". Know both and the `:abort` semantics.
+    tags: [callbacks, lifecycle]
+    source: https://guides.rubyonrails.org/active_record_callbacks.html
+
+  - slug: ruby-ar-heavy-callbacks
+    kind: open
+    difficulty: middle
+    title: "Why avoid heavy callbacks?"
+    body: |
+      A model has `after_create :send_welcome_email, :sync_to_crm, :recalculate_stats`.
+      A colleague says "callbacks are the Rails way". What problems do you foresee, and what
+      would you do instead?
+    answer: |
+      - Hidden side effects: every `create` (seeds, tests, console fixes, imports, admin tools)
+        sends emails and calls the CRM; you cannot create a record *without* them except by
+        hacks like `skip_callback`.
+      - Slow, coupled, hard to test: each test that creates a user now talks to a mailer and an
+        HTTP client; the model knows about CRM and mail concerns.
+      - Transaction semantics: `after_create` runs inside the transaction. If the CRM call is slow
+        it holds the DB transaction (and connection/locks) open; if the job is enqueued there it
+        may run before COMMIT and not find the row; if the CRM call raises, the record is rolled
+        back even though the user did everything right.
+      - Ordering and re-entrancy bugs: callbacks that save other records trigger their callbacks;
+        `update` inside `after_save` recurses.
+      - Alternatives: an explicit service/use-case object (`Users::Register.call`) that creates
+        the record and then performs side effects; `after_commit` (or `after_create_commit`)
+        for the few things that must follow every persist, enqueueing a job rather than doing
+        the work inline; domain events / `ActiveSupport::Notifications`; keep callbacks for
+        data integrity on the row itself (normalising, defaults, computed columns).
+    explanation: |
+      Follow-ups: "Which callbacks are fine?" `before_validation` normalisation, `before_save`
+      derived columns, counter cache / touch. "How do you skip them in a backfill?" don't; use
+      `insert_all`/`update_all` or a service that doesn't trigger them.
+    tags: [callbacks, design]
+    source: https://guides.rubyonrails.org/active_record_callbacks.html
+
+  - slug: ruby-ar-validates-dsl-code
+    kind: code
+    difficulty: middle
+    title: "Implement a validates-style DSL"
+    body: |
+      Model the `ActiveModel::Validations` API in plain Ruby. Write a module `Validations` that,
+      when included in a class, provides:
+
+      - a class macro `validates(attr, presence: true, length: { minimum:, maximum: }, format: /re/)`
+        (any subset of the options may be given);
+      - `valid?` → runs every declared validation, repopulates `errors`, returns `true`/`false`;
+      - `errors` → a Hash of `attribute => [messages]`; `errors[:missing_attr]` returns `[]`.
+
+      Messages must be exactly: `"can't be blank"`, `"is too short (minimum is N characters)"`,
+      `"is too long (maximum is N characters)"`, `"is invalid"`. When `presence` fails, skip the other
+      checks for that attribute. `length`/`format` ignore `nil` values. Calling `valid?` twice must
+      not duplicate messages.
+
+      ```ruby
+      class User
+        include Validations
+        attr_accessor :name, :email
+        validates :name, presence: true, length: { minimum: 2 }
+        validates :email, format: /\A[^@\s]+@[^@\s]+\z/
+      end
+
+      u = User.new; u.name = "A"; u.email = "nope"
+      u.valid?          # => false
+      u.errors[:name]   # => ["is too short (minimum is 2 characters)"]
+      u.errors[:email]  # => ["is invalid"]
+      ```
+    starter_code: |
+      module Validations
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+
+        module ClassMethods
+          def validates(attr, **options)
+            # TODO: record the validation
+          end
+        end
+
+        def errors
+          # TODO
+        end
+
+        def valid?
+          # TODO
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class User
+        include Validations
+        attr_accessor :name, :email
+        validates :name, presence: true, length: { minimum: 2, maximum: 5 }
+        validates :email, format: /\A[^@\s]+@[^@\s]+\z/
+      end
+
+      class SolutionTest < Minitest::Test
+        def build(name: nil, email: nil)
+          u = User.new
+          u.name = name
+          u.email = email
+          u
+        end
+
+        def test_valid_record
+          u = build(name: "Ann", email: "a@b.c")
+          assert u.valid?
+          assert_empty u.errors
+          assert_equal [], u.errors[:name]
+        end
+
+        def test_presence_skips_other_checks
+          u = build(name: "   ", email: "a@b.c")
+          refute u.valid?
+          assert_equal ["can't be blank"], u.errors[:name]
+        end
+
+        def test_length_and_format
+          u = build(name: "A", email: "nope")
+          refute u.valid?
+          assert_equal ["is too short (minimum is 2 characters)"], u.errors[:name]
+          assert_equal ["is invalid"], u.errors[:email]
+          u.name = "Toolong"
+          u.valid?
+          assert_equal ["is too long (maximum is 5 characters)"], u.errors[:name]
+        end
+
+        def test_nil_skips_length_and_format
+          u = build(name: "Bob", email: nil)
+          assert u.valid?
+        end
+
+        def test_revalidation_does_not_duplicate
+          u = build(name: "A", email: "x")
+          u.valid?
+          u.valid?
+          assert_equal 1, u.errors[:name].size
+          u.name = "Ann"
+          u.email = "a@b.c"
+          assert u.valid?
+          assert_empty u.errors
+        end
+
+        def test_validations_are_per_class
+          klass = Class.new do
+            include Validations
+            attr_accessor :title
+            validates :title, presence: true
+          end
+          assert_equal 1, klass.validations.size
+          assert_equal 2, User.validations.size
+        end
+      end
+    solution: |
+      module Validations
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+
+        module ClassMethods
+          def validations
+            @validations ||= []
+          end
+
+          def validates(attr, **options)
+            validations << [attr, options]
+          end
+        end
+
+        def errors
+          @errors ||= Hash.new { [] }
+        end
+
+        def valid?
+          @errors = Hash.new { [] }
+          self.class.validations.each do |attr, opts|
+            value = public_send(attr)
+            if opts[:presence] && (value.nil? || value.to_s.strip.empty?)
+              add_error(attr, "can't be blank")
+              next
+            end
+            next if value.nil?
+            if (len = opts[:length])
+              add_error(attr, "is too short (minimum is #{len[:minimum]} characters)") if len[:minimum] && value.length < len[:minimum]
+              add_error(attr, "is too long (maximum is #{len[:maximum]} characters)") if len[:maximum] && value.length > len[:maximum]
+            end
+            add_error(attr, "is invalid") if opts[:format] && !value.match?(opts[:format])
+          end
+          errors.empty?
+        end
+
+        private
+
+        def add_error(attr, message)
+          errors[attr] = errors[attr] + [message]
+        end
+      end
+    explanation: |
+      The real `ActiveModel::Validations` works the same way: `validates` stores validator objects
+      on the class (`_validators`), `valid?` clears `errors` and runs them all, and `errors` is an
+      `ActiveModel::Errors` collection. The important behaviours to reproduce are *class-level
+      registration* (each class has its own list), *clearing before re-running*, and the
+      `allow_nil`-style skipping for non-presence checks. Note that the tests also expose
+      `validations` on the class so they can check per-class isolation, which is why the solution
+      memoises per class (`@validations` on the singleton) rather than in a shared constant.
+    tags: [validations, metaprogramming, coding]
+    source: https://guides.rubyonrails.org/active_record_validations.html
+
+  - slug: ruby-ar-validation-contexts
+    kind: mcq
+    difficulty: junior
+    title: "Validation contexts with on:"
+    body: |
+      ```ruby
+      class User < ApplicationRecord
+        validates :password, presence: true, on: :create
+        validates :terms, acceptance: true, on: :signup
+        validates :email, presence: true
+      end
+
+      user = User.first
+      user.password = nil
+      user.valid?           # (1)
+      user.valid?(:signup)  # (2)
+      ```
+
+      Which validations run at (1) and (2)?
+    choices:
+      - "(1) email only; (2) email and terms"
+      - "(1) email and password; (2) terms only"
+      - "(1) all three; (2) all three"
+      - "(1) email only; (2) terms only"
+    answer: 0
+    explanation: |
+      `valid?` with no argument uses the implicit context: `:create` for new records, `:update`
+      for persisted ones. So on a persisted user the `on: :create` password check does not run
+      and only `email` is checked. `valid?(:signup)` (or `save(context: :signup)`) runs the
+      validations tagged `on: :signup` **plus** every validation without `on:` — context-free
+      validations always run. Validations with `on: :create` never run in a custom context.
+    tags: [validations]
+    source: https://guides.rubyonrails.org/active_record_validations.html
+
+  - slug: ruby-ar-uniqueness-validation-race
+    kind: mcq
+    difficulty: senior
+    title: "Why validates :email, uniqueness: true is not enough"
+    body: |
+      ```ruby
+      class User < ApplicationRecord
+        validates :email, uniqueness: true
+      end
+      ```
+
+      Two Puma threads receive a sign-up for the same email at the same time. What can happen,
+      and what is the correct fix?
+    choices:
+      - "Nothing: Rails serialises saves with a table lock while validating uniqueness"
+      - "Both pass validation (each `SELECT` sees no row) and both `INSERT`s succeed; fix with a unique index and rescue `ActiveRecord::RecordNotUnique`"
+      - "The second save fails validation because the query cache is shared between threads"
+      - "The second save raises `ActiveRecord::StaleObjectError`; add `lock_version`"
+    answer: 1
+    explanation: |
+      The uniqueness validator is a `SELECT 1 WHERE email = ? LIMIT 1` followed, later, by the
+      `INSERT`; with two connections the window between them lets both pass (TOCTOU). Only the
+      database can enforce uniqueness: `add_index :users, :email, unique: true` (scoped
+      validations need the index on all scoped columns), then rescue
+      `ActiveRecord::RecordNotUnique` and turn it into a user-facing error. Keep the validation
+      for a nice message in the normal path. Table locks are not used, the query cache is
+      per-thread and cleared on writes, and `StaleObjectError` is about optimistic locking of an
+      existing row, not inserts.
+    tags: [validations, concurrency, database]
+    source: https://guides.rubyonrails.org/active_record_validations.html
+
+  - slug: ruby-ar-errors-api
+    kind: open
+    difficulty: middle
+    title: "Working with the errors API"
+    body: |
+      Explain the `errors` object: how do you add a custom error in a `validate` method, add an
+      error that isn't tied to one attribute, and inspect errors programmatically (not just
+      `full_messages`)? Mention what changed in Rails 6.1.
+    answer: |
+      - `errors` is an `ActiveModel::Errors`, a collection of `ActiveModel::Error` objects, each
+        with `attribute`, `type` (a symbol like `:blank`, `:too_short`, or a custom one),
+        `options` and lazily translated `message` / `full_message`.
+      - Add: `errors.add(:start_date, :in_the_past)` (type → looked up in i18n as
+        `activerecord.errors.models.event.attributes.start_date.in_the_past`), or
+        `errors.add(:start_date, "must be in the future")` for a literal message, with extra
+        interpolation options `errors.add(:qty, :greater_than, count: 0)`.
+      - Record-level: `errors.add(:base, "Cart is empty")` shows up in `full_messages` without an
+        attribute prefix.
+      - Inspect: `errors[:email]` → array of messages; `errors.where(:email)` /
+        `errors.where(:email, :blank)` → `Error` objects; `errors.of_kind?(:email, :blank)` and
+        `errors.added?(:email, :blank)`; `errors.details` → `{ email: [{ error: :blank }] }` for
+        APIs; `errors.messages` / `errors.to_hash(full_messages: true)`; `errors.any?`, `size`, `clear`.
+      - 6.1 changed `errors` from a hash-of-arrays to the object collection above; mutating
+        `errors.messages[:x] << "..."` no longer works (deprecated then removed), use `add`.
+      - `valid?` clears and re-runs; `errors.clear` alone doesn't make the record valid.
+      - Custom validation: `validate :end_after_start` then `errors.add(:end_date, :before_start) if end_date < start_date`;
+        reusable logic goes in `ActiveModel::EachValidator#validate_each(record, attr, value)`.
+    explanation: |
+      Follow-up: "How do you return errors from a JSON API?" `errors.details` or
+      `errors.to_hash` with types so clients can localise, not `full_messages` strings. "Why use
+      symbols rather than strings in `add`?" translation, and `of_kind?`/`added?` checks in tests.
+    tags: [validations, errors]
+    source: https://guides.rubyonrails.org/active_record_validations.html
+
+  - slug: ruby-ar-transactions-nested-requires-new
+    kind: theory
+    difficulty: senior
+    title: "Transactions, nesting and requires_new"
+    body: |
+      `ActiveRecord::Base.transaction { ... }` opens a DB transaction; it COMMITs when the block
+      ends and ROLLs BACK if an exception propagates out (then re-raises it). Important details:
+
+      ```ruby
+      Account.transaction do
+        from.update!(balance: from.balance - 10)   # use bang methods: a `false` return does NOT roll back
+        to.update!(balance: to.balance + 10)
+        raise ActiveRecord::Rollback if something   # the one exception that rolls back silently
+      end
+      ```
+
+      **Nesting**: a nested `transaction` block is, by default, *merged* into the outer one — no
+      SQL is emitted. That makes this a classic trap:
+
+      ```ruby
+      User.transaction do
+        User.create!(name: "a")
+        User.transaction do
+          User.create!(name: "b")
+          raise ActiveRecord::Rollback   # swallowed by the inner block...
+        end
+      end
+      # both "a" and "b" are committed! Rollback was caught by the inner block, which is a no-op.
+      ```
+
+      `transaction(requires_new: true)` creates a real **savepoint** (`SAVEPOINT active_record_1`),
+      so the inner rollback only undoes the inner work. Use it when a sub-step may legitimately fail
+      (e.g. "try to insert, ignore duplicates") inside a larger unit.
+
+      Other things to say: every `save` already runs in its own transaction and joins an outer
+      one; `after_commit` fires only once the *outermost* transaction commits; transactions are
+      per connection, so a job enqueued inside the block can run before COMMIT (hence
+      `after_commit` or `enqueue_after_transaction_commit` in 7.2); the isolation level can be
+      set with `transaction(isolation: :serializable)` on the outermost block only; keep
+      transactions short because they hold locks and a pool connection.
+    answer: |
+      **Q:** Why does `raise ActiveRecord::Rollback` inside a plain nested `transaction` block
+      fail to roll back anything?
+      **A:** Without `requires_new: true` the inner block is not a real transaction; the Rollback
+      exception is rescued by the inner block and the outer transaction continues and commits.
+      Use `requires_new: true` (a savepoint) or raise a different exception that propagates out.
+    explanation: |
+      The savepoint question is the single most common "senior" transaction question in Rails
+      interviews; the second is "what happens to jobs/emails triggered inside the transaction".
+    tags: [transactions, database]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Transactions/ClassMethods.html
+
+  - slug: ruby-ar-after-commit-vs-after-save-job
+    kind: mcq
+    difficulty: senior
+    title: "Enqueueing a job from after_save"
+    body: |
+      ```ruby
+      class Order < ApplicationRecord
+        after_save { OrderSyncJob.perform_later(id) }
+      end
+      ```
+
+      With Sidekiq (Redis-backed) in production, what intermittent bug does this cause, and what
+      is the fix?
+    choices:
+      - "The job runs twice because `after_save` fires for both create and update; use `after_create`"
+      - "The job can start before the transaction commits and `Order.find(id)` raises `RecordNotFound`; use `after_commit` (or `after_save_commit`)"
+      - "The job is never enqueued because callbacks are disabled inside transactions; use `perform_now`"
+      - "Sidekiq cannot serialise integers; pass the record and let GlobalID handle it"
+    answer: 1
+    explanation: |
+      `after_save` runs inside the still-open transaction. Sidekiq pushes to Redis immediately and
+      a worker may pick the job up within milliseconds, before the Rails process has sent
+      COMMIT, so the row is invisible (or, if the transaction rolls back, never exists). The fix is
+      `after_commit`/`after_save_commit`, which runs after COMMIT and not at all on rollback.
+      Rails 7.2 adds `ActiveJob::Base.enqueue_after_transaction_commit` to defer *every*
+      `perform_later` issued inside a transaction. The job-runs-twice option describes `after_save`
+      correctly but is not the bug; `retry` in Sidekiq usually masks the error, which is why it
+      shows up as flaky retries rather than hard failures.
+    tags: [callbacks, transactions, jobs]
+    source: https://guides.rubyonrails.org/active_record_callbacks.html
+
+  - slug: ruby-ar-optimistic-vs-pessimistic-locking
+    kind: theory
+    difficulty: senior
+    title: "Optimistic vs pessimistic locking"
+    body: |
+      Two users edit the same row; the last writer silently wins. Rails offers two tools.
+
+      **Optimistic** — add an integer `lock_version` column (default 0). Every `save` becomes
+      `UPDATE ... SET ..., lock_version = 2 WHERE id = ? AND lock_version = 1`; if 0 rows are
+      affected Rails raises `ActiveRecord::StaleObjectError`.
+
+      ```ruby
+      a = Item.find(1); b = Item.find(1)
+      a.update!(qty: 5)   # lock_version 0 -> 1
+      b.update!(qty: 7)   # raises StaleObjectError: b still thinks lock_version is 0
+      ```
+
+      Nothing is locked in the DB; conflicts are detected at write time. Good for web forms
+      (put `lock_version` in a hidden field), low contention, long "think time". Caller must
+      rescue and retry or show "someone else changed this".
+
+      **Pessimistic** — `SELECT ... FOR UPDATE` inside a transaction:
+
+      ```ruby
+      Item.transaction do
+        item = Item.lock.find(1)      # blocks other FOR UPDATE / writers until COMMIT
+        item.update!(qty: item.qty - 1)
+      end
+
+      item.with_lock { item.update!(qty: item.qty - 1) }   # reload + lock + transaction in one
+      ```
+
+      Guarantees serial access to the row; right for counters, balances, inventory, anything
+      read-modify-write with high contention. Costs: holds the lock for the transaction
+      duration, can deadlock (lock rows in a consistent order, keep transactions tiny), and
+      `lock` outside a transaction is useless (the lock is released immediately).
+      `lock("FOR UPDATE SKIP LOCKED")` / `FOR SHARE` are passed through as raw strings and are
+      what job queues such as Solid Queue use to pick jobs.
+
+      Alternative for simple counters: an atomic SQL update, `Item.where(id: 1).update_all("qty = qty - 1")`
+      or `increment_counter`, needs no lock at all.
+    answer: |
+      **Q:** `item = Item.find(1); item.lock!; item.update!(qty: 0)` — is the row protected?
+      **A:** No. `lock!` reloads with `FOR UPDATE`, but outside a `transaction` block the lock is
+      released as soon as that statement's implicit transaction ends. Wrap it in `transaction` or
+      use `with_lock`.
+    explanation: |
+      Interviewers want you to pick the right tool for the contention profile, name the
+      exception each raises/causes (`StaleObjectError`, deadlocks), and know that `with_lock`
+      is reload + `FOR UPDATE` + transaction.
+    tags: [locking, concurrency, transactions]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Locking/Optimistic.html
+
+  - slug: ruby-ar-zero-downtime-migrations
+    kind: open
+    difficulty: senior
+    title: "Zero-downtime migrations on a large PostgreSQL table"
+    body: |
+      You must add an index to `events` (300M rows, written constantly) and backfill a new
+      `events.account_id` column. How do you write and deploy the migrations without taking the
+      site down?
+    answer: |
+      - A plain `add_index` takes a lock that blocks writes for the whole build. Use
+        `add_index :events, :account_id, algorithm: :concurrently` and, because
+        `CREATE INDEX CONCURRENTLY` cannot run inside a transaction, declare
+        `disable_ddl_transaction!` in that migration and keep it as the *only* statement there.
+        A failed concurrent build leaves an INVALID index, so make the migration re-runnable
+        (`if_not_exists: true` / drop the invalid index first).
+      - Adding a nullable column with no default is instant in PostgreSQL (11+ even with a constant
+        default). Avoid `NOT NULL` + backfill in one step: add column → backfill → `add_check_constraint
+        ... NOT VALID` then `validate_check_constraint` (or `change_column_null` with the `NOT VALID`
+        pattern) so the table is never rewritten under a long lock.
+      - Backfill outside the schema migration: a job or `maintenance_tasks` that walks
+        `in_batches(of: 10_000).update_all(...)` with sleeps/throttling; never iterate 300M rows
+        with `each` or run one giant `UPDATE`, and never do it inside the migration's transaction.
+      - Deploy in steps so old and new code both work: `ignored_columns` when dropping, set
+        `lock_timeout`/`statement_timeout` (`strong_migrations` gem enforces all of this).
+      - Make it reversible: `change` for reversible ops, `up`/`down` or `reversible do |dir|` for
+        `change_column` / data; raise `ActiveRecord::IrreversibleMigration` only when there truly
+        is no inverse.
+      - After deploy, check `pg_stat_user_indexes` / `explain` that the index is used.
+    explanation: |
+      Follow-up: "Why is the index migration alone in its file?" Because `disable_ddl_transaction!`
+      removes the safety net for everything else in that migration. "MySQL?" `algorithm: :inplace,
+      lock: :none` / online DDL, or gh-ost/pt-online-schema-change for rewrites.
+    tags: [migrations, database, operations]
+    source: https://guides.rubyonrails.org/active_record_migrations.html
+
+  - slug: ruby-ar-migration-change-vs-up-down
+    kind: mcq
+    difficulty: middle
+    title: "Which migration cannot be rolled back?"
+    body: |
+      ```ruby
+      class A < ActiveRecord::Migration[7.1]
+        def change
+          add_column :users, :nickname, :string
+          add_index :users, :nickname
+        end
+      end
+
+      class B < ActiveRecord::Migration[7.1]
+        def change
+          change_column :users, :age, :bigint
+        end
+      end
+
+      class C < ActiveRecord::Migration[7.1]
+        def change
+          remove_column :users, :legacy_flag, :boolean, default: false
+        end
+      end
+      ```
+
+      Running `db:rollback` on each, which one raises `ActiveRecord::IrreversibleMigration`?
+    choices:
+      - "A, because indexes cannot be reversed automatically"
+      - "B, because `change_column` has no inverse (Rails doesn't know the previous type)"
+      - "C, because `remove_column` always loses data"
+      - "None, every method inside `change` is reversible"
+    answer: 1
+    explanation: |
+      Rails reverses `change` by recording the inverse of each known operation. `add_column`,
+      `add_index`, `create_table`, `add_reference`, `rename_*` etc. have obvious inverses.
+      `remove_column` is reversible *only* if you pass the type (and options), which C does.
+      `change_column` is not reversible because the migration doesn't state the old type: use
+      `up`/`down`, or `reversible do |dir| dir.up { ... }; dir.down { ... } end`, or
+      `change_column_default from:, to:` / `change_column_null` which are reversible. Also note
+      that `execute "..."` in `change` is irreversible.
+    tags: [migrations]
+    source: https://guides.rubyonrails.org/active_record_migrations.html
+
+  - slug: ruby-ar-schema-rb-vs-structure-sql
+    kind: mcq
+    difficulty: junior
+    title: "schema.rb vs structure.sql"
+    body: |
+      When should a team switch `config.active_record.schema_format` from `:ruby` (`db/schema.rb`)
+      to `:sql` (`db/structure.sql`)?
+    choices:
+      - "When the app uses more than one model per table"
+      - "When the schema uses DB features Rails' Ruby DSL cannot express (triggers, functions, custom types, partial/expression indexes, views)"
+      - "Never: `structure.sql` is only generated for MySQL"
+      - "When migrations are slower than 1 second, because `structure.sql` loads faster"
+    answer: 1
+    explanation: |
+      `schema.rb` is a database-agnostic Ruby DSL dump; it silently drops anything the DSL can't
+      represent (PostgreSQL functions, triggers, enum types in older versions, some index
+      options, extensions' objects). `structure.sql` is produced by `pg_dump`/`mysqldump` and is
+      exact, at the cost of a noisier diff and a DB-specific file. Both are loaded with
+      `db:schema:load` (used by `db:prepare`/`db:test:prepare`), not by replaying migrations, so
+      the dump must be committed and kept in sync.
+    tags: [migrations, schema]
+    source: https://guides.rubyonrails.org/active_record_migrations.html
+
+  - slug: ruby-ar-enums
+    kind: theory
+    difficulty: middle
+    title: "ActiveRecord enums and their pitfalls"
+    body: |
+      ```ruby
+      class Order < ApplicationRecord
+        enum :status, { pending: 0, paid: 1, shipped: 2 }, prefix: true   # 7.0+ keyword form
+      end
+
+      order.status            # => "paid"      (string in Ruby, integer in DB)
+      order.status_paid?      # predicate (prefix: true -> status_paid?)
+      order.status_shipped!   # update!(status: :shipped)
+      Order.status_paid       # scope: WHERE status = 1
+      Order.not_status_paid   # negative scope
+      Order.statuses          # => {"pending"=>0, "paid"=>1, "shipped"=>2}
+      order.status = "bogus"  # ArgumentError
+      Order.where(status: :paid)  # hash conditions are mapped for you
+      ```
+
+      Pitfalls to mention in interviews:
+
+      - **Array form** `enum :status, [:pending, :paid]` maps by position: inserting a value in
+        the middle silently re-maps every existing row. Always use an explicit hash (or strings
+        in the DB: `enum :status, { pending: "pending" }`).
+      - Generated methods pollute the namespace: `enum :kind, [:new, ...]` would override
+        `new`; Rails raises for conflicts with existing methods, and `prefix:`/`suffix:` avoid
+        collisions between two enums (`active?` from `status` and `state`).
+      - `where("status = 'paid'")` in a string fails silently (compares integer to string) —
+        use `where(status: :paid)` or `Order.statuses[:paid]`.
+      - Validation: 7.1 added `validate: true` to get a validation error instead of
+        `ArgumentError` on invalid assignment.
+      - Add a DB default and consider a check constraint; the mapping lives only in Ruby.
+    answer: |
+      **Q:** A colleague changes `enum :status, [:pending, :paid, :shipped]` to
+      `[:pending, :cancelled, :paid, :shipped]`. What breaks?
+      **A:** Every existing `paid` row (stored as 1) is now read as `cancelled`, and `shipped`
+      (2) as `paid`. Array enums map by index; use an explicit hash so values are stable.
+    explanation: |
+      Enums are everyday API, so interviewers probe the sharp edges: index-based mapping, method
+      name collisions, and string conditions bypassing the mapping.
+    tags: [enums, modeling]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Enum.html
+
+  - slug: ruby-ar-default-scope-pitfalls
+    kind: open
+    difficulty: senior
+    title: "default_scope pitfalls"
+    body: |
+      ```ruby
+      class Post < ApplicationRecord
+        default_scope { where(deleted_at: nil).order(created_at: :desc) }
+      end
+      ```
+
+      A reviewer asks you to remove this. List the concrete problems `default_scope` causes
+      and what you would use instead.
+    answer: |
+      - It applies everywhere, including places you don't see: `Post.find(id)` of a soft-deleted
+        post raises `RecordNotFound`, `author.posts` hides deleted ones, `Post.count` lies, and
+        admin / support tooling needs `unscoped` sprinkled around.
+      - `unscoped` removes **all** default scopes (not just one) and does not propagate through
+        associations: `Post.unscoped.first.comments` still applies `Comment`'s default scope,
+        and `author.posts.unscoped` drops the `author_id` condition too, returning every post.
+      - `where`-style defaults become **default attribute values** on `new`/`create`:
+        `Post.new.deleted_at` is set to nil here, but `default_scope { where(published: true) }`
+        makes every new post published.
+      - An `order` in the default scope breaks `first`/`last`/`find_each` expectations, fights
+        with `order` calls (`reorder` needed), and makes `DISTINCT`/`GROUP` queries fail on
+        PostgreSQL because `created_at` isn't selected.
+      - `joins`/`merge` across models bring their default scopes in, producing surprising
+        SQL; `exists?`, `update_all`, `delete_all` include the condition; `pluck` on
+        associations too.
+      - Alternatives: an explicit scope (`scope :kept, -> { where(deleted_at: nil) }`) used in
+        controllers; the `discard` gem's `kept`/`discarded`; a database view or partition for
+        archived rows; STI/separate table if "deleted" rows are really a different thing.
+      - Legitimate uses are narrow: multi-tenancy enforced on every query (even then prefer
+        `connected_to`/sharding or a `current_tenant` scope applied in a base class), and
+        ordering is never one.
+    explanation: |
+      Follow-up: "How do you remove just the order?" `Post.reorder(:id)` or `unscope(:order)`.
+      "How does `unscope(where: :deleted_at)` differ from `unscoped`?" It removes one clause and
+      keeps association conditions.
+    tags: [scopes, default_scope]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Scoping/Default/ClassMethods.html
+
+  - slug: ruby-ar-scope-chain-code
+    kind: code
+    difficulty: middle
+    title: "Build a lazy, immutable scope chain"
+    body: |
+      Model how `ActiveRecord::Relation` composes queries. Implement a class `Relation` that is
+      constructed with an array of hashes (`Relation.new(rows)`) and supports:
+
+      - `where(**conditions)` — equality filter, chainable;
+      - `order(key)` — sort ascending by `rows[key]`;
+      - `limit(n)`;
+      - `none` — a relation that always yields `[]`;
+      - `merge(other)` — returns a relation with both relations' `where` conditions (and the
+        other's order/limit if set);
+      - `to_a` — applies where → order → limit and returns the matching rows;
+      - `count` — `to_a.size`, and `loaded?` which is `true` only after `to_a` ran on *that* object.
+
+      Every builder method must return a **new** `Relation` and leave the receiver untouched
+      (like AR, where `scope.where(...)` never mutates `scope`). Conditions must be evaluated
+      lazily, i.e. only in `to_a`/`count`.
+
+      ```ruby
+      rows = [{ id: 1, status: "paid", total: 50 }, { id: 2, status: "open", total: 20 }]
+      r = Relation.new(rows)
+      paid = r.where(status: "paid")
+      paid.to_a                 # => [{ id: 1, ... }]
+      r.count                   # => 2   (r is unchanged)
+      r.order(:total).limit(1).to_a.first[:id]   # => 2
+      ```
+    starter_code: |
+      class Relation
+        def initialize(rows, conditions: {}, ordering: nil, limit_value: nil, empty: false)
+          @rows = rows
+          # TODO: store the query state
+        end
+
+        def where(**conditions)
+          # TODO
+        end
+
+        def order(key)
+          # TODO
+        end
+
+        def limit(n)
+          # TODO
+        end
+
+        def none
+          # TODO
+        end
+
+        def merge(other)
+          # TODO
+        end
+
+        def to_a
+          # TODO
+        end
+
+        def count = to_a.size
+
+        def loaded?
+          # TODO
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        ROWS = [
+          { id: 1, status: "paid", region: "eu", total: 50 },
+          { id: 2, status: "open", region: "eu", total: 20 },
+          { id: 3, status: "paid", region: "us", total: 70 },
+          { id: 4, status: "paid", region: "eu", total: 10 }
+        ].freeze
+
+        def rel = Relation.new(ROWS)
+
+        def ids(relation) = relation.to_a.map { _1[:id] }
+
+        def test_where_and_chaining
+          assert_equal [1, 3, 4], ids(rel.where(status: "paid"))
+          assert_equal [1, 4], ids(rel.where(status: "paid").where(region: "eu"))
+        end
+
+        def test_builders_do_not_mutate_receiver
+          base = rel
+          paid = base.where(status: "paid")
+          refute_same base, paid
+          assert_equal 4, base.count
+          assert_equal 3, paid.count
+          ordered = paid.order(:total)
+          assert_equal [1, 3, 4], ids(paid)
+          assert_equal [4, 1, 3], ids(ordered)
+        end
+
+        def test_order_and_limit
+          assert_equal [4, 2], ids(rel.order(:total).limit(2))
+          assert_equal [4], ids(rel.where(region: "eu").order(:total).limit(1))
+        end
+
+        def test_none
+          assert_equal [], rel.none.to_a
+          assert_equal [], rel.where(status: "paid").none.where(region: "eu").to_a
+          assert_equal 0, rel.none.count
+        end
+
+        def test_merge_combines_conditions
+          paid = rel.where(status: "paid")
+          eu   = Relation.new([]).where(region: "eu").order(:total)
+          assert_equal [4, 1], ids(paid.merge(eu))
+        end
+
+        def test_lazy_and_loaded
+          r = rel.where(status: "open")
+          refute r.loaded?
+          r.to_a
+          assert r.loaded?
+          refute rel.where(status: "open").loaded?
+        end
+      end
+    solution: |
+      class Relation
+        attr_reader :conditions, :ordering, :limit_value, :empty
+
+        def initialize(rows, conditions: {}, ordering: nil, limit_value: nil, empty: false)
+          @rows = rows
+          @conditions = conditions
+          @ordering = ordering
+          @limit_value = limit_value
+          @empty = empty
+          @loaded = false
+        end
+
+        def where(**conditions) = spawn(conditions: @conditions.merge(conditions))
+
+        def order(key) = spawn(ordering: key)
+
+        def limit(n) = spawn(limit_value: n)
+
+        def none = spawn(empty: true)
+
+        def merge(other)
+          spawn(conditions: @conditions.merge(other.conditions),
+                ordering: other.ordering || @ordering,
+                limit_value: other.limit_value || @limit_value,
+                empty: @empty || other.empty)
+        end
+
+        def to_a
+          @records ||= begin
+            result = @empty ? [] : @rows.select { |row| @conditions.all? { |k, v| row[k] == v } }
+            result = result.sort_by { |row| row[@ordering] } if @ordering
+            result = result.first(@limit_value) if @limit_value
+            @loaded = true
+            result
+          end
+        end
+
+        def count = to_a.size
+
+        def loaded? = @loaded
+
+        private
+
+        def spawn(**changes)
+          Relation.new(@rows, **{ conditions: @conditions, ordering: @ordering,
+                                  limit_value: @limit_value, empty: @empty }.merge(changes))
+        end
+      end
+    explanation: |
+      This is exactly the shape of `ActiveRecord::Relation`: each query method calls `spawn`
+      (a `clone`) and sets a `*_values` slot on the copy; nothing runs until `load`/`to_a`, after
+      which `loaded?` is true and `records` are memoised. `merge` copies another relation's
+      values in, which is how `Post.joins(:author).merge(Author.active)` works, and `none` is a
+      `NullRelation` that short-circuits to `[]` without SQL. Note the immutability test:
+      a solution that does `@conditions.merge!(...)` on `self` passes the first test and fails
+      the second, which mirrors the real-world bug of memoising a relation and mutating it.
+    tags: [querying, relation, coding]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Relation.html
+
+  - slug: ruby-ar-find-each-batches
+    kind: mcq
+    difficulty: middle
+    title: "find_each on an ordered relation"
+    body: |
+      ```ruby
+      User.order(created_at: :desc).find_each(batch_size: 500) { |u| u.touch }
+      ```
+
+      What does Rails do with the `order` here (7.1 defaults)?
+    choices:
+      - "It honours it: batches are fetched in `created_at DESC` order"
+      - "It raises `ArgumentError` because batching requires an unordered relation"
+      - "It ignores the `created_at` order (logging a warning or raising depending on `error_on_ignored_order`) and batches by primary key ascending"
+      - "It loads the whole table once, sorts it in Ruby and yields in groups of 500"
+    answer: 2
+    explanation: |
+      `find_each`/`find_in_batches`/`in_batches` paginate with `WHERE id > last_id ORDER BY id
+      LIMIT n` so memory stays flat regardless of table size; that only works if the ordering is
+      the primary key. A custom order is dropped: by default a warning is logged, and with
+      `config.active_record.error_on_ignored_order = true` it raises. You can pass
+      `order: :desc` to walk the primary key backwards, or use `in_batches(of: 500)` which
+      yields relations (handy for `update_all`/`delete_all` without instantiating). Plain
+      `each` would load every row at once, which is the thing batching exists to avoid.
+    tags: [querying, batches, performance]
+    source: https://guides.rubyonrails.org/active_record_querying.html
+
+  - slug: ruby-ar-insert-all-upsert-all
+    kind: theory
+    difficulty: middle
+    title: "insert_all / upsert_all"
+    body: |
+      Bulk writes without instantiating models:
+
+      ```ruby
+      User.insert_all([{ email: "a@x.io", name: "A" }, { email: "b@x.io", name: "B" }])
+      # one INSERT ... VALUES (...), (...) ON CONFLICT DO NOTHING  (PostgreSQL/SQLite)
+
+      User.insert_all!(rows)           # raises on duplicate instead of skipping
+      User.upsert_all(rows, unique_by: :email)             # ON CONFLICT (email) DO UPDATE SET ...
+      User.upsert_all(rows, unique_by: :email, update_only: [:name])     # 7.0+
+      User.upsert_all(rows, unique_by: :email, on_duplicate: Arel.sql("views = users.views + EXCLUDED.views"))
+      User.insert_all(rows, returning: %w[id email])        # PostgreSQL only
+      ```
+
+      What they skip, and why that matters:
+
+      - **No validations, no callbacks, no `updated_at`/`created_at` by default** (7.0+ fills
+        timestamps when `record_timestamps` is true; before that you had to pass them). No
+        `after_commit`, no counter cache, no `touch`, no `has_secure_password` hashing, no
+        `serialize`/`encrypts` transformations unless the attribute type handles them.
+      - Every hash must have the **same keys**; the DB default fills missing columns only if
+        you omit the key in all rows.
+      - `unique_by` must match a unique index (or the primary key); without it `insert_all`
+        skips conflicts on *any* unique index.
+      - Rows are sent in one statement, so keep batches to a few thousand (parameter limits,
+        lock time) and wrap big imports in `in_batches` / `each_slice`.
+
+      The classic question is "when is this appropriate?" — imports, ETL, denormalised
+      counters, seeding: paths where model logic doesn't apply or you re-implement it explicitly.
+      For user-facing writes use `create!`/`save!` and get validations and callbacks.
+    answer: |
+      **Q:** You `upsert_all` 10k products and the search index (updated in `after_commit`) is
+      now stale. Why, and what do you do?
+      **A:** Bulk methods never instantiate records, so no callbacks run. Reindex explicitly after
+      the import (e.g. enqueue a job with the affected ids, using `returning:` on PostgreSQL).
+    explanation: |
+      Interviewers test whether you know bulk writes bypass the whole model layer and what you
+      must replicate by hand (timestamps on older Rails, callbacks, validations, uniqueness).
+    tags: [persistence, bulk, performance]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Persistence/ClassMethods.html
+
+  - slug: ruby-ar-dirty-tracking
+    kind: open
+    difficulty: middle
+    title: "Dirty tracking before and after save"
+    body: |
+      ```ruby
+      class User < ApplicationRecord
+        before_save :check_email_before
+        after_save  :check_email_after
+
+        def check_email_before = email_changed?
+        def check_email_after  = email_changed?
+      end
+      ```
+
+      `check_email_after` is always `false` (Rails 5.1+). Explain the dirty-tracking API and
+      which methods to use in `before_*` vs `after_*` callbacks.
+    answer: |
+      - `ActiveModel::Dirty` records changes made to attributes in memory: `changed?`,
+        `changes` (`{ "email" => [old, new] }`), `email_changed?`, `email_was`,
+        `email_change`, `will_save_change_to_email?`, `email_in_database`,
+        `changed_attributes`, `attribute_changed?(:email, from:, to:)`.
+      - Those describe **unsaved** changes. After `save` the record's changes are moved to
+        `saved_changes`, so inside `after_save`/`after_commit` you must use
+        `saved_change_to_email?`, `saved_change_to_email` (`[old, new]`), `email_before_last_save`,
+        `saved_changes`. Using `email_changed?` there returns `false` (5.1 deprecated the old
+        behaviour, 5.2 removed it).
+      - In `before_save` use `will_save_change_to_email?` (preferred) or `email_changed?`.
+      - `previous_changes` is the pre-5.1 name for `saved_changes` and still works.
+      - Reset: `restore_attributes`, `clear_changes_information`, `reload`.
+      - `update_column(s)` bypasses dirty tracking entirely (and clears changes for those
+        attributes); `changes_applied` is what `save` calls to rotate current → saved.
+      - Serialized/JSON attributes: in-place mutation (`prefs[:x] = 1`) is detected because AR
+        compares against the original deserialised value, but it's a deep compare, so it costs.
+      - Typical use: `after_commit :reindex, if: :saved_change_to_name?`; `before_save` to
+        recompute a derived column only when inputs changed.
+    explanation: |
+      Follow-up: "Why did 5.1 change this?" `changed?` in `after_save` was ambiguous: Rails
+      needed to clear changes before running `after_save` so a nested save in a callback didn't
+      see stale diffs. Mistake: `after_commit :sync, if: :email_changed?` never fires.
+    tags: [dirty, callbacks]
+    source: https://api.rubyonrails.org/classes/ActiveModel/Dirty.html
+
+  - slug: ruby-ar-counter-cache-touch
+    kind: open
+    difficulty: middle
+    title: "counter_cache and touch"
+    body: |
+      ```ruby
+      class Comment < ApplicationRecord
+        belongs_to :post, counter_cache: true, touch: true
+      end
+      ```
+
+      Explain what each option does, how the counter is kept correct, and the failure modes.
+    answer: |
+      - `counter_cache: true` maintains `posts.comments_count` (needs an integer column, default 0,
+        NOT NULL): `create`/`destroy` of a comment increments/decrements it with a single
+        `UPDATE posts SET comments_count = COALESCE(comments_count, 0) + 1`, and
+        `post.comments.size` reads the column without a COUNT. Name a custom column with
+        `counter_cache: :replies_count`.
+      - It is updated on the belongs_to side's `create`/`destroy` only: `delete`, `delete_all`,
+        `update_all`, `insert_all`, raw SQL and moving a comment to another post via
+        `update_column` do **not** touch it. 7.1 added `counter_cache: { active: false }` for
+        backfilling, and `Post.reset_counters(id, :comments)` recomputes from a COUNT.
+      - The column lives on the parent, so it's readonly on the parent model
+        (`post.comments_count = 5; post.save` is ignored) and must be backfilled when added
+        (`Post.find_each { Post.reset_counters(_1.id, :comments) }`).
+      - `touch: true` sets `posts.updated_at = now` whenever a comment is created, updated or
+        destroyed (and `touch: :last_commented_at` for a custom column). That's what makes
+        Russian-doll fragment caching work: the parent's `cache_key_with_version` changes.
+        `touch` runs only `after_touch` callbacks, no validations, and is itself a write that
+        can become a hot-row contention point (every comment on a popular post locks the post
+        row), so some teams throttle it or use `no_touching { ... }` in imports.
+      - Both options are `belongs_to`-side; on `has_many` you declare nothing. Both are
+        skipped by bulk operations, which is the usual source of drift.
+    explanation: |
+      Follow-ups: "Why not `COUNT(*)` every time?" cost on hot pages. "How do you detect drift?"
+      a periodic job comparing the column to a COUNT. "Deadlocks?" many children touching the same
+      parent row concurrently; batch or defer touches.
+    tags: [associations, caching, performance]
+    source: https://guides.rubyonrails.org/association_basics.html
+
+  - slug: ruby-ar-sti-vs-delegated-types
+    kind: open
+    difficulty: senior
+    title: "STI vs delegated types"
+    body: |
+      You model `Message`, `Comment` and `Post` as kinds of `Entry` that share a feed, author
+      and timestamps but have different specific attributes. Compare Single Table Inheritance
+      with delegated types (Rails 6.1+). Which would you pick and why?
+    answer: |
+      - **STI**: one `entries` table with a `type` column; subclasses `Message < Entry` share
+        every column. Pros: trivial polymorphic queries (`Entry.order(:created_at)`), shared
+        validations/scopes, one index set. Cons: sparse nullable columns as subtypes diverge,
+        a schema change for one subtype touches everyone, the `type` column stores class names
+        (renames need data migrations), and in dev the subclasses must be loaded for
+        `Entry.all` to instantiate the right class (Zeitwerk + STI gotcha, `eager_load_dir`).
+      - **Delegated types**: a superclass table `entries(entryable_type, entryable_id, author_id, created_at)`
+        plus one table per subtype (`messages`, `comments`) holding only their own columns.
+        `Entry` declares `delegated_type :entryable, types: %w[Message Comment]`, which
+        generates `entry.message?`, `entry.message`, `Entry.messages` scopes and `entryable`
+        delegation. You get the shared-feed queries of STI *and* normalised subtype tables with
+        real `NOT NULL` constraints. Cost: creating one thing is two inserts
+        (`Entry.create!(entryable: Message.new(...))`), and type-specific queries join.
+      - Polymorphic `belongs_to` alone (no superclass table) can't give you a single ordered feed
+        without `UNION`, which is the gap delegated types fill.
+      - Pick STI when subtypes differ by behaviour, not data (few extra columns); delegated
+        types when they diverge in data or you need constraints; separate tables with no
+        superclass when nothing is shared.
+    explanation: |
+      Follow-up: "How do you add a shared column with delegated types?" on `entries`; subtype-only
+      columns go on the subtype table. "How does the `type` column pick the class in STI?"
+      `sti_name`/`inheritance_column`, `store_full_sti_class`.
+    tags: [modeling, inheritance]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/DelegatedType.html
+
+  - slug: ruby-ar-connection-pool
+    kind: theory
+    difficulty: senior
+    title: "The connection pool"
+    body: |
+      ActiveRecord does not open one DB connection per query; each database/role has a
+      `ConnectionPool` sized by `pool:` in `database.yml` (default 5, or `RAILS_MAX_THREADS`).
+      A thread checks out a connection the first time it runs SQL and keeps it until the request
+      (or job) finishes, when the `ActionDispatch::Executor` / Active Job wrapper checks it back in.
+
+      ```yaml
+      production:
+        pool: <%= ENV.fetch("RAILS_MAX_THREADS", 5) %>
+        checkout_timeout: 5      # seconds to wait for a free connection
+        idle_timeout: 300
+      ```
+
+      Failure modes you should be able to explain:
+
+      - **`ActiveRecord::ConnectionTimeoutError`** ("could not obtain a connection ... within 5s"):
+        more concurrent threads than pool slots. Puma with 5 threads needs `pool >= 5`;
+        anything that spawns extra threads inside a request (`Thread.new`, `Concurrent::Future`,
+        `load_async` in 7.0 uses its own executor) needs slots too. Fix: raise `pool`, or lower
+        concurrency; wrap manual threads in `ActiveRecord::Base.connection_pool.with_connection`
+        so they release.
+      - **Leaks**: a thread that never finishes a request/executor block keeps its connection.
+        Rails reaps stale ones (`reaping_frequency`), but the real fix is the executor:
+        `Rails.application.executor.wrap { ... }` around background work.
+      - **Database-side limit**: total connections = processes × threads × databases
+        (writer + replica + Solid Queue...). 8 Puma workers × 5 threads × 3 DB roles = 120 server
+        connections; PostgreSQL defaults `max_connections = 100`. That's what PgBouncer is for.
+      - Pools are **per abstract class** with `connects_to` (and per shard), so each
+        `connects_to` multiplies connections.
+      - `ActiveRecord::Base.connection` (7.2: `with_connection`/`lease_connection`) pins the
+        current thread; with long-running `Thread`s prefer `with_connection`.
+    answer: |
+      **Q:** Puma runs 2 workers × 16 threads, `pool: 5`. Under load you see
+      `ConnectionTimeoutError`. What's wrong and what are the two ways to fix it?
+      **A:** Each worker has its own pool of 5 but 16 threads compete for it. Either set
+      `pool` to at least the thread count (16) or lower Puma threads; also check the DB's
+      `max_connections` can take workers × pool.
+    explanation: |
+      A senior candidate should do the multiplication (processes × threads × roles), know the
+      exception name, and know that threads created by hand must check connections back in.
+    tags: [connection-pool, concurrency, operations]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html
+
+  - slug: ruby-ar-read-replicas-multiple-databases
+    kind: open
+    difficulty: senior
+    title: "Adding a read replica with multiple databases"
+    body: |
+      Your PostgreSQL primary is saturated by reads. Describe how you would route reads to a
+      replica with Rails' multiple-database support, and the correctness problems that
+      introduces.
+    answer: |
+      - `database.yml` gets a second config per environment with `replica: true`; the
+        `ApplicationRecord` declares
+        `connects_to database: { writing: :primary, reading: :primary_replica }`.
+      - Manual routing: `ActiveRecord::Base.connected_to(role: :reading) { Report.heavy_query }`;
+        inside it writes raise if you pass `prevent_writes: true`. Default role is `writing`.
+      - Automatic routing: enable `config.active_record.database_selector = { delay: 2.seconds }`,
+        `database_resolver` and `database_resolver_context`. The middleware sends
+        GET/HEAD to the replica and POST/PUT/PATCH/DELETE to the primary.
+      - **Replication lag**: a user who just wrote must read their own write. Rails solves it with
+        the `delay`: after a write it stores a timestamp in the session and routes that user's
+        reads to the primary for `delay` seconds. It does nothing for *other* users, for API
+        clients without a session, or for background jobs, so critical read-after-write paths must
+        use `connected_to(role: :writing)` explicitly.
+      - Writes on a GET (analytics counters, `touch`, `last_seen_at`) now fail or go to the
+        replica by mistake; audit them, move to jobs.
+      - Transactions: a `connected_to(role: :reading)` block inside a writing transaction uses
+        a different connection, so it won't see uncommitted rows.
+      - Operational: each role multiplies the pool; replica can be behind seconds during heavy
+        write load or vacuum; monitor `pg_stat_replication` lag; failover means swapping
+        configs. Horizontal sharding (`shards:`) is a separate feature with
+        `connected_to(role:, shard:)`.
+    explanation: |
+      Follow-ups: "How do you make the replica-routing decision per request yourself?" a custom
+      resolver class with `read_from_primary?`. "What about jobs?" they default to `writing`; wrap
+      read-heavy jobs explicitly. "Why `prevent_writes`?" to catch accidental writes early.
+    tags: [multiple-databases, replicas, scaling]
+    source: https://guides.rubyonrails.org/active_record_multiple_databases.html
+
+  - slug: ruby-ar-sql-injection-where
+    kind: mcq
+    difficulty: junior
+    title: "Which where call is vulnerable to SQL injection?"
+    body: |
+      `params[:name]` comes straight from the user. Which of these is **unsafe**?
+    choices:
+      - "`User.where(name: params[:name])`"
+      - "`User.where(\"name = ?\", params[:name])`"
+      - "`User.where(\"name = '#{params[:name]}'\")`"
+      - "`User.where(\"name = :name\", name: params[:name])`"
+    answer: 2
+    explanation: |
+      Interpolating user input into a SQL string lets `' OR 1=1 --` rewrite the query. The
+      hash form and both placeholder forms (`?` and `:name`) go through the adapter's quoting
+      (`connection.quote`), so a quote in the value becomes `''`. Other injection points people
+      forget: `order(params[:sort])`, `pluck(params[:col])`, `select`, `group`, `joins("...")`,
+      `exists?("...")`, `calculate`, `find_by("...")`, `connection.execute`, `delete_all("...")`.
+      For dynamic column names validate against an allowlist, or use `Arel.sql` only on strings
+      you built yourself; Rails 6+ raises on unknown raw SQL in `order`/`pluck` unless wrapped in
+      `Arel.sql`. Outside a model use `sanitize_sql_array(["name = ?", x])`.
+    tags: [security, sql-injection]
+    source: https://guides.rubyonrails.org/security.html
+
+  - slug: ruby-ar-sanitize-sql-binder-code
+    kind: code
+    difficulty: senior
+    title: "Implement a sanitize_sql-style placeholder binder"
+    body: |
+      Model what `sanitize_sql_array` / `where("... ?", value)` do. Write a method
+      `bind_sql(sql, *values)` that replaces each `?` in `sql`, left to right, with a safely
+      quoted literal:
+
+      - `String` → single-quoted, with every `'` doubled (`O'Hara` → `'O''Hara'`);
+      - `Integer` / `Float` → unquoted number;
+      - `nil` → `NULL`; `true` / `false` → `TRUE` / `FALSE`;
+      - `Array` → parenthesised, comma-separated list of quoted elements (`[1, "a"]` → `(1, 'a')`);
+      - `Symbol` → treated like a String.
+
+      Raise `ArgumentError` when the number of `?` placeholders and values differ. Other objects
+      (e.g. a Date) are converted with `to_s` and quoted like strings.
+
+      ```ruby
+      bind_sql("name = ? AND age > ?", "Ann", 30)        # => "name = 'Ann' AND age > 30"
+      bind_sql("name = ?", "' OR 1=1 --")                # => "name = ''' OR 1=1 --'"
+      bind_sql("id IN ?", [1, 2, 3])                     # => "id IN (1, 2, 3)"
+      ```
+    starter_code: |
+      def quote_value(value)
+        # TODO: return the SQL literal for one value
+      end
+
+      def bind_sql(sql, *values)
+        # TODO: replace each ? with quote_value(values[i])
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_strings_and_numbers
+          assert_equal "name = 'Ann' AND age > 30", bind_sql("name = ? AND age > ?", "Ann", 30)
+          assert_equal "price < 9.5", bind_sql("price < ?", 9.5)
+        end
+
+        def test_escapes_quotes
+          assert_equal "name = 'O''Hara'", bind_sql("name = ?", "O'Hara")
+          assert_equal "name = ''' OR 1=1 --'", bind_sql("name = ?", "' OR 1=1 --")
+        end
+
+        def test_nil_and_booleans
+          assert_equal "deleted_at IS NULL OR x = NULL", bind_sql("deleted_at IS NULL OR x = ?", nil)
+          assert_equal "active = TRUE AND banned = FALSE", bind_sql("active = ? AND banned = ?", true, false)
+        end
+
+        def test_arrays_and_symbols
+          assert_equal "id IN (1, 2, 3)", bind_sql("id IN ?", [1, 2, 3])
+          assert_equal "status IN ('open', 'paid')", bind_sql("status IN ?", [:open, "paid"])
+          assert_equal "s = 'open'", bind_sql("s = ?", :open)
+        end
+
+        def test_placeholder_count_mismatch
+          assert_raises(ArgumentError) { bind_sql("a = ? AND b = ?", 1) }
+          assert_raises(ArgumentError) { bind_sql("a = ?", 1, 2) }
+        end
+
+        def test_value_containing_question_mark_is_not_reinterpreted
+          assert_equal "q = 'what?' AND n = 1", bind_sql("q = ? AND n = ?", "what?", 1)
+        end
+      end
+    solution: |
+      def quote_value(value)
+        case value
+        when nil then "NULL"
+        when true then "TRUE"
+        when false then "FALSE"
+        when Integer, Float then value.to_s
+        when Array then "(#{value.map { |v| quote_value(v) }.join(', ')})"
+        else "'#{value.to_s.gsub("'", "''")}'"
+        end
+      end
+
+      def bind_sql(sql, *values)
+        expected = sql.count("?")
+        raise ArgumentError, "wrong number of bind variables (#{values.size} for #{expected})" if expected != values.size
+
+        i = -1
+        sql.gsub("?") { quote_value(values[i += 1]) }
+      end
+    explanation: |
+      `ActiveRecord::Sanitization::ClassMethods#sanitize_sql_array` does the same job (with
+      `connection.quote` doing per-adapter quoting and `?`/`:named` replacement). Two details
+      interviewers look for: the escaping is `'` → `''` (SQL standard), *not* backslashes, and the
+      replacement must be done with a block (`gsub("?") { ... }`) so a `?` inside an already
+      substituted value is never re-interpreted, which is the last test. Also note this is string
+      interpolation at the client; real prepared statements (`PREPARE`/bind params, which Rails
+      uses for hash conditions on PostgreSQL) never splice values into SQL text at all.
+    tags: [security, sql-injection, coding]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Sanitization/ClassMethods.html
+
+  - slug: ruby-ar-merge-or-none
+    kind: mcq
+    difficulty: senior
+    title: "Combining relations with or and merge"
+    body: |
+      ```ruby
+      Post.where(draft: true).or(Post.where(author_id: 1).order(:title))
+      ```
+
+      What happens?
+    choices:
+      - "Returns drafts OR posts by author 1, ordered by title"
+      - "Raises `ArgumentError`: relations passed to `or` must be structurally compatible (differ only in `where`/`having`)"
+      - "Returns drafts only; `or` ignores the argument's `order`"
+      - "Raises `ActiveRecord::StatementInvalid` because `OR` cannot be combined with `ORDER BY`"
+    answer: 1
+    explanation: |
+      `or` requires both relations to be built from the same model and to differ only in their
+      `where`/`having` values; a different `order`, `limit`, `joins`, `includes` or `select`
+      raises `ArgumentError: Relation passed to #or must be structurally compatible`. Put the
+      `order` on the combined relation instead. `merge(other)` is the opposite tool: it copies
+      another relation's conditions (including scopes from a *different* model after a `joins`,
+      e.g. `Post.joins(:author).merge(Author.active)`) and later `where`s on the same column
+      *replace* earlier ones in `merge` (not AND), which surprises people. `none` is a chainable
+      empty relation that fires no query, useful as the empty branch of a conditional scope.
+      The actual SQL for the fixed version is `WHERE (draft = TRUE OR author_id = 1)`.
+    tags: [querying, relation]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/QueryMethods.html
+
+  - slug: ruby-ar-activemodel-without-db
+    kind: open
+    difficulty: middle
+    title: "ActiveModel for objects without a table"
+    body: |
+      You need a contact form object with typed attributes, validations, i18n error messages,
+      and that works with `form_with`, but it is not stored in the database. What does Rails
+      give you, and how do the pieces fit?
+    answer: |
+      - `ActiveModel::Model` gives `initialize(attrs)`, `persisted?` (false), `to_key`/`to_param`,
+        `model_name` and `ActiveModel::Validations`, so `form_with(model: @form)` and
+        `render @form.errors` work and routes resolve to `contact_forms_path`.
+      - `ActiveModel::Attributes` (5.2+) adds `attribute :age, :integer, default: 0` with the same
+        type casting AR uses (`"12"` → 12, `"true"` → true); 7.1+ `ActiveModel::API` is the
+        slimmer base if you don't need `Model`'s conveniences.
+      - Validations are identical: `validates :email, format: ...`, custom `validate` methods,
+        `errors.add`, contexts; messages come from the same i18n keys under `activemodel.errors`.
+      - `ActiveModel::Dirty`, `ActiveModel::Serializers::JSON`, `ActiveModel::SecurePassword`
+        (`has_secure_password` works on any class with a `password_digest` accessor),
+        `ActiveModel::Conversion`, `ActiveModel::Naming`, `ActiveModel::Callbacks` are mix-ins
+        you can include individually.
+      - Typical use: form objects wrapping several records, search/filter params objects,
+        API input validation, presenters; `ActiveModel::Lint::Tests` verifies a class behaves
+        like a model.
+      - The same `attribute` API works inside AR to add virtual/typed columns
+        (`attribute :price, :decimal, precision: 2`, custom `ActiveModel::Type::Value`
+        subclasses registered with `ActiveRecord::Type.register`); `serialize`/`store` are
+        older ways to keep structured data in one column, now mostly replaced by native `json`/`jsonb`
+        columns plus `store_accessor`.
+    explanation: |
+      Follow-up: "How would you save the form?" a `save` method that opens a transaction and
+      writes the real records, returning false and copying errors on failure. "Why not a plain
+      Struct?" you lose casting, validation, i18n and form builder integration.
+    tags: [activemodel, form-objects]
+    source: https://guides.rubyonrails.org/active_model_basics.html
+
+  - slug: ruby-ar-rails-7-security-features
+    kind: mcq
+    difficulty: senior
+    title: "normalizes, generates_token_for, encrypts"
+    body: |
+      ```ruby
+      class User < ApplicationRecord
+        has_secure_password
+        normalizes :email, with: ->(e) { e.strip.downcase }
+        encrypts :phone, deterministic: true
+        generates_token_for :password_reset, expires_in: 20.minutes do
+          password_salt&.last(10)
+        end
+      end
+      ```
+
+      Which statement is correct (Rails 7.1+)?
+    choices:
+      - "`User.find_by(email: \"  A@X.IO \")` will miss a user stored as `a@x.io` because `normalizes` only runs on assignment"
+      - "A password-reset token generated before the user changes their password stays valid until it expires"
+      - "`encrypts :phone, deterministic: true` allows `User.find_by(phone: x)` while non-deterministic encryption does not"
+      - "`has_secure_password` stores the plaintext in `password` and the bcrypt hash in `password_digest`"
+    answer: 2
+    explanation: |
+      Active Record Encryption (7.0) encrypts attributes transparently; non-deterministic mode
+      uses a random IV so the same value encrypts differently and cannot be queried,
+      `deterministic: true` produces stable ciphertext so equality lookups (and unique indexes)
+      work at the cost of some leakage. `normalizes` (7.1) runs on assignment **and** on
+      `where`/`find_by` hash arguments, so the lookup in option A finds the user. The
+      `generates_token_for` block embeds `password_salt` in the token; after a password change
+      the salt differs and `find_by_token_for(:password_reset, token)` returns nil, which is the
+      whole point of the block. `has_secure_password` keeps `password` only as an in-memory
+      virtual attribute and persists the bcrypt digest; 7.1 added `authenticate_by` to avoid
+      timing differences between "no user" and "wrong password".
+    tags: [security, rails-7, encryption]
+    source: https://guides.rubyonrails.org/7_1_release_notes.html
+
+  - slug: ruby-ar-dirty-tracking-code
+    kind: code
+    difficulty: middle
+    title: "Implement attribute dirty tracking"
+    body: |
+      Re-create the core of `ActiveModel::Dirty`. Write a module `Dirty` that, when included,
+      provides a class macro `attribute(name)` defining a reader and a writer for `name`, plus:
+
+      - `changed?` — any attribute differs from its original value;
+      - `changes` — `{ name => [original, current] }` for changed attributes only;
+      - `changes_applied` — "the save happened": current values become the originals,
+        `changes` becomes empty, and the previous `changes` hash is exposed as `saved_changes`;
+      - `saved_change_to?(name)` — whether `name` was in the last `saved_changes`.
+
+      Setting an attribute back to its original value must remove it from `changes` (as AR does).
+
+      ```ruby
+      class Person
+        include Dirty
+        attribute :name
+        attribute :age
+      end
+
+      p = Person.new
+      p.name = "Ann"
+      p.changes            # => { name: [nil, "Ann"] }
+      p.changes_applied
+      p.changed?           # => false
+      p.saved_changes      # => { name: [nil, "Ann"] }
+      p.saved_change_to?(:name)  # => true
+      ```
+    starter_code: |
+      module Dirty
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+
+        module ClassMethods
+          def attribute(name)
+            # TODO: define name and name= that track changes
+          end
+        end
+
+        def changed?
+          # TODO
+        end
+
+        def changes
+          # TODO
+        end
+
+        def changes_applied
+          # TODO
+        end
+
+        def saved_changes
+          # TODO
+        end
+
+        def saved_change_to?(name)
+          # TODO
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class Person
+        include Dirty
+        attribute :name
+        attribute :age
+      end
+
+      class SolutionTest < Minitest::Test
+        def test_fresh_object_is_clean
+          p = Person.new
+          refute p.changed?
+          assert_equal({}, p.changes)
+          assert_equal({}, p.saved_changes)
+          assert_nil p.name
+        end
+
+        def test_tracks_changes
+          p = Person.new
+          p.name = "Ann"
+          p.age = 30
+          assert p.changed?
+          assert_equal({ name: [nil, "Ann"], age: [nil, 30] }, p.changes)
+          assert_equal "Ann", p.name
+        end
+
+        def test_keeps_original_across_multiple_writes
+          p = Person.new
+          p.name = "Ann"
+          p.name = "Bob"
+          assert_equal({ name: [nil, "Bob"] }, p.changes)
+        end
+
+        def test_reverting_removes_change
+          p = Person.new
+          p.name = "Ann"
+          p.changes_applied
+          p.name = "Bob"
+          p.name = "Ann"
+          refute p.changed?
+          assert_equal({}, p.changes)
+        end
+
+        def test_changes_applied_rotates_into_saved_changes
+          p = Person.new
+          p.name = "Ann"
+          p.changes_applied
+          refute p.changed?
+          assert_equal({ name: [nil, "Ann"] }, p.saved_changes)
+          assert p.saved_change_to?(:name)
+          refute p.saved_change_to?(:age)
+          p.age = 1
+          assert_equal({ age: [nil, 1] }, p.changes)
+          p.changes_applied
+          assert_equal({ age: [nil, 1] }, p.saved_changes)
+          refute p.saved_change_to?(:name)
+        end
+
+        def test_attributes_are_per_instance
+          a = Person.new
+          b = Person.new
+          a.name = "A"
+          refute b.changed?
+        end
+      end
+    solution: |
+      module Dirty
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+
+        module ClassMethods
+          def attribute(name)
+            define_method(name) { attributes[name] }
+            define_method("#{name}=") do |value|
+              original = originals.fetch(name) { originals[name] = attributes[name] }
+              attributes[name] = value
+              originals.delete(name) if original == value
+            end
+          end
+        end
+
+        def attributes = (@attributes ||= {})
+
+        def originals = (@originals ||= {})
+
+        def changed? = !originals.empty?
+
+        def changes = originals.to_h { |name, original| [name, [original, attributes[name]]] }
+
+        def changes_applied
+          @saved_changes = changes
+          @originals = {}
+        end
+
+        def saved_changes = (@saved_changes ||= {})
+
+        def saved_change_to?(name) = saved_changes.key?(name)
+      end
+    explanation: |
+      `ActiveModel::Dirty` keeps a `mutations_from_database` tracker: the first write to an
+      attribute records its original value, every later write compares against that original
+      (not the previous write), and writing the original back erases the change. `save` calls
+      `changes_applied`, which moves the tracker into `mutations_before_last_save`, exposed as
+      `saved_changes`/`saved_change_to_attribute?`; that is why `name_changed?` is false inside
+      `after_save` while `saved_change_to_name?` is true. The per-instance `@originals` hash is
+      the part people get wrong by storing state on the class.
+    tags: [dirty, metaprogramming, coding]
+    source: https://api.rubyonrails.org/classes/ActiveModel/Dirty.html

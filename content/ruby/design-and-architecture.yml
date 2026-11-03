@@ -1,0 +1,1767 @@
+language: ruby
+topic: design-and-architecture
+items:
+  - slug: ruby-design-srp-which-class-violates
+    kind: mcq
+    difficulty: junior
+    title: "Which class violates the Single Responsibility Principle?"
+    body: |
+      Each class below comes from a Rails app. Which one most clearly violates SRP?
+
+      ```ruby
+      class Invoice
+        def total = lines.sum(&:amount)
+        def overdue? = due_on < Date.today
+      end
+
+      class InvoiceMailer < ApplicationMailer
+        def reminder(invoice) = mail(to: invoice.customer.email)
+      end
+
+      class InvoicePdf
+        def initialize(invoice) = @invoice = invoice
+        def render = Prawn::Document.new { |pdf| pdf.text @invoice.total }
+      end
+
+      class InvoiceReport
+        def initialize(invoice) = @invoice = invoice
+        def generate
+          pdf = Prawn::Document.new { |p| p.text @invoice.total }
+          S3.upload(pdf.render, key: "invoices/#{@invoice.id}.pdf")
+          InvoiceMailer.reminder(@invoice).deliver_later
+          @invoice.update!(reported_at: Time.current)
+        end
+      end
+      ```
+    choices:
+      - "`Invoice`, because it mixes money arithmetic with date logic"
+      - "`InvoiceMailer`, because mailers should not reach into `customer.email`"
+      - "`InvoiceReport`, because it renders, uploads, emails and mutates the record"
+      - "`InvoicePdf`, because rendering belongs on the model"
+    answer: 2
+    explanation: |
+      SRP says a class should have one reason to change. `InvoiceReport#generate` changes when the
+      PDF layout changes, when storage changes, when email changes and when the persistence
+      schema changes: four axes. Describing it needs the word "and" several times, which is the
+      quick SRP smell test. `Invoice` is cohesive (it is *about* invoices), the mailer does one
+      thing, and `InvoicePdf` is exactly the kind of extraction SRP recommends. The fix is to keep
+      `InvoiceReport` as a thin orchestrator that delegates to `InvoicePdf`, a storage adapter and
+      the mailer, or to split it into a service object per step.
+    tags: [solid, srp]
+    source: "https://ieftimov.com/posts/solid-principles-ruby/"
+
+  - slug: ruby-design-ocp-duck-typing-refactor
+    kind: mcq
+    difficulty: middle
+    title: "Open/Closed with duck typing: the right refactor"
+    body: |
+      This method grows a new branch every time a payment provider is added:
+
+      ```ruby
+      def charge(payment)
+        case payment.provider
+        when :stripe then Stripe::Charge.create(amount: payment.amount)
+        when :paypal then PayPal.pay(payment.amount)
+        when :braintree then Braintree::Transaction.sale(amount: payment.amount)
+        end
+      end
+      ```
+
+      Which refactor best applies the Open/Closed Principle in idiomatic Ruby?
+    choices:
+      - "Move the `case` into `Payment#charge` so the model owns the logic"
+      - "Give each provider an object that responds to `charge(amount)` and have `Payment` hold one; `charge` becomes `payment.gateway.charge(payment.amount)`"
+      - "Replace `case` with `if payment.provider == :stripe ... elsif ...` for readability"
+      - "Add a `provider_charger` method that uses `send(\"charge_#{payment.provider}\")`"
+    answer: 1
+    explanation: |
+      OCP: open for extension, closed for modification. With duck typing you do not need an
+      abstract class, only an agreed message (`charge(amount)`). Adding Klarna then means adding a
+      `KlarnaGateway` class and registering it, without touching the existing method. Moving the
+      `case` into the model (option 1) or restyling it (option 3) still forces an edit per provider.
+      `send("charge_#{...}")` (option 4) hides the dispatch behind metaprogramming, keeps all
+      providers in one class and is hard to grep. A small factory or Hash lookup
+      (`GATEWAYS.fetch(provider)`) is the one place that still changes, and that is acceptable.
+    tags: [solid, ocp, duck-typing, polymorphism]
+    source: "https://ieftimov.com/posts/solid-principles-ruby/"
+
+  - slug: ruby-design-lsp-violation-subclass
+    kind: mcq
+    difficulty: middle
+    title: "Which subclass breaks the Liskov Substitution Principle?"
+    body: |
+      ```ruby
+      class Repository
+        def find(id) = store.fetch(id) { raise NotFound }
+        def save(record) = store[record.id] = record
+        def all = store.values
+      end
+
+      class CachedRepository < Repository
+        def find(id) = cache.fetch(id) { super }
+      end
+
+      class ReadOnlyRepository < Repository
+        def save(_record) = raise NotImplementedError, "read-only"
+      end
+
+      class AuditedRepository < Repository
+        def save(record)
+          super.tap { AuditLog.record(:saved, record.id) }
+        end
+      end
+      ```
+
+      Callers are written against `Repository`. Which subclass violates LSP?
+    choices:
+      - "`CachedRepository`, because caching changes performance characteristics"
+      - "`AuditedRepository`, because it adds a side effect to `save`"
+      - "`ReadOnlyRepository`, because `save` no longer honours the base contract"
+      - "None: Ruby is duck-typed so LSP does not apply"
+    answer: 2
+    explanation: |
+      LSP: anywhere the base type is expected, a subtype must work without the caller knowing.
+      `ReadOnlyRepository` narrows the contract: code that calls `repo.save` on a `Repository`
+      now blows up. The textbook square/rectangle problem is the same shape. Caching preserves
+      the contract (same result, possibly faster), and an extra audit side effect does not break
+      postconditions callers rely on. Duck typing does not exempt Ruby: LSP is about behavioural
+      contracts, not static types; `raise NotImplementedError` in a subclass is the most common
+      Ruby LSP smell. Fix: split the interface (ISP) into reader and writer roles so read-only
+      callers depend only on `find`/`all`.
+    tags: [solid, lsp]
+    source: "https://en.wikipedia.org/wiki/Liskov_substitution_principle"
+
+  - slug: ruby-design-law-of-demeter-delegate
+    kind: mcq
+    difficulty: junior
+    title: "Law of Demeter and `delegate`"
+    body: |
+      ```ruby
+      class Order < ApplicationRecord
+        belongs_to :customer
+        delegate :email, to: :customer, prefix: true, allow_nil: true
+      end
+      ```
+
+      In a view you need the customer's email for an `order`. Which call best respects the Law
+      of Demeter, and what does it return when the order has no customer?
+    choices:
+      - "`order.customer.email`; raises `NoMethodError` when customer is nil"
+      - "`order.customer_email`; returns `nil` when customer is nil"
+      - "`order.customer&.email`; this is what `delegate` expands to, so both are equivalent"
+      - "`order.email`; `delegate` without a prefix is the default"
+    answer: 1
+    explanation: |
+      Demeter ("only talk to your immediate friends") is violated by `order.customer.email`,
+      which couples the view to `Order`'s internal structure. `delegate :email, to: :customer,
+      prefix: true` defines `customer_email`, and `allow_nil: true` makes it return `nil` instead
+      of raising `ActiveSupport::DelegationError` when the target is nil. Option 3 is wrong: the
+      safe-navigation operator still reaches through the association, and `delegate` does not
+      expand to `&.`; it also raises if the target is non-nil but does not respond to the method.
+      Fowler calls Demeter the "Occasionally Useful Suggestion", so note that chaining through
+      value objects or query builders (`scope.where(...).order(...)`) is not a violation.
+    tags: [law-of-demeter, delegate, rails]
+    source: "https://api.rubyonrails.org/classes/Module.html#method-i-delegate"
+
+  - slug: ruby-design-http-idempotent-methods
+    kind: mcq
+    difficulty: junior
+    title: "Which HTTP methods are idempotent?"
+    body: |
+      Per RFC 9110 (HTTP Semantics), which set lists exactly the standard methods that are
+      defined as idempotent?
+    choices:
+      - "GET, HEAD, OPTIONS, TRACE only (the safe methods)"
+      - "GET, POST, PUT, DELETE"
+      - "GET, HEAD, PUT, PATCH, DELETE"
+      - "GET, HEAD, PUT, DELETE, OPTIONS, TRACE"
+    answer: 3
+    explanation: |
+      Idempotent means the intended effect of N identical requests equals that of one. All safe
+      methods (GET, HEAD, OPTIONS, TRACE) are idempotent, and so are PUT (replace the resource)
+      and DELETE (it is gone either way). POST is not: a repeated POST can create a second order.
+      PATCH is not idempotent by definition: a patch like "append an item" or "increment" changes
+      the result each time, although a specific patch document *can* be idempotent. This matters
+      in practice because clients and proxies may automatically retry idempotent requests, which
+      is why non-idempotent POSTs need an idempotency key.
+    tags: [http, rest, idempotency]
+    source: "https://www.rfc-editor.org/rfc/rfc9110.html#section-9.2.2"
+
+  - slug: ruby-design-put-vs-patch
+    kind: mcq
+    difficulty: junior
+    title: "PUT vs PATCH for updating a user"
+    body: |
+      A client sends `{ "name": "Ann" }` to update a user that also has an `email` field. Which
+      statement is correct?
+    choices:
+      - "PUT should replace the whole representation, so a strict server would clear `email`; PATCH applies a partial modification and leaves `email` alone"
+      - "PUT and PATCH are interchangeable; Rails routes `update` to both so there is no semantic difference"
+      - "PATCH replaces the whole representation; PUT is for partial updates"
+      - "PUT must return 201 Created while PATCH must return 200 OK"
+    answer: 0
+    explanation: |
+      RFC 9110 defines PUT as "replace the state of the target resource with the enclosed
+      representation", so a strictly conforming server would treat missing fields as removed.
+      RFC 5789 introduced PATCH precisely because PUT cannot express partial changes. Rails
+      routes both to `update` and most apps implement partial semantics for both, which is
+      pragmatic but worth acknowledging in an interview. Status codes are not tied to the method:
+      PUT can return 200, 204 or 201 (if it created the resource). Follow-up: PUT is idempotent,
+      PATCH is not necessarily, so PATCH retries need care.
+    tags: [http, rest]
+    source: "https://www.rfc-editor.org/rfc/rfc5789"
+
+  - slug: ruby-design-status-code-validation-vs-conflict
+    kind: mcq
+    difficulty: middle
+    title: "Pick the status code: validation failure vs. duplicate"
+    body: |
+      Your JSON API has `POST /signups`. Two failure cases: (a) the request body is well-formed
+      JSON but `email` is blank, (b) the email is already registered. Which pair of status codes
+      is the most conventional?
+    choices:
+      - "(a) 400 Bad Request, (b) 500 Internal Server Error"
+      - "(a) 422 Unprocessable Content, (b) 409 Conflict"
+      - "(a) 422 Unprocessable Content, (b) 422 Unprocessable Content"
+      - "(a) 406 Not Acceptable, (b) 403 Forbidden"
+    answer: 1
+    explanation: |
+      422 means the server understood the content type and syntax but cannot process the
+      semantics, which is exactly a validation failure (Rails scaffolds use it for failed saves).
+      409 means the request conflicts with the current state of the resource, the standard choice
+      for uniqueness collisions and optimistic-locking failures. 400 is for malformed requests
+      (bad JSON), 500 is a server bug, 406 concerns `Accept` negotiation and 403 is
+      authorisation. Option 3 is defensible (many APIs return 422 for both) but loses information
+      a client can act on, such as "offer to log in instead". Senior follow-up: use RFC 9457
+      `application/problem+json` bodies to carry machine-readable error details.
+    tags: [http, rest, status-codes]
+    source: "https://www.rfc-editor.org/rfc/rfc9110.html"
+
+  - slug: ruby-design-composite-index-column-order
+    kind: mcq
+    difficulty: middle
+    title: "Composite index column order"
+    body: |
+      This query runs thousands of times per minute on a 50M-row table:
+
+      ```sql
+      SELECT * FROM events
+      WHERE account_id = $1 AND created_at > $2
+      ORDER BY created_at DESC LIMIT 50;
+      ```
+
+      Which single B-tree index serves it best?
+    choices:
+      - "`(created_at, account_id)`"
+      - "Two separate indexes on `account_id` and `created_at`; the planner combines them"
+      - "`(account_id)` only; the `created_at` range is cheap to filter afterwards"
+      - "`(account_id, created_at)`"
+    answer: 3
+    explanation: |
+      For a multicolumn B-tree, equality predicates on the *leading* columns narrow the scanned
+      range, and a range predicate works on the first column that lacks an equality constraint.
+      With `(account_id, created_at)` the planner jumps to the account's slice, walks it in
+      `created_at` order (backwards for `DESC`) and stops after 50 rows: no sort. With
+      `(created_at, account_id)` it must scan every event after `$2` for all accounts and filter.
+      Two separate indexes can be combined by a bitmap scan but lose the ordering, so a sort
+      step remains. Rule of thumb: equality columns first, then the range/sort column; verify with
+      `EXPLAIN (ANALYZE, BUFFERS)`.
+    tags: [database, indexes, postgres]
+    source: "https://www.postgresql.org/docs/current/indexes-multicolumn.html"
+
+  - slug: ruby-design-partial-and-covering-index
+    kind: mcq
+    difficulty: middle
+    title: "Partial index or covering index?"
+    body: |
+      `jobs` has 100M rows; 99.9% have `status = 'done'`. The worker polls:
+
+      ```sql
+      SELECT id, queue FROM jobs WHERE status = 'pending' ORDER BY id LIMIT 100;
+      ```
+
+      Which index is the best fit?
+    choices:
+      - "`CREATE INDEX ON jobs (status)`"
+      - "`CREATE INDEX ON jobs (status, id) INCLUDE (queue)`"
+      - "`CREATE INDEX ON jobs (id) INCLUDE (queue) WHERE status = 'pending'`"
+      - "`CREATE INDEX ON jobs (queue, status)`"
+    answer: 2
+    explanation: |
+      A *partial* index (`WHERE status = 'pending'`) contains only the tiny live subset, so it is
+      small, cheap to maintain and stays hot in memory; ordering by `id` inside it satisfies the
+      `ORDER BY ... LIMIT`. Adding `INCLUDE (queue)` makes it *covering*, so the query can be an
+      index-only scan (subject to the visibility map). Option 2 works but indexes all 100M rows
+      and the `status` column is pointless when the predicate is constant. Option 1 gives a huge
+      low-selectivity index and a sort. The planner only uses a partial index when the query's
+      `WHERE` provably implies the index predicate, so the literal `'pending'` must match.
+    tags: [database, indexes, postgres]
+    source: "https://www.postgresql.org/docs/current/indexes-partial.html"
+
+  - slug: ruby-design-isolation-level-lost-update
+    kind: mcq
+    difficulty: senior
+    title: "Lost update under READ COMMITTED"
+    body: |
+      Two Sidekiq workers run this concurrently against PostgreSQL (default isolation level) for
+      the same account:
+
+      ```ruby
+      Account.transaction do
+        account = Account.find(id)          # balance 100
+        account.update!(balance: account.balance - 30)
+      end
+      ```
+
+      What is the final balance, and what is the minimal fix?
+    choices:
+      - "40; transactions serialise automatically, so no fix is needed"
+      - "70 always; fix by switching the whole database to SERIALIZABLE"
+      - "70 in some runs (a lost update); fix with `Account.lock.find(id)` (`SELECT ... FOR UPDATE`) or an atomic `UPDATE ... SET balance = balance - 30`"
+      - "A deadlock error; fix by retrying the job"
+    answer: 2
+    explanation: |
+      PostgreSQL defaults to READ COMMITTED. Both transactions read 100, both compute 70, the
+      second `UPDATE` waits for the first to commit, then overwrites with its stale 70: a lost
+      update. Fixes, from smallest: do the arithmetic in SQL (`update_counters` /
+      `balance = balance - 30`), take a row lock first (`lock.find`, pessimistic), or use
+      optimistic locking with a `lock_version` column and retry on `StaleObjectError`.
+      REPEATABLE READ or SERIALIZABLE would detect the conflict and abort one transaction, which
+      also needs retry logic and is a heavy global change. No deadlock occurs here because both
+      touch a single row in the same order.
+    tags: [database, transactions, isolation, locking]
+    source: "https://www.postgresql.org/docs/current/transaction-iso.html"
+
+  - slug: ruby-design-offset-vs-cursor-pagination
+    kind: mcq
+    difficulty: middle
+    title: "Why cursor pagination for an activity feed?"
+    body: |
+      An infinite-scrolling activity feed uses `?page=37&per=50` (`OFFSET 1800 LIMIT 50`). Users
+      report duplicated and missing items while scrolling, and page 500 is slow. Which change
+      addresses both problems?
+    choices:
+      - "Switch to keyset/cursor pagination: `WHERE (created_at, id) < ($cursor_ts, $cursor_id) ORDER BY created_at DESC, id DESC LIMIT 50`"
+      - "Add an index on `created_at`; OFFSET will then be O(1)"
+      - "Cache each page in Redis for 5 minutes"
+      - "Increase `per` to 500 so fewer requests are made"
+    answer: 0
+    explanation: |
+      OFFSET must still read and discard the skipped rows, so cost grows linearly with page depth
+      regardless of indexes, and because new rows shift every later page, concurrent inserts
+      cause duplicates and gaps. A keyset cursor anchors on the last item seen (`created_at, id`
+      as a tiebreaker), so each page is an index range scan with stable results under writes.
+      The trade-offs to state: no random access to page N, the cursor must be opaque and encode
+      the sort key, and sorting by a non-unique column needs a tiebreaker. Caching masks the
+      latency but not the consistency bug; bigger pages make both worse.
+    tags: [pagination, api-design, database]
+    source: "https://publicapi.dev/article/cursor-vs-offset-pagination"
+
+  - slug: ruby-design-exactly-once-myth-sidekiq
+    kind: mcq
+    difficulty: middle
+    title: "Which delivery guarantee does Sidekiq give?"
+    body: |
+      A job charges a customer's card and then marks the order paid. A deploy restarts the worker
+      mid-job. Which statement is correct?
+    choices:
+      - "Sidekiq guarantees exactly-once execution, so the job will not run again"
+      - "Sidekiq is at-most-once: the job is lost on restart, so wrap it in a database transaction"
+      - "Using `sidekiq_options retry: false` makes the job exactly-once"
+      - "Sidekiq is at-least-once: the job may run again, so the job must be idempotent (e.g. an idempotency key on the charge and a guard on the order state)"
+    answer: 3
+    explanation: |
+      Sidekiq (like every queue over an unreliable network) delivers at least once: a job can be
+      re-run after a crash, a timeout, or a Redis hiccup before acknowledgement, and retries add
+      more runs. Exactly-once *delivery* is impossible in general; what you can achieve is
+      exactly-once *effect* by making the work idempotent: pass an idempotency key to the payment
+      provider, check `order.paid?` before acting, use unique constraints, and keep each job
+      small. `retry: false` only disables automatic retries; it does not prevent re-delivery.
+      Pro's `super_fetch` reduces job loss, which is the opposite problem.
+    tags: [background-jobs, sidekiq, idempotency]
+    source: "https://github.com/sidekiq/sidekiq/wiki/Best-Practices"
+
+  - slug: ruby-design-token-bucket-vs-sliding-window
+    kind: mcq
+    difficulty: middle
+    title: "Token bucket or sliding window?"
+    body: |
+      Requirement: "Clients may average 10 requests per second, and we want to allow short bursts
+      of up to 50 requests, but never more than 10/s sustained." Which algorithm matches this
+      directly?
+    choices:
+      - "Fixed window counter: 10 requests per 1-second window"
+      - "Sliding window log with a 1-second window and limit 10"
+      - "Token bucket with capacity 50 and refill rate 10 tokens per second"
+      - "Leaky bucket with an outflow of 10 per second and no queue"
+    answer: 2
+    explanation: |
+      A token bucket has two knobs that map exactly onto the requirement: capacity = maximum
+      burst, refill rate = sustained average. Sliding window log and fixed window express only a
+      count per window; they cannot allow a 50-request burst without also raising the sustained
+      limit, and fixed windows additionally let 2x the limit through at window boundaries. The
+      leaky bucket smooths output to a constant rate, which is the opposite of allowing bursts.
+      Implementation note: store `tokens` and `last_refill` per key and refill lazily on each
+      request (`tokens = min(capacity, tokens + elapsed * rate)`), atomically in Redis via Lua.
+    tags: [rate-limiting, algorithms]
+    source: "https://en.wikipedia.org/wiki/Token_bucket"
+
+  - slug: ruby-design-code-smell-identify
+    kind: mcq
+    difficulty: middle
+    title: "Name the code smell"
+    body: |
+      ```ruby
+      class OrderSummary
+        def initialize(order) = @order = order
+
+        def shipping_label
+          "#{@order.customer.name}\n#{@order.customer.address.street}\n" \
+            "#{@order.customer.address.zip} #{@order.customer.address.city}"
+        end
+      end
+      ```
+
+      Which smell does `shipping_label` most clearly exhibit, and what is the standard refactoring?
+    choices:
+      - "Feature Envy; apply Move Method so the formatting lives next to the data it uses (e.g. `Address#to_label`)"
+      - "Shotgun Surgery; apply Move Field"
+      - "Primitive Obsession; apply Replace Data Value with Object"
+      - "Long Parameter List; apply Introduce Parameter Object"
+    answer: 0
+    explanation: |
+      A method that is more interested in another object's data than its own is Feature Envy, and
+      it usually also violates the Law of Demeter (the `customer.address.x` chains). Move Method
+      puts `to_label` on `Address` (and perhaps `Customer#label`), so `OrderSummary` just asks.
+      Shotgun Surgery is the opposite symptom (one change touches many classes), Primitive
+      Obsession would be representing the address as loose strings/hashes (possibly the *next*
+      smell here), and the parameter list is fine. Interviewers expect you to name the smell,
+      the refactoring, and the trade-off: moving behaviour into `Address` makes it reusable but
+      can bloat the model if every presentation concern lands there.
+    tags: [refactoring, code-smells]
+    source: "https://refactoring.guru/refactoring/smells"
+
+  - slug: ruby-design-identify-gof-pattern
+    kind: mcq
+    difficulty: middle
+    title: "Which GoF pattern is this?"
+    body: |
+      ```ruby
+      class ReportBuilder
+        def initialize = @sections = []
+        def title(text)  = tap { @sections << "# #{text}" }
+        def table(rows)  = tap { @sections << rows.map { |r| r.join(" | ") }.join("\n") }
+        def footer(text) = tap { @sections << "-- #{text}" }
+        def build        = @sections.join("\n\n")
+      end
+
+      ReportBuilder.new.title("Sales").table([[1, 2]]).footer("end").build
+      ```
+    choices:
+      - "Builder: step-by-step construction of a complex product through a fluent interface"
+      - "Factory Method: a method that decides which concrete class to instantiate"
+      - "Command: each call is an object that can be queued and undone"
+      - "Adapter: it converts the rows interface into a string interface"
+    answer: 0
+    explanation: |
+      Builder separates the construction of a complex object from its representation and lets
+      the same steps produce different outputs (a `HtmlReportBuilder` with the same methods).
+      The fluent `tap`-returning-self style is the Ruby idiom (`Nokogiri::XML::Builder`, Arel,
+      `ActionMailer` chains). Factory Method would be about *which class* to create, Command
+      would reify each operation as an object with `call`/`undo`, and Adapter wraps an existing
+      object to match an interface the client expects. Follow-up: when is a Builder overkill in
+      Ruby? When keyword arguments with defaults (`Report.new(title:, rows:, footer:)`) are enough.
+    tags: [design-patterns, builder]
+    source: "https://refactoring.guru/design-patterns/builder"
+
+  - slug: ruby-design-tell-dont-ask
+    kind: theory
+    difficulty: junior
+    title: "Tell, Don't Ask"
+    body: |
+      **Tell, Don't Ask** says: instead of querying an object's state and deciding on its behalf,
+      send it a message and let it decide. It keeps behaviour next to the data it needs.
+
+      Asking:
+
+      ```ruby
+      if user.subscription.active? && user.subscription.plan == :pro
+        user.subscription.features << :api_access
+      end
+      ```
+
+      Telling:
+
+      ```ruby
+      user.subscription.grant(:api_access)
+
+      class Subscription
+        def grant(feature)
+          return unless active? && plan == :pro
+          features << feature
+        end
+      end
+      ```
+
+      Benefits: the rule lives in one place, callers cannot get it subtly wrong, and the object's
+      internals (`features` being an Array) can change. It overlaps with the Law of Demeter but is
+      about *who decides*, not about chain length.
+
+      Limits: query methods are fine and necessary (views must ask). Fowler notes he does not
+      treat it as a hard rule; the goal is co-locating data and behaviour, not banning getters.
+      Over-applying it leads to objects with dozens of `do_x_if_y` methods.
+    answer: |
+      **Q:** Why is `order.update(status: :shipped) if order.items.all?(&:packed?)` in a controller
+      an "ask" smell, and what would the "tell" version look like?
+      **A:** The controller inspects the order's internals and applies a business rule that belongs
+      to `Order`. Tell version: `order.ship!`, where `Order#ship!` checks `items.all?(&:packed?)`
+      itself and raises or returns a result when the precondition fails.
+    explanation: |
+      Follow-ups interviewers add: "doesn't this make `Subscription` fat?" (it can; group rules
+      into small policy/value objects it delegates to), "how do you test the rule now?" (unit
+      test `Subscription#grant` directly, no controller needed), and "where do views fit?" (views
+      ask; that is fine, the smell is *deciding* on another object's behalf). A common mistake
+      is to apply it mechanically and ban all getters.
+    tags: [tell-dont-ask, oop]
+    source: "https://martinfowler.com/bliki/TellDontAsk.html"
+
+  - slug: ruby-design-value-objects
+    kind: theory
+    difficulty: junior
+    title: "Value objects in Ruby"
+    body: |
+      A **value object** is defined by its attributes, not its identity: two `Money.new(500, "EUR")`
+      are the same thing. Properties: immutable, equality by value (`==`, `eql?`, `hash`), usually
+      `Comparable`, and often a `to_s`.
+
+      Ruby 3.2+ gives you most of it with `Data`:
+
+      ```ruby
+      Money = Data.define(:cents, :currency) do
+        include Comparable
+
+        def <=>(other)
+          raise ArgumentError, "currency mismatch" unless currency == other.currency
+          cents <=> other.cents
+        end
+
+        def +(other) = with(cents: cents + other.cents)
+        def to_s = format("%.2f %s", cents / 100.0, currency)
+      end
+
+      a = Money.new(cents: 500, currency: "EUR")
+      a == Money.new(500, "EUR")  # => true  (value equality, positional or keyword)
+      a.frozen?                   # => true
+      { a => 1 }[Money.new(500, "EUR")] # => 1
+      ```
+
+      Why bother: replacing "primitive obsession" (`amount` + `currency` floats and strings passed
+      around separately) with one object gives the rules a home (rounding, currency checks),
+      makes invalid states unrepresentable, and makes tests trivial. Typical candidates: Money,
+      DateRange, EmailAddress, Coordinates, Percentage. Rails: `composed_of` or a custom
+      `ActiveRecord::Type` to map a value object to columns.
+    answer: |
+      **Q:** `Struct.new(:cents, :currency)` also gives value equality. What does `Data` add,
+      and what is still missing for a proper value object?
+      **A:** `Data` instances are immutable (no setters, frozen) and reject missing/extra
+      arguments; `Struct` is mutable and lenient. Still up to you: validation in `initialize`,
+      domain operations, `Comparable`, and refusing to compare across currencies.
+    explanation: |
+      Follow-ups: "how do you persist a value object in ActiveRecord?" (`composed_of`, a custom
+      `ActiveRecord::Type`, or two columns plus a reader that builds the object), "why must
+      `hash` and `eql?` agree?" (Hash lookup uses both; mismatch breaks `uniq` and Hash keys),
+      and "why immutable?" (sharing is safe, equality is stable, and `with` makes changes
+      explicit). Common mistake: mutable Structs used as Hash keys.
+    tags: [value-object, data, comparable]
+    source: "https://docs.ruby-lang.org/en/3.3/Data.html"
+
+  - slug: ruby-design-null-object-pattern
+    kind: theory
+    difficulty: middle
+    title: "Null Object pattern (\"Nothing is Something\")"
+    body: |
+      The **Null Object** pattern replaces `nil` checks with an object that has the same interface
+      as the real thing and does nothing (or something sensible) when asked. Sandi Metz's
+      "Nothing is Something" talk calls this *active nothing*.
+
+      Before:
+
+      ```ruby
+      class Order
+        def discount_amount
+          coupon ? coupon.discount_for(total) : 0
+        end
+
+        def discount_label
+          coupon ? coupon.label : "No discount"
+        end
+      end
+      ```
+
+      After:
+
+      ```ruby
+      class NoCoupon
+        def discount_for(_total) = 0
+        def label = "No discount"
+        def applicable? = false
+      end
+
+      class Order
+        def coupon = @coupon || NoCoupon.new
+        def discount_amount = coupon.discount_for(total)
+        def discount_label = coupon.label
+      end
+      ```
+
+      Benefits: the conditional is written once (in the factory/reader) instead of at every call
+      site; new behaviour is added by extending `NoCoupon`, not by touching callers.
+
+      Costs and pitfalls: the null object must track the real interface (a forgotten method
+      returns `NoMethodError` far from the cause, or worse, silently succeeds); `if coupon` checks
+      now always pass, so provide an explicit predicate (`applicable?`) or make it falsy on
+      purpose; and sometimes `nil` *is* the right answer (a lookup that failed should not pretend).
+      Rails examples: `Guest` user objects, `NullLogger`, `ActiveSupport::Logger.new(nil)`.
+    answer: |
+      **Q:** When is a Null Object the wrong choice?
+      **A:** When callers genuinely need to know the thing is absent (then they will all add
+      `is_a?(NoCoupon)` checks, which is worse than `nil`), when the "do nothing" behaviour would
+      hide a bug (e.g. a missing payment gateway silently "charging" 0), or when there is only one
+      call site and a single conditional is clearer.
+    explanation: |
+      Follow-ups: "how does this relate to polymorphism and conditionals?" (it is the same move
+      as replacing `case` with objects, applied to absence), "what about `nil` from the database?"
+      (wrap at the boundary: the association reader returns the null object), and "how do you
+      keep the null object's interface in sync?" (shared interface tests run against both
+      classes). Common mistake: a null object that returns `nil` from every method, which only
+      moves the `nil` check one call later.
+    tags: [null-object, design-patterns, sandi-metz]
+    source: "https://www.rubyevents.org/talks/nothing-is-something-railsconf-2015"
+
+  - slug: ruby-design-composition-over-inheritance
+    kind: theory
+    difficulty: middle
+    title: "Composition over inheritance"
+    body: |
+      Inheritance says "is-a" and shares *implementation*; composition says "has-a" and shares
+      *behaviour through collaborators*. Ruby makes both cheap, so the question is which one keeps
+      change local.
+
+      Inheritance goes wrong when the hierarchy has to express two independent axes:
+
+      ```ruby
+      class Report; end
+      class PdfReport < Report; end
+      class CsvReport < Report; end
+      class EmailedPdfReport < PdfReport; end   # now add EmailedCsvReport, S3PdfReport ...
+      ```
+
+      Composition injects the varying parts:
+
+      ```ruby
+      class Report
+        def initialize(formatter:, delivery:)
+          @formatter = formatter
+          @delivery = delivery
+        end
+
+        def run(data) = @delivery.send(@formatter.format(data))
+      end
+
+      Report.new(formatter: PdfFormatter.new, delivery: EmailDelivery.new(to: "x@y.z"))
+      ```
+
+      Each axis is a small role with a duck-typed interface; combinations are free, tests swap in
+      fakes, and no class needs to know its siblings. Modules (`include`) are still inheritance
+      (they sit in the ancestor chain): good for shared *behaviour* that genuinely belongs to the
+      including class (`Comparable`, `Enumerable`), bad as a dumping ground for unrelated methods.
+
+      Keep inheritance for true specialisation with a stable base (`ApplicationRecord`,
+      `StandardError` subclasses, Template Method). Sandi Metz's test: "would I describe the
+      subclass as a *kind of* the superclass, and does it use most of what it inherits?"
+    answer: |
+      **Q:** You are asked to add "SMS delivery" and "XLSX format" to the inheritance version.
+      How many classes do you add in each design, and why does that matter?
+      **A:** Inheritance: up to one subclass per combination (XLSX x {email, s3, sms} + SMS x
+      {pdf, csv}), five or more. Composition: two classes, `XlsxFormatter` and `SmsDelivery`.
+      The combinatorial explosion is the signal that two axes of variation were being modelled
+      with one hierarchy.
+    explanation: |
+      Follow-ups: "is `include` composition?" (no, modules enter the ancestor chain and share
+      implementation; `Forwardable`/`delegate` to a collaborator is composition), "when is
+      inheritance the right call?" (stable base with true specialisation and shallow depth, e.g.
+      `StandardError` subclasses), and "how do you spot the wrong abstraction?" (subclasses
+      overriding most of the parent or raising `NotImplementedError`). Common mistake: STI
+      hierarchies used for behaviour that is really a strategy.
+    tags: [composition, inheritance, oop]
+    source: "https://www.rubyevents.org/talks/nothing-is-something-railsconf-2015"
+
+  - slug: ruby-design-result-pattern-dry-monads
+    kind: theory
+    difficulty: middle
+    title: "Result objects and dry-monads"
+    body: |
+      Service objects need a way to say "it failed, and here is why" without exceptions for
+      expected outcomes. The **Result pattern** returns an object that is either a `Success(value)`
+      or a `Failure(error)`, and the caller branches explicitly.
+
+      Hand-rolled:
+
+      ```ruby
+      Result = Data.define(:ok, :value, :error) do
+        def self.ok(v) = new(true, v, nil)
+        def self.fail(e) = new(false, nil, e)
+        def success? = ok
+      end
+      ```
+
+      With dry-monads and Do notation:
+
+      ```ruby
+      class PlaceOrder
+        include Dry::Monads[:result, :do]
+
+        def call(params)
+          cart  = yield find_cart(params[:cart_id])        # Failure short-circuits here
+          total = yield price(cart)
+          order = yield persist(cart, total)
+          Success(order)
+        end
+
+        def find_cart(id) = (c = Cart.find_by(id:)) ? Success(c) : Failure(:cart_not_found)
+      end
+
+      case PlaceOrder.new.call(params)
+      in Success(order) then redirect_to order
+      in Failure(:cart_not_found) then head :not_found
+      in Failure(err) then render_error(err)
+      end
+      ```
+
+      Why: failures become part of the method's return type, every caller is forced to handle
+      them, and steps compose (`yield` unwraps a Success or returns the Failure early). This is
+      the "railway" style of Interactor and Trailblazer operations.
+
+      When exceptions are still right: truly exceptional, unrecoverable conditions (connection
+      lost, bug), and crossing boundaries where callers cannot do anything useful. Pitfalls:
+      wrapping everything in Results so callers drown in `.value!`, and mixing both styles so some
+      failures raise and others return.
+    answer: |
+      **Q:** What does `yield` do inside a dry-monads Do block, and what happens on a `Failure`?
+      **A:** `yield` unwraps a `Success` and returns its value; on a `Failure` it immediately
+      returns that `Failure` from `call`, skipping the remaining steps (the Do notation
+      implements this with a `throw`/`catch` internally).
+    explanation: |
+      Follow-ups: "why not raise and rescue in the controller?" (expected outcomes are control
+      flow, not exceptions; exceptions are invisible in signatures and expensive), "how does this
+      interact with transactions?" (a `Failure` returned from inside `transaction` does not roll
+      back; raise `ActiveRecord::Rollback` or run the transaction around the steps that need it),
+      and "what about Rails `ActiveModel::Errors`?" (fine for form validation; Result is for
+      multi-step operations). Common mistake: `Failure("string")` everywhere, which is untyped
+      and unmatchable; prefer symbols or small error objects.
+    tags: [result, dry-monads, service-objects, pattern-matching]
+    source: "https://hanakai.org/learn/dry/dry-monads/result/"
+
+  - slug: ruby-design-outbox-and-idempotency-keys
+    kind: theory
+    difficulty: senior
+    title: "Transactional outbox and idempotency keys"
+    body: |
+      The dual-write problem: `Order.transaction { order.save!; EventBus.publish(...) }` can commit
+      the row and then fail to publish (or publish and then roll back). A **transactional outbox**
+      fixes it by writing the event *in the same transaction* and letting a relay publish later.
+
+      ```ruby
+      Order.transaction do
+        order.save!
+        OutboxEvent.create!(aggregate: order, type: "order.placed",
+                            payload: order.as_json, idempotency_key: SecureRandom.uuid)
+      end
+
+      # relay (cron/Sidekiq/CDC): read unpublished rows in id order, publish, mark published
+      ```
+
+      Guarantees: the event exists iff the order committed (atomic). The relay is at-least-once
+      (it may crash between publish and mark), so consumers must deduplicate on the event's key.
+
+      **Idempotency keys** are the same idea for inbound requests: the client sends a unique
+      `Idempotency-Key` header with a POST; the server stores the key with the response and
+      returns the stored response for retries, within a TTL (Stripe keeps keys 24h and rejects
+      reuse with different parameters). Implementation: insert the key in a unique-indexed table
+      *before* doing the work (reserve), do the work, store the result; a concurrent duplicate
+      hits the unique constraint and either waits or returns 409.
+
+      Together these turn "exactly once" from a transport promise into an application property:
+      at-least-once delivery + idempotent handling = effectively once.
+    answer: |
+      **Q:** Why is "publish inside `after_commit`" not equivalent to an outbox?
+      **A:** `after_commit` runs after the transaction, so a process crash or broker outage in
+      that window loses the event with no record of it, and a successful publish followed by a
+      failed in-memory step cannot be rolled back. The outbox keeps the fact that an event is
+      owed in durable storage, so a relay can always catch up.
+    explanation: |
+      Follow-ups: "how do you keep the outbox table small?" (delete or archive published rows,
+      partition by time), "ordering guarantees?" (per aggregate, by publishing in id order with
+      one relay per partition), "what does the consumer need?" (a processed-events table with a
+      unique index on event id, checked in the same transaction as the side effect), and "when
+      is change data capture (Debezium) better than a polling relay?" (high volume, no relay
+      code). Common mistake: generating the idempotency key on the server per attempt, which
+      defeats the purpose.
+    tags: [outbox, idempotency, messaging, transactions]
+    source: "https://microservices.io/patterns/data/transactional-outbox.html"
+
+  - slug: ruby-design-circuit-breaker-and-backoff
+    kind: theory
+    difficulty: senior
+    title: "Circuit breaker, retries, backoff and jitter"
+    body: |
+      Remote calls fail. Two complementary tools keep a slow dependency from taking you down.
+
+      **Retry with exponential backoff and jitter.** Retry only idempotent operations and only
+      transient errors (timeouts, 429, 503), wait `base * 2**attempt` capped at a maximum, and
+      randomise the wait so thousands of clients do not retry in lockstep (the "thundering herd").
+      AWS's analysis shows *full jitter* (`sleep(rand(0..cap_exp))`) gives the least total work:
+
+      ```ruby
+      def with_retries(max: 5, base: 0.1, cap: 5.0)
+        attempt = 0
+        begin
+          yield
+        rescue Net::OpenTimeout, Net::ReadTimeout => e
+          raise if (attempt += 1) >= max
+          sleep rand(0..[cap, base * 2**attempt].min)
+          retry
+        end
+      end
+      ```
+
+      **Circuit breaker** (Fowler, 2014) stops calling a dependency that is clearly down. Three
+      states: *closed* (calls pass, failures counted), *open* (calls fail fast without touching
+      the dependency, after the failure threshold), *half-open* (after a timeout, let one trial
+      call through; success closes the circuit, failure re-opens it). Fail fast protects your own
+      thread pool and gives the dependency room to recover. Gems: `circuitbox`, `stoplight`,
+      `semian` (Shopify, also protects connection pools).
+
+      Together: retries handle blips, the breaker handles outages, and a *retry budget* or a
+      per-request timeout prevents retries from multiplying load during an outage. Always set
+      timeouts first; without them neither pattern can work.
+    answer: |
+      **Q:** Why is retrying immediately (no backoff) or with fixed backoff worse than
+      exponential backoff with jitter, and what is the half-open state for?
+      **A:** Immediate/fixed retries synchronise clients and amplify load exactly when the
+      dependency is struggling; exponential growth reduces pressure and jitter de-synchronises
+      the clients. Half-open lets the breaker probe recovery with a single call instead of
+      flooding the dependency the moment the timeout expires.
+    explanation: |
+      Follow-ups: "where does the breaker state live in a multi-process Puma/Sidekiq setup?"
+      (per process by default, which means N breakers trip independently; shared state in Redis
+      is possible but adds a dependency), "how do you test it?" (inject a clock and a failing
+      double; assert state transitions), and "what do you return when open?" (a fast error,
+      a cached/stale value, or a degraded default, decided per call site). Common mistakes:
+      retrying non-idempotent calls, retrying 4xx errors, and unbounded retries without a cap.
+    tags: [circuit-breaker, retries, resilience]
+    source: "https://martinfowler.com/bliki/CircuitBreaker.html"
+
+  - slug: ruby-design-operability-twelve-factor-flags-observability
+    kind: theory
+    difficulty: senior
+    title: "Operability: 12-factor config, feature flags, observability"
+    body: |
+      Three things interviewers expect a senior Rails engineer to run an app with.
+
+      **12-factor config.** Anything that varies between deploys (DB URL, API keys, feature
+      limits) lives in the environment, not in code or checked-in YAML. In Rails: `ENV.fetch("X")`
+      (fail loudly on missing keys), encrypted `credentials.yml.enc` with `RAILS_MASTER_KEY` in
+      the environment, and one codebase deployed many times. Other factors you should be able to
+      name: stateless processes, backing services as attached resources, logs as event streams to
+      stdout, dev/prod parity.
+
+      **Feature flags** decouple deploy from release. Hodgson's taxonomy: *release* toggles
+      (trunk-based development, short-lived), *experiment* toggles (A/B), *ops* toggles (kill
+      switches for expensive features), *permission* toggles (beta users). Design rules: evaluate
+      a flag once per request at the edge, not deep in models; give every flag an owner and an
+      expiry; delete release toggles after rollout, because stale flags are dead code with a
+      combinatorial test surface. Gems: `flipper`.
+
+      **Observability** = logs (discrete events with context: request id, user id, in JSON),
+      metrics (aggregates over time: p95 latency, error rate, queue depth; cheap to store, good
+      for alerts), traces (one request's path across services and SQL calls, with spans and
+      timing). Correlate them with a request/trace id injected by middleware. In Rails:
+      `ActiveSupport::Notifications` instrumentation, `Rails.logger` tagged logging,
+      OpenTelemetry's Ruby SDK for traces. Alert on symptoms users feel (error rate, latency),
+      not on causes (CPU).
+    answer: |
+      **Q:** A release toggle shipped six months ago is still in the code. What is the cost and
+      what should the process have been?
+      **A:** Two code paths to test and reason about, a flag that nobody is sure is safe to flip,
+      and config drift between environments. Process: owner and removal date set at creation,
+      a ticket to delete the toggle once the feature is 100% on, and a periodic report of stale flags.
+    explanation: |
+      Follow-ups: "`ENV` vs encrypted credentials?" (both are 12-factor compatible; credentials
+      keep secrets versioned and encrypted with the key in ENV), "how do you keep flag checks out
+      of models?" (evaluate in controller/job entry points and pass the decision down), and "what
+      is the difference between monitoring and observability?" (monitoring answers known
+      questions; observability lets you ask new ones from high-cardinality data). Common mistake:
+      logging unstructured strings that cannot be queried by request id.
+    tags: [12-factor, feature-flags, observability, operations]
+    source: "https://martinfowler.com/articles/feature-toggles.html"
+
+  - slug: ruby-design-observer-with-observable
+    kind: code
+    difficulty: middle
+    title: "Observer pattern with stdlib Observable"
+    body: |
+      Implement a `StockTicker` using Ruby's stdlib `Observable` module (`require "observer"`).
+
+      - `StockTicker.new(symbol)`; `price` reader (starts `nil`).
+      - `price=(new_price)`: stores the price and notifies observers **only when the price
+        actually changed**, passing `(symbol, old_price, new_price)` to each observer's `update`.
+      - Implement `PriceAlert` with `initialize(threshold)`, an `alerts` array, and
+        `update(symbol, old, new)` that appends `"#{symbol} crossed #{threshold}"` when the new
+        price is `>= threshold` and the old price was `nil` or below it.
+
+      ```ruby
+      t = StockTicker.new("RUBY")
+      a = PriceAlert.new(100)
+      t.add_observer(a)
+      t.price = 90; t.price = 105; t.price = 105; t.price = 110
+      a.alerts # => ["RUBY crossed 100"]
+      ```
+    starter_code: |
+      require "observer"
+
+      class StockTicker
+        include Observable
+        attr_reader :symbol, :price
+
+        def initialize(symbol)
+          @symbol = symbol
+        end
+
+        def price=(new_price)
+          # your code here
+        end
+      end
+
+      class PriceAlert
+        attr_reader :alerts
+
+        def initialize(threshold)
+          @threshold = threshold
+          @alerts = []
+        end
+
+        def update(symbol, old_price, new_price)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class Recorder
+        attr_reader :calls
+        def initialize = @calls = []
+        def update(*args) = @calls << args
+      end
+
+      class SolutionTest < Minitest::Test
+        def test_notifies_on_change_with_old_and_new
+          t = StockTicker.new("RUBY")
+          r = Recorder.new
+          t.add_observer(r)
+          t.price = 90
+          t.price = 95
+          assert_equal [["RUBY", nil, 90], ["RUBY", 90, 95]], r.calls
+        end
+
+        def test_no_notification_when_unchanged
+          t = StockTicker.new("RUBY")
+          r = Recorder.new
+          t.add_observer(r)
+          t.price = 90
+          t.price = 90
+          assert_equal 1, r.calls.size
+        end
+
+        def test_price_alert_fires_once_per_crossing
+          t = StockTicker.new("RUBY")
+          a = PriceAlert.new(100)
+          t.add_observer(a)
+          t.price = 90
+          t.price = 105
+          t.price = 105
+          t.price = 110
+          assert_equal ["RUBY crossed 100"], a.alerts
+          t.price = 80
+          t.price = 100
+          assert_equal ["RUBY crossed 100", "RUBY crossed 100"], a.alerts
+        end
+
+        def test_multiple_observers_and_delete
+          t = StockTicker.new("X")
+          r1 = Recorder.new
+          r2 = Recorder.new
+          t.add_observer(r1)
+          t.add_observer(r2)
+          t.price = 1
+          t.delete_observer(r1)
+          t.price = 2
+          assert_equal 1, r1.calls.size
+          assert_equal 2, r2.calls.size
+          assert_equal 1, t.count_observers
+        end
+
+        def test_uses_stdlib_observable
+          assert StockTicker.include?(Observable)
+        end
+      end
+    solution: |
+      require "observer"
+
+      class StockTicker
+        include Observable
+        attr_reader :symbol, :price
+
+        def initialize(symbol)
+          @symbol = symbol
+        end
+
+        def price=(new_price)
+          return if new_price == @price
+          old = @price
+          @price = new_price
+          changed
+          notify_observers(symbol, old, new_price)
+        end
+      end
+
+      class PriceAlert
+        attr_reader :alerts
+
+        def initialize(threshold)
+          @threshold = threshold
+          @alerts = []
+        end
+
+        def update(symbol, old_price, new_price)
+          return unless new_price >= @threshold
+          return unless old_price.nil? || old_price < @threshold
+          @alerts << "#{symbol} crossed #{@threshold}"
+        end
+      end
+    explanation: |
+      `Observable` gives you `add_observer`, `delete_observer`, `count_observers`, `changed` and
+      `notify_observers`. The detail everyone forgets: `notify_observers` does nothing unless
+      `changed` was called first, and it resets the flag afterwards; that is how "notify only on
+      real change" is meant to be expressed. Observers are any object with `update` (or a method
+      named via `add_observer(obj, :method)`). Design points to raise: the subject does not know
+      who listens (loose coupling), delivery is synchronous and in registration order (a slow or
+      raising observer blocks the rest), and for cross-process events you would move to an
+      outbox/queue. In Rails the analogue is `ActiveSupport::Notifications`.
+    tags: [observer, observable, design-patterns]
+    source: "https://docs.ruby-lang.org/en/3.3/Observable.html"
+
+  - slug: ruby-design-retry-with-backoff-code
+    kind: code
+    difficulty: senior
+    title: "Implement retry with exponential backoff and full jitter"
+    body: |
+      Write `with_retries(max_attempts:, base:, cap:, sleeper:, rng:, on: [StandardError]) { ... }`.
+
+      - Runs the block; returns its value on success.
+      - On an exception whose class is in `on` (or a subclass), waits and retries, up to
+        `max_attempts` total attempts; after the last failure re-raises the original error.
+      - Exceptions not listed in `on` propagate immediately without retrying.
+      - Wait before attempt `n` (n starting at 1 for the first retry) is
+        `rng.rand * [cap, base * 2**n].min` (full jitter), passed to `sleeper.call(seconds)`.
+      - `sleeper` and `rng` are injected so tests are deterministic (`rng` responds to `rand`
+        returning a Float in `[0, 1)`).
+
+      ```ruby
+      with_retries(max_attempts: 3, base: 0.1, cap: 1.0, sleeper: ->(s) { sleep s }, rng: Random.new) do
+        http.get("/flaky")
+      end
+      ```
+    starter_code: |
+      def with_retries(max_attempts:, base:, cap:, sleeper:, rng:, on: [StandardError])
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FixedRng
+        def initialize(v) = @v = v
+        def rand = @v
+      end
+
+      class Flaky < StandardError; end
+      class Fatal < StandardError; end
+
+      class SolutionTest < Minitest::Test
+        def setup
+          @sleeps = []
+          @sleeper = ->(s) { @sleeps << s }
+        end
+
+        def test_returns_value_without_sleeping_on_success
+          v = with_retries(max_attempts: 3, base: 1, cap: 10, sleeper: @sleeper, rng: FixedRng.new(0.5)) { 42 }
+          assert_equal 42, v
+          assert_empty @sleeps
+        end
+
+        def test_retries_then_succeeds_with_exponential_full_jitter
+          calls = 0
+          v = with_retries(max_attempts: 4, base: 1, cap: 10, sleeper: @sleeper, rng: FixedRng.new(0.5)) do
+            calls += 1
+            raise Flaky if calls < 3
+            :ok
+          end
+          assert_equal :ok, v
+          assert_equal 3, calls
+          assert_equal [1.0, 2.0], @sleeps
+        end
+
+        def test_cap_limits_wait
+          calls = 0
+          with_retries(max_attempts: 5, base: 1, cap: 3, sleeper: @sleeper, rng: FixedRng.new(1.0)) do
+            calls += 1
+            raise Flaky if calls < 5
+          end
+          assert_equal [2.0, 3.0, 3.0, 3.0], @sleeps
+        end
+
+        def test_gives_up_and_reraises_original
+          calls = 0
+          err = assert_raises(Flaky) do
+            with_retries(max_attempts: 3, base: 1, cap: 10, sleeper: @sleeper, rng: FixedRng.new(0.0)) do
+              calls += 1
+              raise Flaky, "boom #{calls}"
+            end
+          end
+          assert_equal "boom 3", err.message
+          assert_equal 3, calls
+          assert_equal 2, @sleeps.size
+        end
+
+        def test_only_retries_listed_errors
+          calls = 0
+          assert_raises(Fatal) do
+            with_retries(max_attempts: 3, base: 1, cap: 10, sleeper: @sleeper, rng: FixedRng.new(0.5), on: [Flaky]) do
+              calls += 1
+              raise Fatal
+            end
+          end
+          assert_equal 1, calls
+          assert_empty @sleeps
+        end
+
+        def test_max_attempts_one_means_no_retry
+          calls = 0
+          assert_raises(Flaky) do
+            with_retries(max_attempts: 1, base: 1, cap: 10, sleeper: @sleeper, rng: FixedRng.new(0.5)) { calls += 1; raise Flaky }
+          end
+          assert_equal 1, calls
+        end
+      end
+    solution: |
+      def with_retries(max_attempts:, base:, cap:, sleeper:, rng:, on: [StandardError])
+        attempt = 0
+        begin
+          attempt += 1
+          yield
+        rescue *on => e
+          raise e if attempt >= max_attempts
+          sleeper.call(rng.rand * [cap, base * 2**attempt].min)
+          retry
+        end
+      end
+    explanation: |
+      `begin/rescue/retry` is Ruby's native retry loop; `rescue *on` splats the list of retryable
+      classes. Counting attempts *before* `yield` keeps the "max attempts" arithmetic honest
+      (`max_attempts: 1` means no retry). The wait is `rand * min(cap, base * 2**n)`, AWS's
+      "full jitter", which spreads clients out and bounds the wait. Injecting `sleeper` and `rng`
+      is what makes the behaviour testable without `sleep` or stubbing `Kernel`; in production
+      pass `method(:sleep)` and `Random.new`. Design follow-ups: only retry idempotent work,
+      honour `Retry-After` headers, add a total time budget, and log each retry with the attempt
+      number so you can see retry storms in metrics.
+    tags: [retries, backoff, jitter, resilience]
+    source: "https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/"
+
+  - slug: ruby-design-dip-dependency-injection
+    kind: open
+    difficulty: middle
+    title: "Dependency Inversion and injection in Ruby"
+    body: |
+      ```ruby
+      class SignupService
+        def call(params)
+          user = User.create!(params)
+          Stripe::Customer.create(email: user.email)
+          SignupMailer.welcome(user).deliver_later
+          user
+        end
+      end
+      ```
+
+      Explain how the Dependency Inversion Principle applies here, how you would inject the
+      dependencies in idiomatic Ruby, and why some people say DIP matters less in Ruby.
+    answer: |
+      - DIP: high-level policy (signup flow) should not depend on low-level details (Stripe, a
+        specific mailer); both should depend on an abstraction. Here `SignupService` is welded to
+        three concrete constants, so testing it hits Stripe and swapping providers edits the service.
+      - Inject collaborators through the constructor with sensible defaults, which keeps call
+        sites simple and tests explicit:
+        `def initialize(payments: StripeGateway.new, mailer: SignupMailer, repo: User)`.
+      - The "abstraction" in Ruby is a duck-typed role (`payments.create_customer(email:)`), not an
+        interface file; document it with a shared example or a small adapter class per provider.
+      - Benefits: unit tests pass fakes instead of `allow(Stripe::Customer).to receive`, provider
+        swaps are a one-line change at the composition root, and the service reads as policy.
+      - Why "matters less": duck typing already removes the compile-time coupling, and Ruby lets
+        you stub constants, so people skip DI. The runtime coupling and the test pain remain, so
+        inject the things that are slow, external or likely to change; do not inject `Array`.
+      - Avoid DI containers unless the app is large (dry-container/dry-auto_inject exist); keyword
+        arguments with defaults are enough for most Rails apps.
+    explanation: |
+      Follow-ups: "where is the composition root in Rails?" (controllers and jobs; they build the
+      service with real dependencies), "constructor vs setter vs parameter injection?" (constructor
+      for required collaborators, parameter for per-call variation), and "how do you avoid
+      over-injecting?" (if a test never swaps it and it never changes, keep it concrete). Common
+      mistake: injecting everything and ending up with 8-argument constructors and a container.
+    tags: [solid, dip, dependency-injection]
+    source: "https://ieftimov.com/posts/solid-principles-ruby/"
+
+  - slug: ruby-design-service-object-tradeoffs
+    kind: open
+    difficulty: middle
+    title: "Service objects: when, how, and what goes wrong"
+    body: |
+      Your team debates introducing service objects. Argue both sides: what problem they solve,
+      how you would structure and name them, what the common failure modes are, and what the
+      alternatives are (concerns, plain models, modules).
+    answer: |
+      - Problem solved: multi-step business operations that touch several models and external
+        systems (place order, onboard tenant) have no natural home; in controllers they are
+        untestable, in callbacks they are invisible and fire at the wrong times.
+      - Shape: one public method (`call`), a constructor for dependencies, a verb-based name
+        (`PlaceOrder`, not `OrderService`), returns a result (object, Result, or raises a
+        domain error), no state kept between calls. `self.call` convenience is fine.
+      - Pros: explicit entry points for use cases, easy unit tests with injected collaborators,
+        transactions in one place, callbacks avoided.
+      - Cons / failure modes: "service" becomes the default bucket, you get `UserService` with 20
+        methods (a god object), anaemic models that are just column bags, services calling
+        services with hidden ordering, and logic duplicated between a service and a model method.
+      - Alternatives: a well-named model method when it touches one aggregate (`order.ship!`),
+        a concern only for genuinely shared behaviour across models (`Archivable`), a plain
+        module for stateless functions, form objects for input handling, query objects for reads.
+      - Heuristic: if it orchestrates across boundaries (several models, external APIs, jobs) it
+        is a service; if it is a rule about one object's data it belongs on that object.
+    explanation: |
+      Follow-ups: "class method or instance?" (instance for injectable dependencies; `self.call`
+      can delegate), "how do you handle failure?" (Result objects or domain exceptions; pick one
+      convention per app), and "transactions?" (the service owns the transaction boundary,
+      models must not open their own). Common mistakes: services that wrap a single
+      `Model.create`, and callbacks and services both doing side effects so nobody knows the order.
+    tags: [service-objects, rails, architecture]
+    source: "https://multithreaded.stitchfix.com/blog/2015/06/02/anatomy-of-service-objects-in-rails/"
+
+  - slug: ruby-design-form-and-query-objects
+    kind: open
+    difficulty: middle
+    title: "Form objects and query objects: when do you reach for them?"
+    body: |
+      Describe a form object and a query object in Rails: what each replaces, how you would
+      implement each with plain Rails (no gems), and the signs that you should *not* introduce one.
+    answer: |
+      - Form object: a PORO including `ActiveModel::Model` (and `ActiveModel::Attributes`) that
+        receives params, validates them, and performs a `save` that may touch several records
+        in a transaction. Use it when a form does not map 1:1 to a model (signup creating
+        `Account` + `User`, a search form, a wizard step) or when validations are contextual
+        ("password required only on signup") and would otherwise become `validates ..., on: :x` soup.
+      - Query object: a class wrapping one complex read (`OverdueInvoicesQuery.new(scope).call(limit:)`)
+        that returns a relation. Use it when a scope would need joins, subqueries, raw SQL or
+        several parameters, or when the same query is reused in controllers, jobs and reports.
+        Keep it composable: accept and return `ActiveRecord::Relation`.
+      - Both keep models focused and make the thing testable in isolation (form: validations and
+        persistence; query: SQL and ordering against a small fixture set).
+      - Do not introduce one for single-model CRUD (`User.new(params)` with model validations is
+        the form object), for a one-line scope, or when the "query object" is just a renamed scope
+        that nobody reuses.
+      - Naming: `SignupForm`, `ProjectSearchForm`; `RecentOrdersQuery`; one responsibility each.
+    explanation: |
+      Follow-ups: "how do you reuse model validations in a form object?" (delegate to the models
+      and merge errors, or validate at the model layer and surface them), "should a query object
+      return arrays or relations?" (relations, so callers can paginate and chain), and "where do
+      `accepts_nested_attributes_for` forms fit?" (fine for simple parent/child; form objects take
+      over when the mapping gets conditional). Common mistake: a form object that re-declares every
+      model validation and drifts out of sync.
+    tags: [form-objects, query-objects, rails]
+    source: "https://api.rubyonrails.org/classes/ActiveModel/Model.html"
+
+  - slug: ruby-design-reviewing-a-pull-request
+    kind: open
+    difficulty: middle
+    title: "What do you look for when reviewing a PR?"
+    body: |
+      A 400-line PR lands in your queue: a new "export orders to CSV" feature with a controller
+      action, a background job, a model method and tests. Walk through how you review it and what
+      you look for, in priority order.
+    answer: |
+      - First, the description and the diff shape: does the PR do one thing, is the problem
+        stated, is there a migration or config change that needs ordering at deploy?
+      - Design before style: is the export in the right place (job, not request thread), is the
+        model method really model logic, does it introduce a new pattern the codebase does not have?
+      - Correctness and edge cases: large exports (streaming vs loading everything), N+1 in the
+        row loop (`includes`), encoding and CSV injection (`=cmd` cells), time zones in dates,
+        authorisation (can this user export these orders?), idempotency of the job on retry.
+      - Failure modes: what the user sees if the job fails, retries, where the file is stored and
+        for how long, PII in logs.
+      - Tests: do they fail if the feature breaks, do they cover the empty case and a large case,
+        are they deterministic (no `Time.now`), do they test behaviour rather than implementation?
+      - Then readability: naming, method length, comments that explain why. Mark preferences as
+        "nit:" and keep blocking comments to correctness, security and design.
+      - Tone: ask questions, praise good choices, suggest rather than command, and offer to pair
+        if the change is large. If it is too big to review well, say so and ask for a split.
+    explanation: |
+      Follow-ups: "how long should a review take and what is the SLA?" (same day; small PRs),
+      "when do you approve with comments vs request changes?" (block only on things you would not
+      ship), and "how do you review code in an area you do not know?" (ask for context, focus on
+      tests and contracts, pull in an owner). Common mistake: spending the review on style while
+      missing that the export loads 2 million rows into memory.
+    tags: [code-review, process]
+    source: "https://google.github.io/eng-practices/review/reviewer/looking-for.html"
+
+  - slug: ruby-design-tech-debt-and-when-not-to-pattern
+    kind: open
+    difficulty: middle
+    title: "Managing tech debt, and when not to apply a pattern"
+    body: |
+      Two related questions interviewers ask engineers moving into senior roles:
+      1. How do you manage technical debt in a team that ships features every week?
+      2. Give concrete examples of when you would *not* apply a well-known pattern (service
+         object, decorator, repository, microservice, DRY) and why.
+    answer: |
+      - Tech debt is a loan, not a sin: deliberate debt with a known payoff date is fine; the
+        problem is undocumented, accidental debt whose interest (slow changes, bugs) is invisible.
+      - Make it visible: a labelled backlog, `TODO(ticket)` comments that CI can list, a short ADR
+        for each deliberate shortcut, and metrics that show interest (lead time, change failure rate).
+      - Pay it where you work: the boy-scout rule and a fixed budget (10-20% of each sprint, or
+        one engineer rotating) beat a mythical "refactoring sprint". Tie paydown to upcoming
+        features so it is justified by delivery, not aesthetics.
+      - Prioritise by interest, not by ugliness: code nobody touches can stay ugly.
+      - Not applying patterns: a service object for a single `Model.create` adds a file for
+        nothing; a decorator when one `helper` method would do; a repository layer over
+        ActiveRecord when you will never swap the ORM and lose scopes/associations; microservices
+        with a 6-person team (network failure modes without the organisational need); DRYing two
+        similar-looking methods that will evolve differently (Sandi Metz: duplication is cheaper
+        than the wrong abstraction); CQRS for a CRUD admin panel.
+      - Rule: a pattern must solve a problem you have now or will have on a known date; name the
+        cost it adds (indirection, files, concepts) and the trigger for revisiting.
+    explanation: |
+      Follow-ups: "how do you convince a product manager?" (translate interest into delivery
+      time and incidents, show one before/after), "how do you stop new debt?" (definition of done,
+      review checklist, linters, architecture tests like Packwerk), and "how would you undo a
+      wrong abstraction?" (inline it back into the callers, then re-extract what is really
+      shared). Common mistake: treating all debt as urgent, or asking for a freeze to rewrite.
+    tags: [tech-debt, pragmatism, process]
+    source: "https://sandimetz.com/blog/2016/1/20/the-wrong-abstraction"
+
+  - slug: ruby-design-repository-vs-active-record
+    kind: open
+    difficulty: senior
+    title: "Repository pattern versus ActiveRecord"
+    body: |
+      A colleague proposes wrapping every ActiveRecord model in a repository class
+      (`UserRepository#find`, `#save`, `#active`) "so the domain is independent of the database".
+      Evaluate the proposal: what does the Repository pattern give you, what does ActiveRecord
+      already give you, and what would you actually do in a Rails app?
+    answer: |
+      - Repository (Fowler, PoEAA): a collection-like interface between the domain and the data
+        mapper; domain objects are plain and know nothing about persistence. ActiveRecord: the
+        object *is* the row and carries persistence; simple, fast to build, and Rails is built around it.
+      - What a full repository layer buys in Rails: in-memory fakes for fast domain tests, a
+        place to enforce aggregate boundaries, and freedom to change storage. What it costs:
+        reimplementing scopes, associations, eager loading, pagination and callbacks; two sets of
+        objects (entities + records) with mapping code; and fighting every gem that expects AR.
+      - Honest assessment: you will almost never swap PostgreSQL for something else, so
+        "database independence" is a weak motivation; "testability" and "boundaries" are the real ones.
+      - Pragmatic middle ground: keep ActiveRecord as the persistence model but (a) put complex
+        reads in query objects, (b) put writes behind use-case services that own transactions,
+        (c) forbid callbacks with side effects, (d) treat the AR model's public API as the
+        "repository" of its aggregate and keep other code from reaching through associations
+        (Packwerk privacy, `delegate`).
+      - Go full repository/entity (ROM, Hanami, Sequel + POROs) only when the domain is complex
+        enough that persistence concerns genuinely obscure it, and the team accepts the cost.
+      - Whatever you pick, the rule is consistency: a half-repository where some code uses AR
+        directly is worse than either extreme.
+    explanation: |
+      Follow-ups: "how do you unit test domain logic without the DB today?" (POROs for the logic,
+      `build_stubbed`, keep AR at the edges), "what breaks when you add a repository on top of
+      AR?" (identity map and dirty tracking live in AR, so you get two sources of truth), and
+      "what is the aggregate root here?" (the model that owns the transaction and invariants).
+      Common mistake: naming a class `UserRepository` that just proxies `User.where`.
+    tags: [repository, active-record, architecture, ddd]
+    source: "https://martinfowler.com/eaaCatalog/repository.html"
+
+  - slug: ruby-design-hexagonal-clean-architecture-rails
+    kind: open
+    difficulty: senior
+    title: "Hexagonal / clean architecture in a Rails app: worth it?"
+    body: |
+      Explain ports-and-adapters (hexagonal) and clean architecture in one minute each, then
+      describe how you would apply a *proportionate* version to a Rails monolith that integrates
+      with Stripe, S3, a mail provider and a legacy SOAP system. What stays Rails-shaped and what
+      does not?
+    answer: |
+      - Hexagonal (Cockburn): the application core exposes *ports* (interfaces it needs or
+        offers: "payments", "notifications", "order storage"); *adapters* implement them for a
+        concrete technology (Stripe adapter, SMTP adapter, ActiveRecord adapter, a fake for
+        tests). Dependencies point inward; the core never names a vendor.
+      - Clean architecture (Martin): the same idea with concentric rings (entities, use cases,
+        interface adapters, frameworks) and the dependency rule: inner rings know nothing about
+        outer ones. Rails, in this view, is a delivery mechanism, not the application.
+      - Proportionate version in Rails: keep ActiveRecord models and controllers Rails-shaped
+        (fighting that costs more than it returns); introduce explicit use-case objects
+        (`PlaceOrder`) as the application layer; put every external system behind a small adapter
+        with a Ruby-level interface (`PaymentGateway#charge(money, token)`), chosen via
+        configuration/injection; keep vendor exceptions from leaking (translate to domain errors);
+        write contract tests for each adapter and fast tests for use cases with fakes.
+      - The SOAP legacy system is the strongest argument: an anti-corruption adapter keeps its
+        data model and quirks out of your domain.
+      - What not to do: entities duplicated from AR models "for purity", a repository per table,
+        and interface modules with one implementation. Add a layer only where a second
+        implementation (fake, replacement, migration) is real.
+      - Enforce the direction with tooling (Packwerk dependencies, Rubocop custom cops) or the
+        structure erodes in six months.
+    explanation: |
+      Follow-ups: "where do validations live?" (invariants in the core; format checks at the
+      edge), "how do you handle AR callbacks?" (avoid for side effects; use cases do them),
+      and "is this the same as DDD?" (hexagonal is about dependencies; DDD is about the model;
+      they combine). Common mistake: presenting clean architecture as all-or-nothing and
+      building a Java-style layering nobody on the team wants to maintain.
+    tags: [hexagonal, clean-architecture, rails, architecture]
+    source: "https://alistair.cockburn.us/hexagonal-architecture/"
+
+  - slug: ruby-design-modular-monolith-vs-microservices
+    kind: open
+    difficulty: senior
+    title: "Modular monolith with Packwerk versus microservices"
+    body: |
+      A 40-engineer Rails monolith has slow CI, tangled models and teams blocking each other.
+      Someone proposes microservices. Make the case for a modular monolith first, explain how
+      Packwerk enforces it, and state when you *would* extract a service and how (including the
+      event-driven and saga questions that come with it).
+    answer: |
+      - Diagnose first: the pain is coupling and ownership, not deployment. Microservices add
+        network failure modes, distributed transactions, data duplication, per-service infra and
+        observability cost, and only pay off when teams need independent deploys/scaling or
+        different tech, which a 40-person team rarely does.
+      - Modular monolith: split the codebase into packages with explicit public APIs and declared
+        dependencies, one deployable. Packwerk (Shopify) checks constant references statically
+        (via Zeitwerk): each `package.yml` lists allowed dependencies and enforces privacy (only
+        `app/public` constants are reachable). Violations are recorded in `package_todo.yml`
+        and burned down; CI fails on new ones. `packs-rails` adds per-package autoload paths and routes.
+      - Process: carve packages along bounded contexts (billing, catalog, fulfilment), move code
+        incrementally ("one bite at a time"), replace direct model access across boundaries with
+        public services or events, and give each package an owning team. CI can run per package.
+      - Extract a service only when a package has a stable API, its own data (no cross-joins),
+        and a concrete need: independent scaling (PDF rendering), different runtime, regulatory
+        isolation, or a team that truly needs its own release cadence.
+      - When you extract: communicate via events (Fowler's event notification or event-carried
+        state transfer) published through an outbox; multi-step workflows become sagas
+        (choreography via events for simple flows, an orchestrator for long ones) with
+        compensating actions instead of rollbacks; each service owns its data, so expect
+        eventual consistency and design idempotent consumers.
+      - A monolith with Packwerk boundaries is the cheapest way to find out whether a boundary
+        is real before paying the network tax.
+    explanation: |
+      Follow-ups: "how do you handle a model shared by two packages?" (pick an owner, expose a
+      read API or publish events; a shared package for genuine value objects), "what do you do
+      with `has_many` across packages?" (it is a dependency; allow it explicitly or break it),
+      and "what about the database?" (separate schemas or tables per package as a first step,
+      no cross-package joins). Common mistake: distributing the monolith's tangle into services
+      that still share a database.
+    tags: [modular-monolith, packwerk, microservices, event-driven, saga]
+    source: "https://github.com/Shopify/packwerk"
+
+  - slug: ruby-design-background-job-design
+    kind: open
+    difficulty: senior
+    title: "Designing a background job that is safe to retry"
+    body: |
+      Design a job `SyncInvoiceToAccountingJob` that pushes an invoice to an external accounting
+      API, marks it synced, and emails the customer. Cover: arguments, idempotency, retries and
+      backoff, what happens if the external API is down for an hour, poison messages, ordering
+      when the invoice is edited twice quickly, and how you would observe it in production.
+    answer: |
+      - Arguments: pass ids, not objects (`perform(invoice_id)`), and reload inside; include a
+        `version` or `updated_at` snapshot if the job must act on a specific state.
+      - Idempotency: the job may run twice. Guard with state (`return if invoice.synced?`), send
+        the API an idempotency key derived from `invoice.id` + version, and use a unique
+        constraint on the local sync record so a concurrent duplicate fails fast. Make the email
+        the last step and conditional on a flag you set atomically.
+      - Retries: `retry_on ExternalApi::Timeout, wait: :polynomially_longer, attempts: 8` (Active
+        Job) or Sidekiq's default exponential schedule with jitter; `discard_on` for permanent
+        errors (invoice deleted, 4xx validation). Keep each attempt short; do not sleep inside the job.
+      - Hour-long outage: retries with backoff cover it, but add a circuit breaker so thousands
+        of jobs do not each burn attempts; when the breaker is open re-enqueue with a delay or
+        let them fail into the retry set. Alert on retry-set size and dead-set growth.
+      - Poison messages: after N attempts the job goes to the dead set; review it, fix data, and
+        re-run. Never retry forever, and never swallow exceptions (that hides poison).
+      - Ordering: two edits enqueue two jobs; they may run out of order or concurrently. Either
+        make the job sync the *current* state (reload, skip if a newer version was already synced)
+        or serialise per invoice with a unique/lock option (`sidekiq-unique-jobs`, `lock: :until_executed`),
+        or debounce by enqueueing one job per invoice with a short delay.
+      - Observability: structured log line per attempt with job id, invoice id, attempt number
+        and latency; metrics for success/failure/retry counts and queue latency; a trace span
+        around the API call.
+    explanation: |
+      Follow-ups: "transaction around the whole job?" (no: the external call cannot be rolled
+      back; do local state changes in small transactions around the call and design for
+      partial completion), "what about `after_commit` enqueueing?" (enqueue after commit or the
+      job may run before the row is visible), and "exactly-once?" (not available; idempotency is
+      the answer). Common mistakes: passing AR objects as arguments, catching `StandardError`
+      and returning, and emailing before the state change is committed.
+    tags: [background-jobs, sidekiq, idempotency, retries]
+    source: "https://guides.rubyonrails.org/active_job_basics.html"
+
+  - slug: ruby-design-caching-strategies
+    kind: open
+    difficulty: senior
+    title: "Caching strategies and invalidation"
+    body: |
+      Compare cache-aside, read-through, write-through and write-behind caching. Then explain
+      how you would cache a product page in Rails that depends on the product, its category and
+      its reviews, how you would invalidate it, and how you would avoid a cache stampede on a
+      popular product after deploy.
+    answer: |
+      - Cache-aside (lazy loading): app checks the cache, on miss reads the DB and writes the
+        cache. Simple, only hot data cached, but each miss costs a DB hit and stale data is
+        possible until TTL or explicit invalidation. This is `Rails.cache.fetch(key, expires_in:) { ... }`.
+      - Read-through: the cache itself loads from the store on miss (the app only talks to the
+        cache). Same semantics, less app code; needs a cache that supports loaders.
+      - Write-through: writes go to cache and DB synchronously; data is always fresh in cache at
+        the cost of write latency and caching data that may never be read.
+      - Write-behind: writes hit the cache and are flushed to the DB asynchronously; fastest
+        writes, risk of data loss and ordering issues; rare for primary data.
+      - Rails product page: Russian-doll fragment caching with key-based expiration:
+        `cache [product, product.category, product.reviews.maximum(:updated_at)]`; the key
+        embeds `updated_at`, so an update produces a new key and the old entry simply ages out,
+        no explicit deletion. `touch: true` on the `belongs_to` propagates child changes to the
+        parent key. Explicit `Rails.cache.delete` only for things the key cannot express.
+      - Invalidation pitfalls: deleting by pattern across a cluster, forgetting one write path
+        (bulk `update_all` skips callbacks and `touch`), and versioning: include a template or
+        schema version in the key so a deploy that changes markup does not serve stale fragments.
+      - Stampede: `Rails.cache.fetch(key, race_condition_ttl: 10)` lets one process recompute
+        while others serve the stale value briefly; alternatively a lock (`SETNX`) or
+        pre-warming after deploy; add jitter to TTLs so keys do not expire together.
+    explanation: |
+      Follow-ups: "what do you cache at the HTTP level?" (`stale?`/ETags for conditional GETs,
+      CDN for public pages with `Cache-Control`), "Redis vs Memcached?" (Redis for data
+      structures and persistence, Memcached for simple LRU at scale), and "how do you measure a
+      cache?" (hit rate, latency, and whether the DB load actually dropped). Common mistake:
+      caching before measuring, and a cache that hides a slow query until the cache is cold.
+    tags: [caching, rails, invalidation]
+    source: "https://guides.rubyonrails.org/caching_with_rails.html"
+
+  - slug: ruby-design-rest-graphql-grpc-and-versioning
+    kind: open
+    difficulty: senior
+    title: "REST vs GraphQL vs gRPC, and how to version an API"
+    body: |
+      You are designing the API layer for a product with a web app, a mobile app and three
+      internal services. Compare REST, GraphQL and gRPC for these consumers, then explain how
+      you would version the public API and evolve it without breaking clients.
+    answer: |
+      - REST (JSON over HTTP): resources and standard methods, cacheable GETs, status codes and
+        headers everyone understands; weaknesses are over/under-fetching and endpoint sprawl for
+        screen-specific needs. Best for the public API and simple CRUD.
+      - GraphQL: a typed schema, clients ask for exactly the fields they need in one round trip,
+        strong tooling and introspection. Costs: N+1 on the server (needs batching/dataloader),
+        caching is harder (everything is POST to one endpoint), query complexity limits and
+        auth per field are your problem. Best for the mobile/web clients with many screens and
+        a team that owns both sides.
+      - gRPC: Protobuf contracts, binary, HTTP/2 streaming, generated clients, low latency.
+        Costs: not browser-native (grpc-web), harder to debug by hand, schema evolution rules
+        to learn. Best for internal service-to-service calls.
+      - A common split: gRPC internally, REST (or GraphQL) externally, with an API gateway.
+      - Versioning: prefer additive, backwards-compatible change (new optional fields, new
+        endpoints) and avoid versions as long as possible. When a breaking change is unavoidable:
+        URL versioning (`/v2/`) is explicit and cache-friendly; header versioning
+        (`Accept: application/vnd.app.v2+json`) keeps URLs stable; date-based versions (Stripe)
+        pin each client to the behaviour of the date they integrated and transform responses
+        through a chain of changes.
+      - Evolution process: deprecation headers (`Deprecation`, `Sunset`), usage metrics per
+        version, a published support window, and contract tests against the schema so a change
+        that breaks the contract fails CI.
+    explanation: |
+      Follow-ups: "how do you paginate and filter consistently across REST endpoints?" (cursor
+      pagination, documented filter syntax, max page size), "how does GraphQL handle versioning?"
+      (it does not; deprecate fields and never remove them until usage is zero), and "what about
+      rate limiting and auth across all three?" (at the gateway). Common mistake: bumping `/v2/`
+      for the whole API because one endpoint changed.
+    tags: [api-design, rest, graphql, grpc, versioning]
+    source: "https://grpc.io/docs/what-is-grpc/introduction/"
+
+  - slug: ruby-design-db-performance-walkthrough
+    kind: open
+    difficulty: senior
+    title: "A slow endpoint: N+1, EXPLAIN, indexes and denormalisation"
+    body: |
+      `GET /projects/:id/tasks` takes 4 seconds for a large customer. The action is:
+
+      ```ruby
+      @tasks = @project.tasks.where(status: params[:status]).order(:due_on)
+      # view: task.assignee.name, task.tags.map(&:name), task.comments.count
+      ```
+
+      Walk through how you would diagnose and fix it, from the Ruby layer to the database, and
+      when you would consider denormalising.
+    answer: |
+      - Measure first: request logs / APM to see time split between Ruby and SQL and the query
+        count; Bullet or `ActiveRecord::QueryLogs` in development.
+      - N+1: `task.assignee`, `task.tags` and `task.comments.count` each run per row. Fix with
+        `includes(:assignee, :tags)` (or `preload`/`eager_load` when you need to filter on the
+        association) and a counter cache or a grouped count for comments
+        (`comments_count` column with `counter_cache: true`, or `Comment.where(task_id: ids).group(:task_id).count`).
+      - The main query: run `EXPLAIN (ANALYZE, BUFFERS)`; look for Seq Scan on `tasks`, a sort
+        step, and the row estimate vs actual. Add a composite index `(project_id, status, due_on)`
+        so the predicate narrows and the ordering comes from the index; verify the plan changes
+        to an Index Scan with no Sort.
+      - Pagination: never render all tasks; cursor-based with the same index.
+      - Select only needed columns (`select(:id, :title, ...)`) if rows are wide (JSON blobs),
+        and watch `includes` on `tags` building a huge `IN (...)` list.
+      - Locking/contention: if writes are heavy, long transactions or `SELECT ... FOR UPDATE`
+        elsewhere can block; check `pg_stat_activity`.
+      - Denormalise only after the above: counter caches, a cached `assignee_name` updated via
+        callback/job for read-heavy lists, or a materialised view refreshed on a schedule. Every
+        denormalised field needs an owner for consistency (triggers or a single write path).
+    explanation: |
+      Follow-ups: "`includes` vs `eager_load` vs `preload`?" (`preload` separate queries,
+      `eager_load` one LEFT JOIN, `includes` picks based on `references`), "when does an index
+      hurt?" (write-heavy tables, low selectivity, duplicated indexes), and "how do you add an
+      index on a 500M-row table safely?" (`CREATE INDEX CONCURRENTLY`, `disable_ddl_transaction!`).
+      Common mistake: adding single-column indexes on every filtered column instead of one composite.
+    tags: [database, performance, n-plus-one, indexes, explain]
+    source: "https://guides.rubyonrails.org/active_record_querying.html"
+
+  - slug: ruby-design-url-shortener
+    kind: open
+    difficulty: senior
+    title: "How would you design a URL shortener?"
+    body: |
+      Design a URL shortener (like bit.ly) in Rails: API, data model, how you generate short
+      codes, the redirect path, and how it scales to 10k redirects/s and 100M links. Mention
+      analytics and abuse handling briefly.
+    answer: |
+      - API: `POST /links {url}` -> `{code, short_url}`; `GET /:code` -> `301`/`302` redirect;
+        optional custom alias and expiry. Validate the URL (scheme http/https, length, blocklist).
+      - Data model: `links(id, code UNIQUE, url, user_id, expires_at, created_at)` with an index
+        on `code`. 100M rows is fine for PostgreSQL.
+      - Code generation: base62-encode the auto-increment id (`id.to_s(62)`-style) gives short,
+        unique codes with no collision checks, but reveals volume and is guessable; alternatives
+        are a random 7-char base62 code (62^7 = 3.5e12) with a unique index and retry on
+        collision, or hashing the URL and taking a prefix (dedupes identical URLs, needs
+        collision handling). Reserve a word list for custom aliases.
+      - Redirect path is the hot path: `code -> url` lookup served from a cache (Redis or
+        in-process LRU) in front of the DB; 301 is cacheable by browsers (fewer hits but no
+        per-click analytics), 302/307 keeps clicks visible. Put a CDN or edge worker in front for
+        the biggest wins.
+      - Scaling writes is easy (few hundred/s); reads at 10k/s are cache hits mostly; shard by
+        code prefix only if a single Postgres plus replicas cannot keep up.
+      - Analytics: never write to the DB in the redirect request; emit an event (Kafka/Redis
+        stream/Sidekiq) and aggregate asynchronously; store counts per day, not per click, unless needed.
+      - Abuse and ops: rate limit creation per user/IP, safe-browsing checks, expiry sweeps,
+        and idempotent creation (same user + same URL returns the same code).
+    explanation: |
+      Follow-ups: "what breaks if two app servers generate the same random code?" (unique index
+      catches it; retry), "how do you delete or disable a link without breaking the cache?"
+      (cache the `disabled` flag with the link, short TTL, or explicit delete), and "301 vs 302
+      trade-off?" (cacheability vs analytics and the ability to change the target). Common
+      mistake: generating codes by hashing the URL without handling collisions, and doing
+      analytics writes synchronously.
+    tags: [system-design, url-shortener]
+    source: "https://martinfowler.com/articles/microservices.html"
+
+  - slug: ruby-design-rate-limiter-system
+    kind: open
+    difficulty: senior
+    title: "How would you design an API rate limiter?"
+    body: |
+      Design rate limiting for a public API served by 20 Puma processes across 5 machines:
+      100 requests/minute per API key, plus a global ceiling per customer plan. Cover the
+      algorithm, where the state lives, atomicity, failure modes when the store is down, and
+      what the client sees.
+    answer: |
+      - Algorithm: sliding window counter (two fixed-window buckets weighted by overlap) is a
+        good default: O(1) memory per key, no boundary burst like a fixed window, and far cheaper
+        than a sliding log. Token bucket if you need explicit burst control.
+      - State must be shared across processes and machines, so it lives in Redis (not process
+        memory, not the SQL database on the hot path). Keys like `rl:{api_key}:{window}` with a
+        TTL slightly longer than the window so they clean themselves up.
+      - Atomicity: a check-then-increment from Ruby is racy under concurrency; use `INCR` + `EXPIRE`
+        in a `MULTI`, or a Lua script that reads, computes and writes in one round trip. Keep the
+        script tiny and measure its latency, since it is on every request.
+      - Placement: Rack middleware (or `Rack::Attack`) early in the stack, before expensive
+        auth/DB work; identify by API key, fall back to IP for unauthenticated routes.
+      - Client contract: `429 Too Many Requests` with `Retry-After` and
+        `RateLimit-Limit`/`RateLimit-Remaining`/`RateLimit-Reset` headers on every response so
+        well-behaved clients back off before hitting 429.
+      - Store down: decide fail-open (allow, log loudly, alert) or fail-closed (503) per route;
+        fail-open is usual for a rate limiter since availability matters more than strict limits,
+        with a circuit breaker around Redis so a slow Redis does not add latency to every request.
+      - Plan ceilings: a second key per customer; check the cheapest limit first; load limits
+        from config with a cache, not a DB query per request.
+      - Observability: metrics for allowed/limited per key and per plan, and a dashboard to see
+        who is hitting limits before they email support.
+    explanation: |
+      Follow-ups: "why not store counters in PostgreSQL?" (row contention and latency on every
+      request), "how do you rate limit by cost rather than count?" (weighted tokens per
+      endpoint), and "how does this interact with retries and idempotency keys?" (retried
+      requests consume quota; some APIs exempt idempotent replays). Common mistake: a
+      non-atomic read-modify-write in Ruby that lets bursts through under load.
+    tags: [system-design, rate-limiting, redis]
+    source: "https://www.azion.com/en/learning/api/rate-limiting-algorithms/"
+
+  - slug: ruby-design-job-scheduler
+    kind: open
+    difficulty: senior
+    title: "How would you design a job scheduler?"
+    body: |
+      Design a scheduler that runs recurring jobs ("every 5 minutes", "daily at 02:00 in the
+      customer's time zone") for thousands of customers, on a fleet of worker machines. Cover
+      the data model, how you avoid running the same job twice when several schedulers are up,
+      missed runs after downtime, time zones and DST, and how a job reports success or failure.
+    answer: |
+      - Data model: `schedules(id, owner_id, cron_expr, tz, next_run_at, last_run_at, enabled)`
+        and `runs(id, schedule_id, scheduled_for, started_at, finished_at, status, error)`.
+        `next_run_at` is precomputed in UTC from the cron expression and time zone, indexed, so
+        polling is `WHERE enabled AND next_run_at <= now() ORDER BY next_run_at LIMIT n`.
+      - Exactly one dispatcher per due schedule: claim rows with
+        `SELECT ... FOR UPDATE SKIP LOCKED`, advance `next_run_at` and insert the `run` in the
+        same transaction, then enqueue the actual work to a queue (Sidekiq) after commit. Several
+        dispatcher processes can run safely; this is how Solid Queue and good_job do it.
+        Alternative: a single leader elected via a Redis lock with a TTL, but SKIP LOCKED is simpler.
+      - Execution is separate from scheduling: the dispatcher is tiny and fast; workers do the
+        job, so a slow job never delays other schedules. Pass `run_id` and `scheduled_for` so the
+        job is idempotent (unique on `schedule_id, scheduled_for`).
+      - Missed runs after downtime: policy per schedule: catch up every missed slot, run once for
+        the latest slot, or skip; store the policy and compute `next_run_at` from `now`, not from
+        the stale value, to avoid a storm.
+      - Time zones and DST: store the rule in the customer's zone, compute the next occurrence
+        with a library (`fugit`/`et-orbit`) and persist UTC; "02:00 daily" may not exist or may
+        happen twice on DST days, so define the behaviour (skip or shift) and test those dates.
+      - Reporting: the job updates its `run` row (status, duration, error); alert on schedules
+        with consecutive failures or whose `next_run_at` is in the past by more than a threshold
+        (dispatcher stuck). Expose a per-customer history.
+      - Scale: polling every second with `LIMIT 100` and `SKIP LOCKED` handles tens of thousands
+        of schedules; partition by `next_run_at` ranges or shard by owner only when the table
+        gets hot.
+    explanation: |
+      Follow-ups: "why not cron on one box?" (single point of failure, no visibility, no per
+      customer time zones), "how do you guarantee a job is not running twice concurrently if a
+      previous run is still going?" (a `running` lock on the schedule with a lease that expires,
+      or `lock: :until_executed`), and "how do you test cron expressions?" (table tests around DST
+      transitions and month ends). Common mistakes: computing the next run in the worker, using
+      `sleep` loops instead of DB-driven polling, and storing local times without the zone.
+    tags: [system-design, scheduling, postgres]
+    source: "https://www.postgresql.org/docs/current/explicit-locking.html"

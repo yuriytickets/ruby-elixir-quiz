@@ -1,0 +1,1438 @@
+language: elixir
+topic: testing
+items:
+  - slug: elixir-test-async-true-meaning
+    kind: mcq
+    difficulty: junior
+    title: "What does `use ExUnit.Case, async: true` actually parallelise?"
+    body: |
+      ```elixir
+      defmodule MyApp.ParserTest do
+        use ExUnit.Case, async: true
+        test "a", do: ...
+        test "b", do: ...
+      end
+      ```
+    choices:
+      - "Tests `a` and `b` run concurrently with each other"
+      - "This module runs concurrently with other `async: true` modules; `a` and `b` still run one after the other"
+      - "Each test runs in its own BEAM node"
+      - "Nothing: `async` only affects `setup_all`"
+    answer: 1
+    explanation: |
+      The unit of concurrency is the *module* (test case). Async modules run at the same time as other async
+      modules, up to `--max-cases` (defaults to twice the number of schedulers); tests inside a module are always
+      serial (except Elixir 1.18 parameterized modules, which are separate instances). `async: false` modules run
+      after all async ones, one at a time. That is why global state (named processes, `Application.put_env`,
+      shared ETS) forces `async: false`, and why Ecto's sandbox is designed around per-process ownership.
+    tags: [exunit, async]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Case.html
+
+  - slug: elixir-test-setup-vs-setup-all
+    kind: mcq
+    difficulty: junior
+    title: "Where do `setup` and `setup_all` run, and what may they return?"
+    body: |
+      Which statement is correct?
+    choices:
+      - "`setup_all` runs once per module in the test process; `setup` runs before each test in a fresh process"
+      - "`setup` runs before each test **in the test process**; `setup_all` runs once per module **in a separate process**; both may return `:ok`, a map/keyword list, or `{:ok, map}` merged into the context"
+      - "Both run in the test process; `setup_all` is simply memoised"
+      - "`setup` must return `{:ok, context}`; any other return value is ignored"
+    answer: 1
+    explanation: |
+      `setup_all` runs in its own process before any test, so processes it starts and links die when that process
+      exits (after the module), and it cannot see per-test tags other than `@moduletag`. `setup` runs in the
+      same process as the test, so anything it links or registers belongs to that test. Returning anything other
+      than `:ok`, a map/keyword or `{:ok, map | keyword}` fails the test (from `setup`) or every test in the
+      module (from `setup_all`).
+    tags: [exunit, setup, setup_all]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Callbacks.html
+
+  - slug: elixir-test-assert-receive-vs-received
+    kind: mcq
+    difficulty: middle
+    title: "`assert_receive` vs `assert_received`"
+    body: |
+      A GenServer under test replies asynchronously with `send(test_pid, {:done, result})`.
+
+      ```elixir
+      MyServer.start_work(pid, self())
+      assert_received {:done, _}
+      ```
+
+      The test fails intermittently. Why, and what is the fix?
+    choices:
+      - "`assert_received` has no timeout (it checks the mailbox immediately); use `assert_receive {:done, _}`, which waits up to 100 ms by default (configurable)"
+      - "`assert_received` only matches literal messages; use `assert_receive` which supports patterns"
+      - "Messages from other processes are not delivered to the test process; use `Process.monitor/1`"
+      - "The default `assert_receive` timeout is 5 seconds, which is too short"
+    answer: 0
+    explanation: |
+      `assert_received` is `assert_receive` with timeout `0`: it asserts the message is *already* there, which
+      is right after a synchronous call but racy after an async one. `assert_receive` blocks up to the timeout
+      (default 100 ms, set globally with `ExUnit.configure(assert_receive_timeout: ...)` or per call). Both support
+      full patterns with pinned variables and bind pattern variables in the test. The same pair exists for
+      `refute_receive` (default 100 ms wait) and `refute_received`.
+    tags: [assert_receive, messages]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Assertions.html
+
+  - slug: elixir-test-tag-filtering-exclude
+    kind: mcq
+    difficulty: junior
+    title: "Running only integration tests"
+    body: |
+      `test/test_helper.exs` contains `ExUnit.configure(exclude: [:integration])` and some tests are tagged
+      `@tag :integration`. Which command runs *only* the integration tests?
+    choices:
+      - "`mix test --include integration`"
+      - "`mix test --only integration`"
+      - "`mix test --tag integration`"
+      - "`mix test --exclude test --include integration`"
+    answer: 1
+    explanation: |
+      `--only integration` is shorthand for `--include integration --exclude test`: it includes the tag and
+      excludes everything else. `--include integration` alone would run the integration tests *plus* every other
+      test, because the helper only excludes `:integration`. `--only` also fails the run if no test matched.
+      Filters take `key` (any value) or `key:value`, e.g. `--only describe:"money"` or `--exclude slow:true`.
+    tags: [tags, mix-test]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Case.html
+
+  - slug: elixir-test-doctest-format
+    kind: mcq
+    difficulty: junior
+    title: "Which docstring is a valid doctest?"
+    body: |
+      ```elixir
+      # A
+      @doc """
+      iex> Money.add(1, 2)
+      3
+      """
+
+      # B
+      @doc """
+      iex> Money.add(1, 2) #=> 3
+      """
+
+      # C
+      @doc """
+      iex> x = 1
+      iex> Money.add(x,
+      ...>   2)
+      3
+      """
+    choices:
+      - "Only A"
+      - "A and C"
+      - "A, B and C"
+      - "Only C"
+    answer: 1
+    explanation: |
+      A doctest is one or more `iex>` lines, optional `...>` continuation lines for multi-line input, and the
+      expected value on the following line; tests are separated by a blank line (variables do not carry across
+      the blank line). The `#=> 3` comment notation seen in blog posts is **not** supported: ExUnit would treat
+      `#=> 3` as a comment and simply evaluate the expression without checking it. Exceptions are written as
+      `** (ArgumentError) message`, and from Elixir 1.19 a trailing `...` in the message acts as a wildcard.
+    tags: [doctest]
+    source: https://ex-unit.hexdocs.pm/ExUnit.DocTest.html
+
+  - slug: elixir-test-mox-expect-vs-stub
+    kind: mcq
+    difficulty: middle
+    title: "Mox: `expect/4` vs `stub/3`"
+    body: |
+      ```elixir
+      Mox.stub(HTTPMock, :get, fn _url -> {:ok, "stubbed"} end)
+      Mox.expect(HTTPMock, :get, 2, fn _url -> {:ok, "expected"} end)
+      ```
+
+      The code under test calls `HTTPMock.get/1` three times in this test, and `verify_on_exit!` is set up.
+      What happens?
+    choices:
+      - "All three calls return `\"stubbed\"` because the stub was declared first"
+      - "The first two calls return `\"expected\"`, the third returns `\"stubbed\"`; the test passes"
+      - "The first two calls return `\"expected\"`, the third raises `Mox.UnexpectedCallError`"
+      - "The test fails at exit because the stub was never used"
+    answer: 2
+    explanation: |
+      Expectations are consumed in order and are *verified*: the mock must be called exactly `n` times or
+      `verify_on_exit!` fails. Stubs are never verified and allow any number of calls. The ordering rule from the
+      Mox docs is the trap here: calling `expect/4` **removes any previously declared stub** for the same
+      name/arity (so `expect` can fail when called too often), whereas a `stub/3` declared *after* `expect/4` is
+      used once the expectations are exhausted. Swap the two lines and the answer becomes "expected, expected,
+      stubbed". Use `expect` when the call *is* the behaviour under test, `stub` when it is incidental.
+    tags: [mox, expect, stub]
+    source: https://mox.hexdocs.pm/Mox.html
+
+  - slug: elixir-test-start-supervised-cleanup-order
+    kind: mcq
+    difficulty: middle
+    title: "Shutdown order of `start_supervised!`"
+    body: |
+      ```elixir
+      setup do
+        repo = start_supervised!(FakeRepo)
+        cache = start_supervised!({Cache, repo: repo})
+        on_exit(fn -> IO.puts("exit") end)
+        %{cache: cache}
+      end
+      ```
+
+      In which order do things happen once the test finishes?
+    choices:
+      - "`on_exit` runs, then `Cache` stops, then `FakeRepo`"
+      - "Test process exits; `Cache` is stopped, then `FakeRepo` (reverse start order); then `on_exit` runs in a separate process"
+      - "`FakeRepo` stops first since it was started first, then `Cache`, then `on_exit`"
+      - "All three happen concurrently because the test process is already dead"
+    answer: 1
+    explanation: |
+      `start_supervised!` puts children under a per-test supervisor, and like any supervisor it terminates them
+      in reverse start order, synchronously, before the next test and before any `on_exit` callback. That is why
+      it is preferred over `start_link` in tests: dependencies shut down after their dependants, so `Cache` can
+      still talk to `FakeRepo` while terminating. `start_link_supervised!` links to the test process instead and
+      gives no ordering guarantee.
+    tags: [start_supervised, on_exit, lifecycle]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Callbacks.html
+
+  - slug: elixir-test-put-env-async
+    kind: mcq
+    difficulty: middle
+    title: "`Application.put_env/3` inside an `async: true` test"
+    body: |
+      ```elixir
+      use ExUnit.Case, async: true
+
+      test "uses the sandbox API" do
+        Application.put_env(:my_app, :api_base, "http://sandbox")
+        assert Client.base_url() == "http://sandbox"
+      end
+      ```
+
+      What is wrong?
+    choices:
+      - "Nothing; application env is per-process"
+      - "Application env is global to the VM, so this races with every other concurrently running test reading or writing the key; make the module `async: false` (and restore the value in `on_exit`) or inject the dependency instead"
+      - "`put_env` is not allowed outside `config/*.exs`"
+      - "It only fails if `Client` uses `Application.compile_env`"
+    answer: 1
+    explanation: |
+      The application environment is a VM-wide ETS table. Mutating it in an async test leaks into other tests
+      running at the same time, producing order-dependent flakiness. Options: `async: false` plus `on_exit` to
+      restore; pass the config as an argument (`Client.base_url(base)`); or make the key process-scoped by
+      reading it through something test-aware (Mox, `Req.Test`, `:persistent_term` per test are *not* better).
+      Note the last distractor is also a real problem: `compile_env` values cannot be changed at runtime at all.
+    tags: [application-env, async]
+    source: https://elixir.hexdocs.pm/Application.html
+
+  - slug: elixir-test-sandbox-shared-mode
+    kind: mcq
+    difficulty: middle
+    title: "When must an Ecto sandbox test be `async: false`?"
+    body: |
+      A test starts a GenServer that queries the database from its own process. The test author writes:
+
+      ```elixir
+      setup do
+        :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+        Ecto.Adapters.SQL.Sandbox.mode(Repo, {:shared, self()})
+      end
+      ```
+    choices:
+      - "It can stay `async: true` because the sandbox isolates each connection"
+      - "It must be `async: false`: shared mode makes *every* process use this test's connection, so concurrent tests would see each other's data"
+      - "It must be `async: false` only if the GenServer is named"
+      - "Shared mode is deprecated; use `start_owner!` instead and keep `async: true`"
+    answer: 1
+    explanation: |
+      In `:manual` mode each test checks out a connection wrapped in a transaction and only *allowed* processes
+      (`Sandbox.allow(Repo, self(), pid)`, or anything that inherits `$callers`, such as `Task`) may use it, which
+      keeps tests isolated and async-safe. `{:shared, pid}` mode is the escape hatch: it routes all processes to
+      one connection, so it is only safe when nothing else runs concurrently. Prefer explicit allowances (or
+      `start_owner!` for processes that outlive the test, like LiveView helpers) and keep `async: true`.
+    tags: [ecto, sandbox, async]
+    source: https://ecto-sql.hexdocs.pm/Ecto.Adapters.SQL.Sandbox.html
+
+  - slug: elixir-test-mix-test-failed-stale-seed
+    kind: mcq
+    difficulty: junior
+    title: "`mix test` flags for a fast feedback loop"
+    body: |
+      Which option description is **wrong**?
+    choices:
+      - "`mix test --failed` reruns only the tests that failed in the previous run"
+      - "`mix test --stale` runs only tests whose modules (or their dependencies) changed since the last `--stale` run"
+      - "`mix test --seed 0` runs tests in the order they are defined, which is useful to reproduce an order-dependent failure"
+      - "`mix test --trace` runs tests in parallel with extra logging to find race conditions"
+    answer: 3
+    explanation: |
+      `--trace` does the opposite: it sets `--max-cases 1` (no concurrency), prints every test name with timing
+      and disables timeouts, which is why it is used to *find slow tests* and to get readable output when
+      debugging. The other three are correct. By default ExUnit randomises test and module order with a printed
+      seed; rerun with `--seed N` to reproduce, and `--repeat-until-failure N` to shake out flakiness.
+    tags: [mix-test, flags]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Test.html
+
+  - slug: elixir-test-without-body-not-implemented
+    kind: mcq
+    difficulty: junior
+    title: "A `test` with no body"
+    body: |
+      ```elixir
+      test "handles unicode slugs"
+      ```
+
+      What does ExUnit do with this?
+    choices:
+      - "It is a compile error: `test` requires a `do` block"
+      - "It is silently skipped"
+      - "It is registered as a failing test with a \"Not implemented\" error and tagged `:not_implemented`, so it shows up in the report until you write it"
+      - "It passes, because an empty body returns `nil`"
+    answer: 2
+    explanation: |
+      Bodiless tests are placeholders: they always fail with `ExUnit.AssertionError` "Not implemented" and carry
+      the `:not_implemented` tag, so you can `--exclude not_implemented` while sketching a spec. `@tag :skip`
+      (optionally with a reason) is the way to deliberately skip a test; skipped tests are counted separately in
+      the summary. Contrast with Ruby's Minitest where `skip` is a call inside the body.
+    tags: [exunit, not-implemented, skip]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Case.html
+
+  - slug: elixir-test-assert-raise-message-regex
+    kind: mcq
+    difficulty: middle
+    title: "What does `assert_raise/3` return and match?"
+    body: |
+      ```elixir
+      error = assert_raise ArgumentError, ~r/expected :ok/, fn -> Parser.parse!("x") end
+      ```
+    choices:
+      - "`assert_raise` returns `true`; the second argument must be the exact message string"
+      - "It returns the rescued exception struct, and the second argument may be an exact string or a `Regex` matched against `Exception.message/1`"
+      - "It returns `{:error, exception}` and only checks the module"
+      - "It fails if the function raises any exception *other* than `ArgumentError`, but passes for subclasses of it"
+    answer: 1
+    explanation: |
+      `assert_raise/2` checks only the exception module; `assert_raise/3` also compares the message (string:
+      exact; regex: `=~`). It returns the exception, so you can assert on custom fields
+      (`assert error.reason == :bad_format`). Elixir has no exception inheritance, so "subclass" is meaningless;
+      raising a different exception, or none, fails the assertion. For exits and throws use `catch_exit/1`
+      and `catch_throw/1`.
+    tags: [assert_raise, exceptions]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Assertions.html
+
+  - slug: elixir-test-on-exit-separate-process
+    kind: mcq
+    difficulty: senior
+    title: "Why does this `on_exit` callback not work?"
+    body: |
+      ```elixir
+      setup do
+        :ets.new(:cache, [:named_table, :public])
+        on_exit(fn -> :ets.delete(:cache) end)
+        :ok
+      end
+      ```
+
+      The second test in the module fails with `ArgumentError` from `:ets.delete/1`. Why?
+    choices:
+      - "`on_exit` runs before the test, not after"
+      - "The ETS table is owned by the test process; when the test process exits the table is already gone, and `on_exit` runs in a *different* process after that exit, so the delete raises"
+      - "ETS tables cannot be deleted from a callback"
+      - "`on_exit` only runs when the test fails"
+    answer: 1
+    explanation: |
+      `on_exit` callbacks run in a separate process *after* the test process has exited with `:shutdown`.
+      Anything owned by or linked to the test process (ETS tables, linked processes, `Process.put` state) is
+      already gone, and `self()` inside the callback is not the test pid. The ETS table was cleaned up
+      automatically; the explicit delete is what fails. Use `on_exit` for things that outlive the test:
+      restoring `Application` env, deleting temp files, stopping globally named processes, `Mox.verify!`.
+    tags: [on_exit, ets, lifecycle]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Callbacks.html
+
+  - slug: elixir-test-code-fake-clock-agent
+    kind: code
+    difficulty: middle
+    title: "A controllable `FakeClock` for time-dependent code"
+    body: |
+      Time makes tests flaky, so inject a clock. Implement:
+
+      - `FakeClock`, an `Agent` registered under its module name, with `start_link/1` (initial `DateTime`),
+        `utc_now/0` (same name as `DateTime.utc_now/0`, so the real module satisfies the contract), `set/1` (replace the current time) and `advance/1` (add seconds).
+      - `Expiry.expired?/2` taking a `deadline` `DateTime` and a `clock` module, returning `true` when
+        `clock.utc_now()` is strictly after the deadline.
+
+      ```elixir
+      {:ok, _} = FakeClock.start_link(~U[2024-01-01 00:00:00Z])
+      FakeClock.advance(90)
+      FakeClock.utc_now()                               #=> ~U[2024-01-01 00:01:30Z]
+      Expiry.expired?(~U[2024-01-01 00:01:00Z], FakeClock) #=> true
+      ```
+
+      `FakeClock` must expose a `child_spec/1` so tests can `start_supervised!`.
+    starter_code: |
+      defmodule FakeClock do
+        use Agent
+
+        def start_link(initial) do
+          # TODO
+        end
+
+        def utc_now, do: # TODO
+        def set(%DateTime{} = dt), do: # TODO
+        def advance(seconds), do: # TODO
+      end
+
+      defmodule Expiry do
+        def expired?(deadline, clock) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FakeClockTest do
+        use ExUnit.Case
+
+        setup do
+          start_supervised!({FakeClock, ~U[2024-01-01 00:00:00Z]})
+          :ok
+        end
+
+        test "returns the time it was started with" do
+          assert FakeClock.utc_now() == ~U[2024-01-01 00:00:00Z]
+        end
+
+        test "set and advance change the time" do
+          FakeClock.set(~U[2030-06-15 12:00:00Z])
+          FakeClock.advance(90)
+          assert FakeClock.utc_now() == ~U[2030-06-15 12:01:30Z]
+        end
+
+        test "Expiry uses the injected clock" do
+          deadline = ~U[2024-01-01 00:01:00Z]
+          refute Expiry.expired?(deadline, FakeClock)
+          FakeClock.advance(60)
+          refute Expiry.expired?(deadline, FakeClock)
+          FakeClock.advance(1)
+          assert Expiry.expired?(deadline, FakeClock)
+        end
+
+        test "the real DateTime module satisfies the same contract" do
+          assert Expiry.expired?(~U[2000-01-01 00:00:00Z], DateTime)
+        end
+      end
+    solution: |
+      defmodule FakeClock do
+        use Agent
+
+        def start_link(initial) do
+          Agent.start_link(fn -> initial end, name: __MODULE__)
+        end
+
+        def utc_now, do: Agent.get(__MODULE__, & &1)
+        def set(%DateTime{} = dt), do: Agent.update(__MODULE__, fn _ -> dt end)
+        def advance(seconds), do: Agent.update(__MODULE__, &DateTime.add(&1, seconds, :second))
+      end
+
+      defmodule Expiry do
+        def expired?(deadline, clock) do
+          DateTime.compare(clock.utc_now(), deadline) == :gt
+        end
+      end
+    explanation: |
+      Passing the clock module as an argument (or reading it from config in tests) is the "mock as a noun"
+      approach: production passes `DateTime`, tests pass a fake they control, and no global state is patched.
+      `use Agent` generates the `child_spec/1` that `start_supervised!` needs, and the test supervisor stops the
+      agent after each test, so every test starts from a clean clock. Because the fake is a *named* process, a
+      module using it cannot be `async: true` alongside other modules that also start it; pass a pid-based clock
+      or use `Mox` if that matters.
+    tags: [agent, dependency-injection, time]
+    source: https://dashbit.co/blog/mocks-and-explicit-contracts
+
+  - slug: elixir-test-code-assert-eventually
+    kind: code
+    difficulty: middle
+    title: "An `assert_eventually` polling helper (instead of `Process.sleep`)"
+    body: |
+      Implement `Eventually.assert_eventually/3`: call `fun` up to `attempts` times, sleeping `sleep_ms`
+      between attempts, and return the first truthy value it produces. If every attempt returns a falsy
+      value, raise `ExUnit.AssertionError` with a message that includes the number of attempts.
+
+      ```elixir
+      Eventually.assert_eventually(fn -> Registry.lookup(Reg, :key) != [] end, 20, 10)
+      ```
+
+      Signature: `assert_eventually(fun, attempts \\ 10, sleep_ms \\ 5)`.
+    starter_code: |
+      defmodule Eventually do
+        def assert_eventually(fun, attempts \\ 10, sleep_ms \\ 5) do
+          # TODO: retry, sleep between attempts, raise ExUnit.AssertionError after the last attempt
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule EventuallyTest do
+        use ExUnit.Case
+
+        test "returns the truthy value as soon as the function produces one" do
+          {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+          value =
+            Eventually.assert_eventually(fn ->
+              n = Agent.get_and_update(counter, &{&1 + 1, &1 + 1})
+              if n >= 3, do: {:ready, n}
+            end)
+
+          assert value == {:ready, 3}
+        end
+
+        test "an immediately truthy function is called once" do
+          {:ok, counter} = Agent.start_link(fn -> 0 end)
+          assert Eventually.assert_eventually(fn -> Agent.update(counter, &(&1 + 1)) == :ok end, 5, 1)
+          assert Agent.get(counter, & &1) == 1
+        end
+
+        test "raises an AssertionError mentioning the attempts when it never succeeds" do
+          error =
+            assert_raise ExUnit.AssertionError, fn ->
+              Eventually.assert_eventually(fn -> false end, 4, 1)
+            end
+
+          assert error.message =~ "4"
+        end
+      end
+    solution: |
+      defmodule Eventually do
+        def assert_eventually(fun, attempts \\ 10, sleep_ms \\ 5)
+
+        def assert_eventually(fun, 1, _sleep_ms) do
+          fun.() ||
+            raise ExUnit.AssertionError, message: "condition never became truthy"
+        end
+
+        def assert_eventually(fun, attempts, sleep_ms) do
+          case fun.() do
+            result when result in [nil, false] ->
+              Process.sleep(sleep_ms)
+              try do
+                assert_eventually(fun, attempts - 1, sleep_ms)
+              rescue
+                ExUnit.AssertionError ->
+                  raise ExUnit.AssertionError,
+                    message: "condition never became truthy after #{attempts} attempts"
+              end
+
+            result ->
+              result
+          end
+        end
+      end
+    explanation: |
+      A fixed `Process.sleep(100)` before an assertion is the classic flaky-test smell: too short on a loaded CI
+      box, too long everywhere else. Polling with a bounded number of attempts fails fast when it can and waits
+      only as long as needed. Still prefer deterministic synchronisation when you can get it: `assert_receive`
+      on a message the process sends, a synchronous `GenServer.call`, or `:sys.get_state/1`; polling is for
+      side effects you cannot observe directly (ETS written by another process, a file on disk).
+    tags: [flaky-tests, polling, helpers]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Assertions.html
+
+  - slug: elixir-test-code-capture-log-warnings
+    kind: code
+    difficulty: middle
+    title: "Collect warning messages with `ExUnit.CaptureLog`"
+    body: |
+      Implement `LogCapture.warnings/1`: run the given zero-arity function, capture everything it logs with
+      `ExUnit.CaptureLog.capture_log/2`, and return the list of messages logged at `:warning` level or above
+      (the text after `[warning] ` / `[error] ` on each line, in order). Messages at `:info` and `:debug` must
+      not appear in the result.
+
+      ```elixir
+      LogCapture.warnings(fn -> Logger.warning("disk 91%"); Logger.info("tick") end)
+      #=> ["disk 91%"]
+      ```
+
+      Hint: `capture_log(level: :warning, fun)` filters the captured output by level.
+    starter_code: |
+      defmodule LogCapture do
+        import ExUnit.CaptureLog
+
+        def warnings(fun) do
+          # TODO: capture, split into lines, keep "[warning] ..." and "[error] ..." messages
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LogCaptureTest do
+        use ExUnit.Case
+        require Logger
+
+        test "returns warning messages in order" do
+          messages =
+            LogCapture.warnings(fn ->
+              Logger.warning("disk 91%")
+              Logger.warning("disk 95%")
+            end)
+
+          assert messages == ["disk 91%", "disk 95%"]
+        end
+
+        test "includes errors but not info or debug" do
+          messages =
+            LogCapture.warnings(fn ->
+              Logger.info("starting")
+              Logger.error("boom")
+              Logger.debug("details")
+            end)
+
+          assert messages == ["boom"]
+        end
+
+        test "returns an empty list when nothing is logged" do
+          assert LogCapture.warnings(fn -> :ok end) == []
+        end
+      end
+    solution: |
+      defmodule LogCapture do
+        import ExUnit.CaptureLog
+
+        def warnings(fun) do
+          fun
+          |> then(&capture_log([level: :warning], &1))
+          |> String.split("\n", trim: true)
+          |> Enum.flat_map(fn line ->
+            case Regex.run(~r/\[(?:warning|error|critical|alert|emergency)\] (.*)$/, line) do
+              [_, message] -> [message]
+              nil -> []
+            end
+          end)
+        end
+      end
+    explanation: |
+      `capture_log/2` silences the default handler and returns the formatted output of everything the calling
+      process (and processes it waits for) logged during the function; `with_log/2` additionally returns the
+      function's result. The `:level` option drops lower levels before formatting. In an `async: true` module the
+      capture may also contain lines from other tests running at the same time, which is why the docs recommend
+      `assert log =~ "..."` over exact comparisons. The companion `ExUnit.CaptureIO.capture_io/1` does the same for
+      `IO.puts` output.
+    tags: [capture_log, logger]
+    source: https://ex-unit.hexdocs.pm/ExUnit.CaptureLog.html
+
+  - slug: elixir-test-code-counter-genserver-under-test
+    kind: code
+    difficulty: junior
+    title: "A `Counter` GenServer that is easy to test"
+    body: |
+      Implement `Counter`, a GenServer whose state is an integer:
+
+      - `start_link(initial)` starts it (unnamed, so many can run at once);
+      - `inc(pid)` increments **synchronously** and returns the new value;
+      - `value(pid)` returns the current value.
+
+      The bundled tests use `start_supervised!`, `:sys.get_state/1`, `stop_supervised!` and `Process.monitor/1`,
+      so `use GenServer` must provide the child spec.
+
+      ```elixir
+      {:ok, pid} = Counter.start_link(5)
+      Counter.inc(pid)   #=> 6
+      Counter.value(pid) #=> 6
+      ```
+    starter_code: |
+      defmodule Counter do
+        use GenServer
+
+        def start_link(initial), do: # TODO
+        def inc(pid), do: # TODO
+        def value(pid), do: # TODO
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        # TODO: handle_call clauses
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CounterTest do
+        use ExUnit.Case, async: true
+
+        setup do
+          pid = start_supervised!({Counter, 10})
+          %{pid: pid}
+        end
+
+        test "inc is synchronous and returns the new value", %{pid: pid} do
+          assert Counter.inc(pid) == 11
+          assert Counter.inc(pid) == 12
+          assert Counter.value(pid) == 12
+        end
+
+        test "state can be inspected with :sys.get_state/1", %{pid: pid} do
+          Counter.inc(pid)
+          assert :sys.get_state(pid) == 11
+        end
+
+        test "the process goes down with :shutdown when stopped", %{pid: pid} do
+          ref = Process.monitor(pid)
+          :ok = stop_supervised!(Counter)
+          assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}
+        end
+
+        test "each test gets a fresh counter", %{pid: pid} do
+          assert Counter.value(pid) == 10
+        end
+      end
+    solution: |
+      defmodule Counter do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+        def inc(pid), do: GenServer.call(pid, :inc)
+        def value(pid), do: GenServer.call(pid, :value)
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        @impl true
+        def handle_call(:inc, _from, n), do: {:reply, n + 1, n + 1}
+        def handle_call(:value, _from, n), do: {:reply, n, n}
+      end
+    explanation: |
+      The techniques the tests show are the standard GenServer toolkit: `start_supervised!` gives each test its own
+      process and guarantees it is stopped before the next test; synchronous `call`s make assertions deterministic
+      (a `cast` followed by `value/1` works only because the mailbox is FIFO, and interviewers will ask you why);
+      `:sys.get_state/1` peeks at internal state for white-box assertions (use sparingly, it couples tests to
+      the state shape); `Process.monitor/1` + `assert_receive {:DOWN, ...}` asserts on process termination
+      without sleeping. Unnamed servers are what make `async: true` safe here.
+    tags: [genserver, start_supervised, sys-get-state, monitor]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Callbacks.html
+
+  - slug: elixir-test-code-fake-mailer-behaviour
+    kind: code
+    difficulty: middle
+    title: "A behaviour-backed fake that reports to the test process"
+    body: |
+      Apply "mocks as nouns": define an explicit contract and a fake that satisfies it.
+
+      - `Mailer` is a behaviour with one callback: `deliver(map()) :: :ok`.
+      - `FakeMailer` implements `Mailer`; its `deliver/1` sends `{:delivered, email}` to the calling process and
+        returns `:ok`.
+      - `Notifier.welcome(user, mailer)` builds `%{to: user.email, subject: "Welcome, <name>!"}`, delivers it
+        through the given `mailer` module and returns `:ok`.
+
+      ```elixir
+      Notifier.welcome(%{name: "Ann", email: "ann@example.com"}, FakeMailer)
+      #=> :ok   (and the caller receives {:delivered, %{to: "ann@example.com", subject: "Welcome, Ann!"}})
+      ```
+    starter_code: |
+      defmodule Mailer do
+        # TODO: @callback deliver(map()) :: :ok
+      end
+
+      defmodule FakeMailer do
+        # TODO: @behaviour Mailer + deliver/1
+      end
+
+      defmodule Notifier do
+        def welcome(user, mailer) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FakeMailerTest do
+        use ExUnit.Case, async: true
+
+        test "FakeMailer declares the Mailer behaviour" do
+          behaviours = Keyword.get_values(FakeMailer.module_info(:attributes), :behaviour) |> List.flatten()
+          assert Mailer in behaviours
+          assert Mailer.behaviour_info(:callbacks) == [deliver: 1]
+        end
+
+        test "welcome delivers through the injected mailer" do
+          assert Notifier.welcome(%{name: "Ann", email: "ann@example.com"}, FakeMailer) == :ok
+          assert_received {:delivered, %{to: "ann@example.com", subject: subject}}
+          assert subject == "Welcome, Ann!"
+        end
+
+        test "nothing is delivered when welcome is not called" do
+          refute_received {:delivered, _}
+        end
+      end
+    solution: |
+      defmodule Mailer do
+        @callback deliver(map()) :: :ok
+      end
+
+      defmodule FakeMailer do
+        @behaviour Mailer
+
+        @impl true
+        def deliver(email) do
+          send(self(), {:delivered, email})
+          :ok
+        end
+      end
+
+      defmodule Notifier do
+        def welcome(user, mailer) do
+          mailer.deliver(%{to: user.email, subject: "Welcome, #{user.name}!"})
+        end
+      end
+    explanation: |
+      The behaviour is the explicit contract: the compiler warns if `FakeMailer` misses a callback or if the
+      real adapter drifts. Sending a message to `self()` turns a side effect into something `assert_received`
+      can check, with no global state and full `async: true` compatibility. This is exactly the pattern Mox
+      automates (`defmock(MailerMock, for: Mailer)` + `expect`), and the one the "Mocks and explicit contracts"
+      post recommends over patching modules globally. In production the module comes from config or a
+      default argument (`mailer \\ Application.fetch_env!(:my_app, :mailer)`).
+    tags: [behaviour, mocks, dependency-injection, assert_received]
+    source: https://dashbit.co/blog/mocks-and-explicit-contracts
+
+  - slug: elixir-test-open-mox-why-behaviours
+    kind: open
+    difficulty: senior
+    title: "Why does Mox refuse to mock a module that has no behaviour?"
+    body: |
+      Coming from Ruby/RSpec, a colleague asks why they cannot just `Mox.expect(HTTPoison, :get, ...)`.
+      Explain Mox's design, the "mocks as nouns" idea, and what the trade-off buys a team.
+    answer: |
+      - Mox will only `defmock(HTTPMock, for: HTTPBehaviour)`: the mock is a *new module* generated from a
+        behaviour, never a patch of an existing one. The behaviour is the explicit contract between your code
+        and the dependency; the compiler checks both the real adapter and the mock against it.
+      - "Mock as a noun": you create a mock and *pass it in* (via config `Application.get_env(:app, :http)` or
+        as an argument), instead of "mocking" (verb) a global module. No global patching means tests stay
+        `async: true`; expectations live in the test process and are routed by pid (`allow/3`, `$callers`).
+      - Benefits: swapping the HTTP library only breaks the adapter tests, not every test that mocked
+        `HTTPoison`; the contract documents what you depend on; growing the contract becomes a visible design
+        decision.
+      - Costs: an extra behaviour + adapter module per boundary, and a config switch per environment; teams
+        sometimes over-apply it and mock their own internals.
+      - The rule of thumb from the post: every mocked boundary needs at least one integration test of the real
+        implementation, and prefer fakes/in-memory implementations or message-sending stubs when they are simpler
+        than expectations.
+    explanation: |
+      Follow-ups: "How does a GenServer started by the app use the test's expectations?" (`Mox.allow/3`, or
+      `set_mox_global` with `async: false`); "`expect` vs `stub`"; "Why define mocks in `test/support` instead
+      of `test_helper.exs`?" (needed at compile time to avoid undefined-module warnings). Candidates who propose
+      `:meck` or `Patch` should be able to say why those sacrifice concurrency.
+    tags: [mox, behaviours, mocks]
+    source: https://dashbit.co/blog/mocks-and-explicit-contracts
+
+  - slug: elixir-test-open-testing-genservers
+    kind: open
+    difficulty: middle
+    title: "How do you test a GenServer without making the tests flaky?"
+    body: |
+      Describe your approach to testing a GenServer that has casts, periodic `handle_info` ticks and talks to
+      a database. Which tools do you reach for and which do you avoid?
+    answer: |
+      - Test through the public API, not callbacks: start it with `start_supervised!({Server, opts})` so it is
+        cleaned up and isolated per test; use unnamed processes (or a `name:` derived from the test) so the
+        module can be `async: true`.
+      - Prefer synchronous `call`s for assertions; after a `cast`, either follow with a `call` (mailbox is FIFO,
+        so the cast is processed first) or use `:sys.get_state/1` for white-box checks.
+      - Timers: make the interval configurable (`interval: 10` in tests) or expose a `tick/1` function and
+        `send(pid, :tick)` directly; never `Process.sleep` and hope.
+      - Side effects: have the server report to the test process (`send(test_pid, {:saved, id})`) through an
+        injected module, then `assert_receive`; for DB, check out a sandbox connection and `Sandbox.allow` the
+        server pid.
+      - Crashes: `Process.flag(:trap_exit, true)` or `Process.monitor` + `assert_receive {:DOWN, ...}`,
+        `catch_exit(GenServer.call(pid, :bad))` for calls that crash the server, `@tag capture_log: true` to
+        keep crash reports quiet.
+      - Unit-test pure logic separately (extract `handle_call` bodies into plain functions) and keep the
+        process test thin.
+    explanation: |
+      Follow-up: "Why is `:sys.get_state` controversial?" (couples the test to the internal state shape; fine
+      for a quick check, bad as the main assertion). "What happens if a linked server crashes during a test?"
+      (test process exits too unless trapping exits; `start_supervised!` does not link).
+    tags: [genserver, start_supervised, sys-get-state]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Callbacks.html
+
+  - slug: elixir-test-open-flaky-tests
+    kind: open
+    difficulty: senior
+    title: "A test fails one run in twenty on CI. How do you hunt it down?"
+    body: |
+      Walk through how you diagnose and fix an intermittently failing ExUnit test. Name the common root causes
+      in Elixir code bases.
+    answer: |
+      - Reproduce: take the seed from the failing run (`mix test --seed 12345`), add
+        `--repeat-until-failure 50`, run with `--trace` (serial, verbose) and without it (concurrent) to see if
+        concurrency matters; `--slowest 10` and `--max-cases` tweaks help expose timing.
+      - Usual suspects: `Process.sleep` as synchronisation; `assert_received` where `assert_receive` was needed;
+        async modules sharing global state (`Application.put_env`, named processes, named ETS, `:persistent_term`,
+        files, the DB in shared sandbox mode); tests depending on definition order (default order is random);
+        time (`DateTime.utc_now`) and randomness without injected sources; leaking processes from a previous
+        test that are still sending messages; `on_exit` doing work the test process already tore down.
+      - Fix by making synchronisation explicit: `assert_receive` on a message the system emits, synchronous
+        calls, `Process.monitor`, `:erlang.trace`/`:sys.trace` only for investigation; inject clocks and
+        randomness; give every test unique names/data; move shared-state tests to `async: false`.
+      - Raise the timeout only when it is a real slow operation (`@tag timeout:`), never as a band-aid.
+      - Prevent regressions: keep `--seed` random in CI, run `--repeat-until-failure` on suspicious files,
+        tag known-slow external tests and exclude them by default.
+    explanation: |
+      Interviewers want a *method* (reproduce, isolate, fix synchronisation), not a list. A strong follow-up is
+      "how would you prove two async modules are interfering?" (run the pair alone with `mix test a_test.exs
+      b_test.exs --seed N`, or temporarily `--max-cases 1`).
+    tags: [flaky-tests, debugging, async]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Test.html
+
+  - slug: elixir-test-open-async-shared-resources
+    kind: open
+    difficulty: senior
+    title: "Which resources make `async: true` unsafe, and how do you make each one safe?"
+    body: |
+      List the kinds of shared state that break concurrent test modules in a typical Phoenix app, and the
+      technique you use to keep each test module `async: true` anyway.
+    answer: |
+      - Database: use `Ecto.Adapters.SQL.Sandbox` in `:manual` mode, check out per test, `allow/3` other
+        processes; avoid `{:shared, pid}` mode; use unique data to avoid lock contention.
+      - Application env: do not `put_env` in tests; read config into the process/struct at start or inject the
+        module/value as an argument; if unavoidable, `async: false`.
+      - Named processes and registries: start unnamed processes with `start_supervised!`, or name them per test
+        (`name: :"#{test}_server"` / `{:via, Registry, ...}` keyed by test pid).
+      - ETS: create tables owned by the test process (dies with it) without `:named_table`, or name them per
+        test; avoid global public tables in app code where possible.
+      - Logger / IO: `capture_log` and `capture_io` are process-scoped and fine; be aware other tests' lines may
+        leak into captures, so use `=~`.
+      - Mox: private mode by default; `allow/3` for child processes; `set_mox_global` forces `async: false`.
+      - Files and ports: `@tag :tmp_dir` gives a unique directory per test; bind network listeners to port 0.
+      - Phoenix PubSub / Endpoint: subscribing is per process, fine; global caches (`Cachex`, `:persistent_term`)
+        need namespacing per test or `async: false`.
+    explanation: |
+      Follow-up: "Does `async: true` ever run tests in the *same* module in parallel?" (only parameterized
+      modules in 1.18+, and `group:` can serialize related modules). Mistake: thinking the sandbox makes
+      *everything* safe; it only covers the Repo.
+    tags: [async, shared-state, sandbox, ets]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Case.html
+
+  - slug: elixir-test-open-dependency-injection-styles
+    kind: open
+    difficulty: middle
+    title: "Compare the ways of injecting a test double in Elixir"
+    body: |
+      You need to replace an HTTP client in tests. Compare: (1) module from application env, (2) module as a
+      function argument / struct field, (3) `Application.compile_env`, (4) global patching libraries.
+      When do you choose which?
+    answer: |
+      - Module as argument or struct field (`Client.new(http: FakeHTTP)` / `fetch(url, http \\ RealHTTP)`):
+        most explicit, async-safe, no config; best for libraries and anything with a small call surface.
+      - Application env (`Application.get_env(:app, :http, RealHTTP)` read at call time): one switch in
+        `config/test.exs`, works with Mox; cost is an ETS lookup per call and implicit coupling; set it once in
+        config, never with `put_env` in async tests.
+      - `Application.compile_env`: value baked in at compile time, so changing it needs recompilation and it is
+        enforced to match at boot. Fine for the test/prod switch in `config/test.exs` (test build is separate),
+        but it cannot vary per test.
+      - Global patching (`:meck`, `Patch`): no code changes needed, but forces `async: false`, hides the contract,
+        and couples tests to the library's internals; use for legacy code you cannot change.
+      - Function-based DI (pass `fn url -> ... end`) is lighter than a module when there is one call.
+      - Whatever you pick, define a behaviour for the boundary so the real and fake implementations are checked.
+    explanation: |
+      Follow-up: "Why not `get_env` inside a hot path?" (negligible for most apps; cache in a struct at start if
+      measured). Mistake: using `@http Application.compile_env(...)` as a module attribute and then trying to
+      `put_env` it in a test.
+    tags: [dependency-injection, application-env, compile_env]
+    source: https://elixir.hexdocs.pm/Application.html
+
+  - slug: elixir-test-open-testing-process-termination
+    kind: open
+    difficulty: middle
+    title: "How do you assert that a process crashed, stopped, or exited with a reason?"
+    body: |
+      Show the idioms for asserting on process termination in ExUnit and explain the role of
+      `Process.monitor/1`, `catch_exit/1`, `trap_exit` and `assert_raise`.
+    answer: |
+      - `ref = Process.monitor(pid)` then `assert_receive {:DOWN, ^ref, :process, ^pid, reason}`: works for any
+        process, no link needed, lets you match the exit reason (`:normal`, `:shutdown`, `{%RuntimeError{}, _}`).
+      - `catch_exit(GenServer.call(pid, :explode))` for a call whose server crashes: the caller receives an
+        exit, `catch_exit` returns the reason so you can assert on it; `assert_raise` would *not* catch it
+        because an exit is not an exception.
+      - `Process.flag(:trap_exit, true)` + `assert_receive {:EXIT, ^pid, reason}` when the test has linked to
+        the process (e.g. `start_link`); without trapping, a crash takes the test process down with it.
+      - `assert_raise` only for exceptions raised in the test process itself (e.g. `Server.start_link!` raising).
+      - `@tag capture_log: true` to keep the crash report out of the output; `start_supervised!` to make sure
+        the dead process does not leak into the next test; `refute Process.alive?(pid)` after a `:DOWN` as a
+        sanity check (never *instead* of it, it races).
+    explanation: |
+      Follow-up: "What reason does `stop_supervised!` produce?" (`:shutdown`). "Why does `GenServer.call` on a
+      dead pid exit with `:noproc`?" Mistake: `Process.sleep(10); refute Process.alive?(pid)`.
+    tags: [monitor, catch_exit, trap_exit]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Assertions.html
+
+  - slug: elixir-test-open-property-based-testing
+    kind: open
+    difficulty: senior
+    title: "When is property-based testing worth it, and how does StreamData work?"
+    body: |
+      Explain property-based testing with StreamData/`ExUnitProperties`: what a property is, how generators and
+      shrinking work, and where you would and would not use it.
+    answer: |
+      - Instead of hand-picked examples, you state an invariant and let the framework generate inputs:
+        `check all list <- list_of(integer()) do assert Enum.sort(list) == list |> Enum.sort() |> Enum.sort() end`.
+        Default 100 runs, random seed, `max_runs:` configurable.
+      - Generators are composable: `integer()`, `string(:printable)`, `list_of/1`, `map_of/2`, `one_of/1`,
+        `map/2`, `bind/2` (dependent generators), `filter/2` (avoid narrow filters, they raise after too many
+        rejections), `StreamData.member_of/1`; custom generators for domain structs.
+      - On failure StreamData *shrinks* the input toward a minimal counter-example (integers toward 0, lists
+        shorter) and prints the seed so it is reproducible.
+      - Good fits: encoders/decoders (`decode(encode(x)) == x`), parsers, pure data transforms, idempotence and
+        commutativity laws, comparing a fast implementation to a naive one, state-machine tests of a GenServer.
+      - Poor fits: code dominated by side effects or external systems, properties that are hard to state
+        beyond "does not crash", slow operations (100 runs x expensive).
+      - It complements example tests: keep examples for documentation and regressions, add properties for the
+        invariants.
+    explanation: |
+      Follow-up: "What is the difference between generation size and shrinking?" (size grows with runs to produce
+      bigger inputs; shrinking is per-generator and independent). Mistake: writing properties that re-implement
+      the function under test.
+    tags: [property-based, stream_data]
+    source: https://stream-data.hexdocs.pm/StreamData.html
+
+  - slug: elixir-test-open-doctests-tradeoffs
+    kind: open
+    difficulty: middle
+    title: "What belongs in a doctest, and what does not?"
+    body: |
+      Your team debates whether to doctest everything. Explain how doctests run, their advantages, and the
+      cases where you would write a regular test instead.
+    answer: |
+      - `doctest MyModule` in a test case extracts `iex>` examples from `@moduledoc`/`@doc` and turns each
+        example group into a test; `doctest_file` does the same for Markdown such as the README.
+      - Advantages: documentation that cannot rot, examples visible in ExDoc and `h Mod.fun`, trivial to write
+        for pure functions.
+      - Not suitable: side effects (no sandbox, no stdout capture, modules defined in examples persist), values
+        that vary (pids, refs, timestamps, maps with many keys where ordering could change; omit the expected
+        result or use `...` wildcards), long setup, error paths beyond a single `** (Error)` line, anything that
+        needs the DB or processes.
+      - Keep examples short and representative; put edge cases and regressions in regular tests.
+      - Options: `only:`/`except:` to skip some functions, `import: true` to call functions without prefix,
+        `tags:` to tag the generated tests.
+      - Format pitfalls: `#=>` is not an assertion, a blank line separates tests, `...>` for continuation,
+        results must be `inspect`-able and deterministic.
+    explanation: |
+      Follow-up: "How are doctests named and run?" (one test per example group, under `doctest` in the case
+      module, in random order like any test). Mistake: asserting on `IO.puts` output in a doctest.
+    tags: [doctest, documentation]
+    source: https://ex-unit.hexdocs.pm/ExUnit.DocTest.html
+
+  - slug: elixir-test-open-testing-external-http
+    kind: open
+    difficulty: middle
+    title: "Testing code that calls an external HTTP API: Mox, Bypass or a real request?"
+    body: |
+      Compare the options for testing a module that calls a third-party REST API and say which layer each
+      option tests.
+    answer: |
+      - Behaviour + Mox (or hand-written fake): mock the *adapter* (`PaymentsAPI.charge/1`), test your business
+        logic against expectations; fastest, async-safe, but does not test HTTP, headers, JSON encoding.
+      - Bypass: starts a real local HTTP server on a random port and lets the test define the response per
+        request (`Bypass.expect(bypass, "POST", "/charges", fn conn -> Plug.Conn.resp(conn, 200, body) end)`);
+        tests the full client including serialization and error handling; a bit slower, needs the client's
+        base URL to be configurable.
+      - `Req.Test` (Req 0.4+) / Tesla.Mock: library-level stubbing by plug, in-process, async-safe, covers
+        request building without a socket.
+      - Recorded cassettes (ExVCR): capture real responses once; risk of stale fixtures.
+      - Real API calls: tagged `@tag :external`, excluded by default, run on demand or nightly; the only thing
+        that catches contract drift.
+      - Typical layering: Mox for domain tests, Bypass/Req.Test for the adapter, a handful of external tests.
+    explanation: |
+      Follow-up: "How does Bypass stay async-safe?" (each test starts its own server on a free port and injects
+      the URL). Mistake: mocking the HTTP library itself (`HTTPoison`) in every domain test.
+    tags: [bypass, mox, http]
+    source: https://dashbit.co/blog/mocks-and-explicit-contracts
+
+  - slug: elixir-test-open-describe-setup-scoping
+    kind: open
+    difficulty: junior
+    title: "How do `describe`, `setup` and tags interact?"
+    body: |
+      Explain how you organise a large test module: scoping of `setup` inside `describe`, named setups,
+      `@describetag`, `@moduletag`, and the context map tests receive.
+    answer: |
+      - `describe "fun/arity"` groups tests and prefixes their names; a `setup` inside the block runs only for
+        those tests, on top of module-level `setup`s. Blocks cannot nest: reuse logic with named setups
+        (`setup [:create_user, :log_in]` where each is a function receiving the context).
+      - Every `setup`/`setup_all` can return a map or keyword that is merged into the context; the test
+        receives it as its second argument: `test "...", %{user: user} do`.
+      - Tags: `@moduletag :db`, `@describetag :slow`, `@tag timeout: 1_000`; tags are in the context too
+        (`context[:slow]`), so a `setup` can branch on them (`setup %{conn: conn, admin: true} = ctx`).
+      - `@moduletag`/`@describetag` must come after `use ExUnit.Case`; `@tag` applies to the next `test` only
+        and overrides describe/module tags for the same key.
+      - Run a block or a test by line (`mix test test/x_test.exs:42`) or by name (`--only describe:"fun/1"`).
+      - Name tests by behaviour ("returns :error when the slug is taken"), not by implementation.
+    explanation: |
+      Follow-up: "Does `setup_all` see `@tag`s?" (only `@moduletag`). Mistake: putting expensive, per-test
+      work in `setup_all` and then mutating it, which leaks between tests.
+    tags: [describe, setup, tags]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Case.html
+
+  - slug: elixir-test-open-capture-log-capture-io
+    kind: open
+    difficulty: middle
+    title: "How do you test logging and console output?"
+    body: |
+      Explain `ExUnit.CaptureLog` and `ExUnit.CaptureIO`, the `@tag :capture_log` option, and the gotchas
+      with concurrency and other processes.
+    answer: |
+      - `capture_log(fn -> ... end)` returns the Logger output produced while the function ran, as a string;
+        `with_log/2` returns `{result, log}`. The `:level` option filters.
+      - `@tag capture_log: true` (or `ExUnit.start(capture_log: true)`) hides log output for a test unless it
+        fails, which is the usual way to keep expected crash reports quiet.
+      - Messages from other processes are captured only if the test waits for them (the process exits or
+        the test receives a message); `setup_all` logs are never captured.
+      - With `async: true`, lines from other tests may appear in the capture, so assert with `=~` rather than
+        `==`.
+      - `capture_io(fn -> IO.puts("x") end)` captures `:stdio` of the *calling* process; `capture_io(:stderr, ...)`
+        for stderr; `capture_io("input", fn -> IO.gets("") end)` feeds stdin.
+      - Prefer testing the *behaviour* over the exact log line; log assertions are brittle and are best reserved
+        for audit-style logging that is a requirement.
+    explanation: |
+      Follow-up: "Why does `capture_log` miss a message from a Task?" (the task's logs are only captured if the
+      test awaits it). Mistake: asserting on the full formatted line including timestamp.
+    tags: [capture_log, capture_io]
+    source: https://ex-unit.hexdocs.pm/ExUnit.CaptureLog.html
+
+  - slug: elixir-test-theory-test-lifecycle
+    kind: theory
+    difficulty: middle
+    title: "The life of one ExUnit test"
+    body: |
+      Knowing the exact sequence explains most "why is my cleanup failing" questions.
+
+      1. `mix test` loads `test/test_helper.exs` (which calls `ExUnit.start()`), then requires `test/**/*_test.exs`.
+      2. Modules are collected; `async: true` modules run concurrently (`--max-cases`), then the sync ones.
+      3. For each module: `setup_all` callbacks run once in a **dedicated process**; the resulting context is
+         shared read-only with every test.
+      4. For each test (random order within the module):
+         - a **new test process** is spawned;
+         - `setup` callbacks run *in that process*, in definition order, merging their returns into the context;
+         - the test body runs with the context as its argument;
+         - the test process exits with reason `:shutdown` (linked processes die unless they trap exits);
+         - children started with `start_supervised!` are stopped synchronously, in reverse start order;
+         - `on_exit` callbacks run in a **separate process**, most recently registered first.
+      5. After the last test, `setup_all` `on_exit`s run and the `setup_all` process exits.
+
+      ```elixir
+      setup do
+        pid = start_supervised!(Worker)          # dies before on_exit
+        on_exit(fn -> File.rm_rf!("tmp/out") end) # runs after the test process is gone
+        %{pid: pid}
+      end
+      ```
+
+      Consequences: `self()` differs between the test, `setup_all` and `on_exit`; ETS tables and `Process`
+      dictionary entries vanish with the test process; a test cannot "see" another test's state because every
+      test has fresh processes; timeouts (`@tag timeout:`, default 60 s) kill the test process.
+    answer: |
+      **Q:** You start a process with `start_link` in `setup` and it is still alive in the next test. Why?
+      **A:** Linked processes only die with the test process if the exit propagates; if the started process traps
+      exits (or was started under an application supervisor) it survives. Use `start_supervised!` so the test
+      supervisor terminates it deterministically.
+    explanation: |
+      Interviewers use this to probe understanding of processes, not ExUnit trivia: who links to whom, who owns
+      resources, what `:shutdown` means. The reverse-order shutdown of supervised children and the separate
+      `on_exit` process are the two facts most candidates miss.
+    tags: [lifecycle, setup, on_exit, start_supervised]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Callbacks.html
+
+  - slug: elixir-test-theory-tags-and-configure
+    kind: theory
+    difficulty: junior
+    title: "Tagging and filtering tests"
+    body: |
+      Tags are plain keywords attached to tests; filters select by them. The whole mechanism is three pieces.
+
+      ```elixir
+      # test/test_helper.exs
+      ExUnit.start(exclude: [:integration, :slow])
+      # or: ExUnit.configure(exclude: [...]); ExUnit.start()
+
+      defmodule BillingTest do
+        use ExUnit.Case, async: true
+        @moduletag :billing                 # every test in the module
+
+        describe "charge/2" do
+          @describetag :external            # every test in the block
+
+          @tag :integration                 # next test only
+          @tag timeout: 120_000
+          test "charges a real sandbox card", %{integration: true} = ctx do
+            ...
+          end
+        end
+      end
+      ```
+
+      - `@tag :x` is `@tag x: true`; values are visible in the context map, so `setup` can react to them.
+      - Built-in tags: `:skip` (with optional reason), `:timeout` (ms or `:infinity`), `:capture_log`,
+        `:tmp_dir` (creates a per-test directory and puts the path in the context), `:not_implemented`
+        (set automatically on bodiless tests).
+      - Filtering from the CLI: `--only key[:value]`, `--include`, `--exclude`. Excluding by key alone matches
+        any value. `--only` fails when nothing matches. Filters apply to module, describe and test tags alike.
+      - `mix test path/to/file_test.exs:42` runs the test or describe block at that line.
+      - Keep the default run fast and hermetic: exclude integration/external tags in `test_helper.exs` and
+        include them explicitly in a dedicated CI job (`mix test --include integration`).
+    answer: |
+      **Q:** `ExUnit.configure(exclude: [:integration])` is set and you run `mix test --include integration`. What runs?
+      **A:** Everything, including the integration tests: `--include` re-adds the excluded tag on top of the
+      default set. Use `--only integration` to run just those.
+    explanation: |
+      Junior interviews check that you can keep slow or external tests out of the default run; the `--include`
+      vs `--only` distinction is the usual trick question. Knowing that tags flow into the context connects this
+      topic with `setup` design.
+    tags: [tags, filtering, test_helper]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Case.html
+
+  - slug: elixir-test-theory-sandbox-ownership
+    kind: theory
+    difficulty: senior
+    title: "Ecto SQL Sandbox: ownership, allowances and shared mode"
+    body: |
+      The sandbox is what lets hundreds of database tests run concurrently against one Postgres.
+
+      ```elixir
+      # test_helper.exs
+      Ecto.Adapters.SQL.Sandbox.mode(MyApp.Repo, :manual)
+
+      # in a case template / setup
+      setup tags do
+        pid = Ecto.Adapters.SQL.Sandbox.start_owner!(MyApp.Repo, shared: not tags[:async])
+        on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+        :ok
+      end
+      ```
+
+      How it works:
+
+      - The sandbox is a pool wrapper. In `:manual` mode a process must **check out** a connection
+        (`checkout/2` or `start_owner!/2`); the connection is wrapped in a transaction that is rolled back at
+        check-in, so nothing a test writes is visible to other connections or persists.
+      - Only the owner and processes it **allows** (`allow(Repo, owner, pid)`) may use that connection. Processes
+        that carry `$callers` (Task, Task.Supervisor) are allowed automatically; a GenServer started by the app
+        is not, hence "could not checkout the connection owned by" errors.
+      - `{:shared, owner}` mode routes *all* processes to the owner's connection. It is what the
+        `shared: not tags[:async]` idiom enables for `async: false` modules; it cannot be concurrent.
+      - `start_owner!` runs the ownership in a separate process not linked to the test, which is necessary when
+        helpers like LiveView's `live/2` spawn processes that outlive the test body; `stop_owner/1` in `on_exit`.
+      - Deadlocks between async tests usually mean two tests touch the same rows (unique constraints, counters);
+        use unique data, or `async: false` as a last resort.
+      - Each test is one transaction, so `Repo.transaction` nesting works via savepoints, but `LISTEN/NOTIFY`,
+        advisory locks and code that opens a second connection behave differently than in production.
+    answer: |
+      **Q:** A test starts a GenServer that calls `Repo.get/2` and fails with "cannot find ownership process". What are
+      the two fixes, and which keeps the test async?
+      **A:** `Sandbox.allow(Repo, self(), server_pid)` keeps it async; switching the module to shared mode
+      (`async: false`) also works but serialises the module.
+    explanation: |
+      Senior interviews go here to test whether you understand that the sandbox is a *process ownership* model,
+      not magic. Be ready to explain why a transaction per test means some DB behaviours (triggers on commit,
+      `NOTIFY`) are not exercised, and why data must be unique across async tests.
+    tags: [ecto, sandbox, ownership, async]
+    source: https://ecto-sql.hexdocs.pm/Ecto.Adapters.SQL.Sandbox.html
+
+  - slug: elixir-test-theory-mox-workflow
+    kind: theory
+    difficulty: middle
+    title: "The Mox workflow end to end"
+    body: |
+      ```elixir
+      # lib/my_app/weather.ex
+      defmodule MyApp.Weather do
+        @callback forecast(String.t()) :: {:ok, map()} | {:error, term()}
+        def forecast(city), do: impl().forecast(city)
+        defp impl, do: Application.get_env(:my_app, :weather, MyApp.Weather.HTTP)
+      end
+
+      # test/support/mocks.ex   (compiled in :test via elixirc_paths)
+      Mox.defmock(MyApp.WeatherMock, for: MyApp.Weather)
+
+      # config/test.exs
+      config :my_app, weather: MyApp.WeatherMock
+
+      # test
+      defmodule MyApp.ReportTest do
+        use ExUnit.Case, async: true
+        import Mox
+        setup :verify_on_exit!
+
+        test "formats the forecast" do
+          expect(MyApp.WeatherMock, :forecast, fn "Berlin" -> {:ok, %{temp: 21}} end)
+          assert MyApp.Report.build("Berlin") =~ "21"
+        end
+      end
+      ```
+
+      The pieces:
+
+      - **Behaviour** = contract; the real adapter and the mock both implement it.
+      - **`defmock`** creates the mock module once (test support or `test_helper.exs`); config points the app to it.
+      - **`expect(mock, fun, n \\ 1, impl)`**: must be called exactly `n` times, in order; **`stub`**: any number
+        of calls, not verified; **`stub_with(mock, Module)`**: delegate every callback to a real/fake module;
+        **`deny`**: assert never called.
+      - **`verify_on_exit!`** (as a setup) checks all expectations when the test exits; `verify!/0` mid-test.
+      - **Ownership**: private mode by default, expectations belong to the test process; other processes need
+        `allow(mock, self(), pid)` or must inherit `$callers` (Tasks do). `set_mox_global` lets every process use
+        them but requires `async: false`; `set_mox_from_context` picks based on the `async` tag.
+      - Race: if the mock is called from another process after the test returns, verification can fail or miss
+        it; have the expectation send a message and `assert_receive` before the test ends.
+    answer: |
+      **Q:** Why define the mock in `test/support/mocks.ex` rather than in `test_helper.exs`?
+      **A:** Modules referenced at compile time (e.g. in `config/test.exs` used by `compile_env`, or in code the
+      compiler checks) must exist when the project compiles; `test_helper.exs` runs after compilation.
+    explanation: |
+      The question "walk me through setting up Mox" is common for mid-level roles; the ownership/allowance part
+      and the `expect` ordering rules are what separate people who have fought real failures from people who
+      read the README once.
+    tags: [mox, behaviours, dependency-injection]
+    source: https://mox.hexdocs.pm/Mox.html
+
+  - slug: elixir-test-theory-assertion-family
+    kind: theory
+    difficulty: junior
+    title: "The ExUnit assertion toolbox"
+    body: |
+      `assert`/`refute` cover most cases because `assert` is a macro that understands the expression; the rest
+      exist for things a truthy check cannot express.
+
+      ```elixir
+      assert {:ok, %User{id: id}} = Accounts.create(attrs)   # pattern match, binds id
+      assert user.age == 30                                   # diff on failure
+      assert Enum.sort(xs) == [1, 2, 3]
+      assert "hello world" =~ ~r/wor/                         # regex / substring
+      refute Enum.empty?(xs)
+      assert_in_delta 0.1 + 0.2, 0.3, 0.0001                  # floats
+      assert_raise ArgumentError, ~r/invalid/, fn -> parse!("x") end
+      catch_exit(GenServer.call(dead_pid, :ping))             # exits are not exceptions
+      catch_throw(throw(:early))
+      assert_receive {:done, ^ref}, 500                       # wait up to 500 ms, pin ref
+      assert_received :already_there                          # no wait
+      refute_receive {:unexpected, _}, 50
+      flunk("should not reach this branch")
+      ```
+
+      Notes:
+
+      - On failure the macro reports `code:`, `left:`/`right:` and a diff for `==`, `=~`, `=`, `in`, `match?`.
+      - `assert match?({:ok, _}, result)` when you need a guard or do not want the `MatchError`-style message.
+      - `assert_raise/2` checks only the module; `/3` also the message (exact string or regex) and returns the
+        exception struct.
+      - `assert_receive` timeout defaults to 100 ms (`ExUnit.configure(assert_receive_timeout: ...)`);
+        `refute_receive` waits the full timeout, so keep it short.
+      - Floats: never `==`; use `assert_in_delta` or compare with `Float.round`.
+      - `ExUnit.Assertions` is imported by `use ExUnit.Case`; you can `import ExUnit.Assertions` into helpers.
+    answer: |
+      **Q:** A GenServer crashes during `GenServer.call/2`. Which assertion captures that in the test, and why not
+      `assert_raise`?
+      **A:** `catch_exit/1`: the caller receives an *exit* signal (`{reason, {GenServer, :call, ...}}`), which is a
+      different mechanism from a raised exception, so `assert_raise` would not catch it.
+    explanation: |
+      Quick-fire interview material: the exit-vs-exception distinction, the receive/received difference, and
+      why `assert_in_delta` exists. Knowing that `assert` binds pattern variables for later use is the detail
+      that shows real ExUnit fluency.
+    tags: [assertions, assert_raise, catch_exit]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Assertions.html
+
+  - slug: elixir-test-theory-mix-test-ci
+    kind: theory
+    difficulty: senior
+    title: "`mix test` in CI: coverage, partitions, warnings and determinism"
+    body: |
+      A production-grade CI test job uses more than `mix test`.
+
+      ```yaml
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix format --check-formatted
+      - run: mix test --warnings-as-errors --max-failures 5 --partitions 4
+        env: { MIX_TEST_PARTITION: ${{ matrix.partition }} }
+      - run: mix test --cover            # or mix coveralls.json with excoveralls
+      ```
+
+      Flags that matter:
+
+      - `--warnings-as-errors`: warnings while *loading the test files* fail the run (compile warnings in
+        `lib/` are caught by `mix compile --warnings-as-errors`).
+      - `--max-failures N`: stop early; `--failed`: rerun last failures; `--stale`: only tests affected by
+        changed modules (great locally, not in CI).
+      - `--partitions N` + `MIX_TEST_PARTITION=k`: split test files deterministically across `N` jobs.
+      - `--seed`: printed on every run; reuse it to reproduce order-dependent failures; `--seed 0` keeps
+        definition order. `--repeat-until-failure N` for flake hunting.
+      - `--cover`: built-in coverage via `:cover`, configurable in `mix.exs` (`test_coverage: [summary: [threshold: 80]]`),
+        exports with `--export-coverage` for merged partitions; `excoveralls` adds HTML/LCOV and service uploads.
+      - `--slowest N`, `--trace` (serial + verbose, disables timeouts) for diagnosis; `--exclude`/`--include`
+        for tagged suites; `--only` fails if nothing matched.
+      - `mix test.watch` (a dependency) reruns on file changes; `mix test --listen-on-stdin` is the built-in
+        way to rerun by pressing Enter.
+      - Keep the DB sandbox in `:manual` mode, run migrations in CI with `MIX_ENV=test mix ecto.migrate`
+        (the `test` alias usually does `ecto.create --quiet`, `ecto.migrate --quiet`, `test`).
+    answer: |
+      **Q:** Why run both `mix compile --warnings-as-errors` and `mix test --warnings-as-errors`?
+      **A:** The first catches warnings in application code; the second catches warnings produced while compiling
+      the test files themselves (unused variables in tests, deprecated calls), which `mix compile` never sees.
+    explanation: |
+      Senior candidates are expected to own the CI pipeline: partitioning for speed, coverage thresholds,
+      seeds for reproducibility and the two warnings-as-errors steps. Mentioning `excoveralls` and
+      `--export-coverage` for merging partition results is a bonus.
+    tags: [mix-test, ci, coverage, partitions]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Test.html
+
+  - slug: elixir-test-theory-liveview-and-conn-tests
+    kind: theory
+    difficulty: middle
+    title: "Phoenix tests without a browser: `ConnTest` and `LiveViewTest`"
+    body: |
+      Phoenix generates two case templates, `MyAppWeb.ConnCase` and `MyApp.DataCase`, built on
+      `ExUnit.CaseTemplate`; they set up the sandbox and give every test a `conn`.
+
+      ```elixir
+      defmodule MyAppWeb.PostLiveTest do
+        use MyAppWeb.ConnCase, async: true
+        import Phoenix.LiveViewTest
+
+        setup %{conn: conn} do
+          user = insert(:user)                              # ExMachina factory
+          %{conn: log_in_user(conn, user), user: user}
+        end
+
+        test "lists posts", %{conn: conn} do
+          {:ok, view, html} = live(conn, ~p"/posts")
+          assert html =~ "Listing Posts"
+
+          view
+          |> element("a", "New Post")
+          |> render_click()
+
+          assert_patch(view, ~p"/posts/new")
+
+          assert view
+                 |> form("#post-form", post: %{title: ""})
+                 |> render_submit() =~ "can&#39;t be blank"
+
+          assert has_element?(view, "#post-form .invalid-feedback")
+        end
+      end
+      ```
+
+      - `Phoenix.ConnTest`: `get(conn, path)`, `post/3`, `json_response(conn, 200)`, `html_response/2`,
+        `redirected_to/1`; `setup %{conn: conn}` is the context pattern, the `conn` comes from `build_conn/0`
+        in the case template.
+      - `Phoenix.LiveViewTest`: `live/2` mounts the view in a process linked to the test (no browser, no JS);
+        `element/3` + `render_click/1`, `render_change`, `render_submit`, `render_hook`; `assert_patch`,
+        `assert_redirect`, `assert_push_event`; `render_async/1` to wait for `assign_async`; `has_element?/1`.
+      - Because the LiveView process outlives a single function call, DB access needs `start_owner!` (what the
+        generated `DataCase.setup_sandbox/1` does) so the connection ownership survives.
+      - Factories (ExMachina) or plain fixture modules create test data; keep them minimal and explicit.
+      - Browser-level tests (Wallaby, `phoenix_test`) are separate, slower, and reserved for JS behaviour.
+    answer: |
+      **Q:** Why can a LiveView test stay `async: true` even though `live/2` starts a separate process?
+      **A:** The case template uses `Sandbox.start_owner!` with allowances, so the LiveView process is allowed on
+      the test's own sandbox connection; nothing global is shared.
+    explanation: |
+      Expect "how would you test a LiveView form" in Phoenix interviews. Knowing that no browser is involved,
+      that elements are addressed by selector + text, and that `assert_patch` vs `assert_redirect` map to
+      `push_patch` vs `push_navigate` covers most of it.
+    tags: [phoenix, liveview, conn_test, factories]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveViewTest.html

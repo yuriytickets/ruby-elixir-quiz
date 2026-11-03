@@ -1,0 +1,1485 @@
+language: ruby
+topic: core-language
+items:
+  - slug: ruby-core-truthiness-zero
+    kind: mcq
+    difficulty: junior
+    title: "What does this print? Truthiness of 0 and empty string"
+    body: |
+      ```ruby
+      puts(0 ? "zero is truthy" : "zero is falsy")
+      puts("" ? "empty is truthy" : "empty is falsy")
+      ```
+    choices:
+      - "zero is falsy / empty is falsy"
+      - "zero is truthy / empty is truthy"
+      - "zero is falsy / empty is truthy"
+      - "It raises a TypeError because 0 is not a boolean"
+    answer: 1
+    explanation: |
+      In Ruby **only `nil` and `false` are falsy**. Every other object, including `0`, `""`, `[]` and `{}`,
+      is truthy. People coming from C, JavaScript or Python expect `0` and `""` to be falsy, which is the classic
+      source of bugs like `if count` meaning "always true". Use `count.zero?`, `str.empty?` or `arr.any?` instead.
+    tags: [truthiness, nil, false]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/control_expressions_rdoc.html
+
+  - slug: ruby-core-symbol-identity
+    kind: mcq
+    difficulty: junior
+    title: "Symbols vs strings: what does this print?"
+    body: |
+      ```ruby
+      p "name" == "name"
+      p "name".equal?("name")
+      p :name.equal?(:name)
+      ```
+      (No `frozen_string_literal` magic comment in the file.)
+    choices:
+      - "true, true, true"
+      - "true, false, false"
+      - "true, false, true"
+      - "false, false, true"
+    answer: 2
+    explanation: |
+      `==` compares content, so the two string literals are equal. `equal?` compares identity: each string
+      literal evaluates to a **new** String object, so they are different objects (`false`). A symbol with a
+      given name exists exactly once in the process, so `:name.equal?(:name)` is `true`. That identity is why
+      symbols are the idiomatic hash key and method name: comparison is a pointer check and no allocation happens.
+    tags: [symbols, strings, identity]
+    source: https://docs.ruby-lang.org/en/3.3/Symbol.html
+
+  - slug: ruby-core-string-shovel-vs-plus
+    kind: mcq
+    difficulty: junior
+    title: "String mutation: `<<` vs `+=`"
+    body: |
+      ```ruby
+      a = "hi"
+      b = a
+      b << "!"
+      c = a
+      c += "?"
+      puts a
+      ```
+    choices:
+      - "hi"
+      - "hi!"
+      - "hi!?"
+      - "hi?"
+    answer: 1
+    explanation: |
+      `<<` mutates the receiver in place, and `b` points at the same object as `a`, so `a` becomes `"hi!"`.
+      `c += "?"` is sugar for `c = c + "?"`: `+` builds a **new** String and rebinds `c`; `a` is untouched.
+      This is the difference interviewers probe: `<<` is O(1) amortized and shares state, `+` allocates every
+      time but never surprises aliases. In a loop that builds a large string, prefer `<<` (or `String#concat`).
+    tags: [strings, mutation]
+    source: https://docs.ruby-lang.org/en/3.3/String.html
+
+  - slug: ruby-core-frozen-literal-error
+    kind: mcq
+    difficulty: middle
+    title: "What happens with `frozen_string_literal: true`?"
+    body: |
+      ```ruby
+      # frozen_string_literal: true
+
+      greeting = "Hello"
+      greeting << ", world"
+      puts greeting
+      ```
+    choices:
+      - "Prints `Hello, world`"
+      - "Prints `Hello`"
+      - "Raises FrozenError: can't modify frozen String"
+      - "Prints a deprecation warning and then `Hello, world`"
+    answer: 2
+    explanation: |
+      With the magic comment every string **literal** in that file is frozen, so `<<` raises
+      `FrozenError (can't modify frozen String: "Hello")`. To get a mutable string use `+"Hello"`,
+      `"Hello".dup` or `String.new("Hello")`. Interpolated strings (`"#{x}"`) are *not* frozen even with the
+      comment (since Ruby 3.0). Ruby 3.4 starts warning on mutation of literals without the comment, as a step
+      toward frozen-by-default.
+    tags: [frozen_string_literal, strings, FrozenError]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/comments_rdoc.html
+
+  - slug: ruby-core-integer-division
+    kind: mcq
+    difficulty: junior
+    title: "What does this print? Integer, Float and Rational division"
+    body: |
+      ```ruby
+      p 7 / 2
+      p 7.0 / 2
+      p 7r / 2
+      p -7 / 2
+      ```
+    choices:
+      - "3.5, 3.5, (7/2), -3.5"
+      - "3, 3.5, (7/2), -4"
+      - "3, 3.5, 3.5, -3"
+      - "3, 3.5, (7/2), -3"
+    answer: 1
+    explanation: |
+      Integer `/` is integer division that **floors** (rounds toward negative infinity), so `-7 / 2` is `-4`,
+      not `-3` as in C or JavaScript (`-7 % 2` is correspondingly `1`). Mixing in a Float promotes to Float.
+      The `r` suffix makes a Rational literal, which prints as `(7/2)` and keeps exact arithmetic.
+      Use `Integer#fdiv` when you want a float result without converting an operand.
+    tags: [integer, float, rational, division]
+    source: https://docs.ruby-lang.org/en/3.3/Integer.html
+
+  - slug: ruby-core-or-precedence
+    kind: mcq
+    difficulty: middle
+    title: "What does this print? `or` versus `||`"
+    body: |
+      ```ruby
+      x = false or true
+      y = false || true
+      p x, y
+      ```
+    choices:
+      - "true, true"
+      - "false, true"
+      - "false, false"
+      - "SyntaxError"
+    answer: 1
+    explanation: |
+      `or` has **lower precedence than `=`**, so the first line parses as `(x = false) or true`: `x` is `false`
+      and the `or true` is evaluated and discarded. `||` binds tighter than assignment, so `y = (false || true)`.
+      Same story for `and` vs `&&`. Use `&&`/`||` for boolean expressions; reserve `and`/`or` (if at all) for
+      control flow like `save or raise "boom"`.
+    tags: [precedence, and, or]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html
+
+  - slug: ruby-core-equality-trio
+    kind: mcq
+    difficulty: middle
+    title: "What does this print? `==`, `eql?`, `equal?` on numbers"
+    body: |
+      ```ruby
+      p 1 == 1.0
+      p 1.eql?(1.0)
+      p 1.equal?(1)
+      ```
+    choices:
+      - "true, true, true"
+      - "true, false, false"
+      - "true, false, true"
+      - "false, false, true"
+    answer: 2
+    explanation: |
+      `==` is value equality with numeric coercion, so `1 == 1.0`. `eql?` is the stricter equality used by
+      Hash for key lookup: it is `false` across Integer/Float (and `1.hash != 1.0.hash`), which is why
+      `{1 => :a}[1.0]` returns `nil`. `equal?` is object identity; small Integers are immediate values, so
+      every `1` is the same object and `1.equal?(1)` is `true`.
+    tags: [equality, eql, equal]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-core-float-precision
+    kind: mcq
+    difficulty: middle
+    title: "Why is `0.1 + 0.2 == 0.3` false and what should you use for money?"
+    body: |
+      ```ruby
+      p 0.1 + 0.2 == 0.3
+      ```
+      Which option fixes the comparison for financial calculations with exact decimal semantics?
+    choices:
+      - "Use `(0.1 + 0.2).round(2) == 0.3`; Float is fine for money if you always round"
+      - "Use `BigDecimal(\"0.1\") + BigDecimal(\"0.2\") == BigDecimal(\"0.3\")` (or Integer cents)"
+      - "Use `0.1.to_r + 0.2.to_r == 0.3.to_r`"
+      - "Use `Float(\"0.1\") + Float(\"0.2\") == Float(\"0.3\")`"
+    answer: 1
+    explanation: |
+      Floats are binary; `0.1` cannot be represented exactly, so `0.1 + 0.2` is `0.30000000000000004`.
+      `BigDecimal` (stdlib, `require "bigdecimal"`) does exact decimal arithmetic and is the standard choice for
+      money, as is storing integer cents. Rounding hides the problem only until the next operation.
+      `0.1.to_r` converts the *already inexact* float to a huge Rational, so it does not fix anything
+      (`0.1r` literals would, but Rational is for ratios, not currency). `Float("0.1")` is still a Float.
+    tags: [float, bigdecimal, money]
+    source: https://docs.ruby-lang.org/en/3.3/BigDecimal.html
+
+  - slug: ruby-core-pin-operator
+    kind: mcq
+    difficulty: middle
+    title: "Pattern matching: what does the pin operator do here?"
+    body: |
+      ```ruby
+      expected = 1
+      case [1, 2]
+      in [^expected, x]
+        p x
+      in [expected, x]
+        p :fallthrough
+      end
+      ```
+    choices:
+      - "Prints 2"
+      - "Prints :fallthrough"
+      - "Raises NoMatchingPatternError"
+      - "SyntaxError: ^ is not allowed inside array patterns"
+    answer: 0
+    explanation: |
+      In a pattern, a bare identifier **binds** a new variable; it never compares. `in [expected, x]` would match
+      any two-element array and overwrite `expected`. The pin `^expected` says "use the current value of
+      `expected` as the pattern", so `[1, 2]` matches the first branch and `x` is bound to `2`.
+      You can also pin expressions: `in [^(a + b), _]`, and instance/global variables: `in {id: ^@id}`.
+    tags: [pattern-matching, pin]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/pattern_matching_rdoc.html
+
+  - slug: ruby-core-case-first-match
+    kind: mcq
+    difficulty: middle
+    title: "case/when and `===`: which branch runs?"
+    body: |
+      ```ruby
+      def describe(value)
+        case value
+        when 1..10   then "small"
+        when Integer then "integer"
+        when /\A\d+\z/ then "digits"
+        when String  then "string"
+        else "other"
+        end
+      end
+
+      p describe(5), describe(42), describe("42"), describe(:x)
+      ```
+    choices:
+      - "\"small\", \"integer\", \"string\", \"other\""
+      - "\"integer\", \"integer\", \"digits\", \"other\""
+      - "\"small\", \"integer\", \"digits\", \"other\""
+      - "\"small\", \"integer\", \"digits\", NoMatchingPatternError"
+    answer: 2
+    explanation: |
+      `case` calls `pattern === value` on each `when` in order and takes the **first** match. `Range#===`
+      uses `cover?` (so `1..10 === 5`), `Class#===` is `is_a?`, `Regexp#===` is `match?`, and `Object#===`
+      falls back to `==`. `"42"` hits the regexp before `String`. The `else` handles `:x`; without an `else`
+      a `case/when` with no match simply returns `nil` (only `case/in` raises `NoMatchingPatternError`).
+    tags: [case, threequals]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/control_expressions_rdoc.html
+
+  - slug: ruby-core-to-i-leniency
+    kind: mcq
+    difficulty: junior
+    title: "`String#to_i` vs `Integer()`: what does this print?"
+    body: |
+      ```ruby
+      p "12abc".to_i
+      p "abc".to_i
+      p Integer("12abc")
+      ```
+    choices:
+      - "12, 0, then ArgumentError: invalid value for Integer()"
+      - "12, nil, 12"
+      - "nil, nil, then ArgumentError"
+      - "12, 0, 12"
+    answer: 0
+    explanation: |
+      `String#to_i` is lenient: it parses the leading digits and returns `0` when there are none; it never raises.
+      `Kernel#Integer` is strict: the whole string must be a valid integer (whitespace, `_` separators and
+      `0x`/`0b` prefixes are allowed), otherwise it raises `ArgumentError`, and `Integer(nil)` raises `TypeError`.
+      Use `Integer(str, exception: false)` to get `nil` instead of an exception. The leniency of `to_i` is a
+      classic silent-bug source when validating user input: `"abc".to_i == 0` looks like a valid quantity.
+    tags: [conversion, to_i, Integer]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-core-nested-destructure
+    kind: mcq
+    difficulty: middle
+    title: "Parallel assignment with splat and nesting: what is `c`?"
+    body: |
+      ```ruby
+      a, (b, *c), d = 1, [2, 3, 4], 5
+      p c
+      ```
+    choices:
+      - "[3, 4]"
+      - "3"
+      - "[2, 3, 4]"
+      - "[3, 4, 5]"
+    answer: 0
+    explanation: |
+      Multiple assignment pairs each left-hand target with the right-hand value. Parentheses on the left
+      destructure the nested array `[2, 3, 4]`: `b` gets `2`, the splat `*c` gathers the rest `[3, 4]`.
+      `d` gets `5`. Only one splat is allowed per level, but it can sit anywhere (`first, *mid, last = arr`).
+      The same mechanics power `a, b = b, a` swaps and block parameters like `each { |(k, v), i| }`.
+    tags: [assignment, splat, destructuring]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/assignment_rdoc.html
+
+  - slug: ruby-core-oreq-false-memo
+    kind: mcq
+    difficulty: middle
+    title: "How many times is `compute` called with `||=` memoization?"
+    body: |
+      ```ruby
+      def compute
+        puts "computing"
+        false
+      end
+
+      @result ||= compute
+      @result ||= compute
+      @result ||= compute
+      ```
+    choices:
+      - "Once: `||=` caches the first result"
+      - "Three times"
+      - "Twice: the second call sets @result to false, the third sees it"
+      - "Zero times: @result is nil so the right side is skipped"
+    answer: 1
+    explanation: |
+      `a ||= b` means `a || (a = b)`: assign only when `a` is `nil` or `false`. Because `compute` returns
+      `false`, every evaluation sees a falsy `@result` and calls `compute` again, so "computing" prints three
+      times. `||=` memoization silently breaks for methods whose legitimate result is `false` or `nil`.
+      The fix is `return @result if defined?(@result)` or storing the value in a Hash and checking `key?`.
+    tags: [memoization, conditional-assignment]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/assignment_rdoc.html
+
+  - slug: ruby-core-p-vs-puts-return
+    kind: mcq
+    difficulty: junior
+    title: "`puts` vs `p`: what does this print?"
+    body: |
+      ```ruby
+      x = puts "a"
+      y = p "b"
+      p x, y
+      puts [1, [2, nil]]
+      ```
+    choices:
+      - "a / \"b\" / nil / \"b\" / 1 / 2 / (blank line)"
+      - "a / b / nil / b / [1, [2, nil]]"
+      - "\"a\" / \"b\" / nil / nil / 1 / 2 / nil"
+      - "a / \"b\" / \"a\" / \"b\" / 1 / 2 / nil"
+    answer: 0
+    explanation: |
+      `puts` calls `to_s`, adds a newline and **returns `nil`**. `p` calls `inspect` (so strings show quotes)
+      and **returns its argument**, which makes it handy for debugging inside expressions. `puts` with an array
+      flattens it and prints one element per line; `nil` inside prints as an empty line (top-level `puts nil`
+      also prints a blank line). `print` is like `puts` without the newline and also returns `nil`.
+    tags: [puts, p, print, inspect]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-core-everything-object
+    kind: open
+    difficulty: junior
+    title: "\"Everything in Ruby is an object.\" Is that true? Explain."
+    body: |
+      An interviewer says: "Ruby is a pure object-oriented language: everything is an object." Is that
+      completely accurate? What are the exceptions, and what consequences does the rule have in practice?
+    answer: |
+      - Every *value* is an object: `1.class` is `Integer`, `nil.class` is `NilClass`, `true` is the only
+        instance of `TrueClass`, and classes themselves are objects (`Integer.class == Class`).
+      - Every operation is a method call on an object: `1 + 2` is `1.+(2)`, `arr[0]` is `arr.[](0)`.
+      - Exceptions: **blocks** are syntax, not objects, until you capture them (`&block` gives a Proc);
+        **methods** are not objects until you reify them with `method(:name)`; operators like `&&`, `and`,
+        `if`, `defined?` are keywords; variables and constants are references, not objects themselves.
+      - Consequences: you can call methods on literals (`3.times`, `nil.to_a`), `nil` is a real object so
+        `nil.foo` raises `NoMethodError` rather than a null-pointer crash, and the uniform model lets you
+        monkey-patch core classes.
+    explanation: |
+      Follow-ups: "What is `self` at the top level?" (`main`, an instance of Object), "Is `Class` an object?"
+      (yes, an instance of `Class`, and `Class.superclass` is `Module`), "What is the root of the hierarchy?"
+      (`BasicObject`). A strong candidate notes that small Integers, Symbols, `nil`, `true` and `false` are
+      *immediate* values (no heap allocation) but still behave as full objects.
+    tags: [object-model, basics]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-core-symbols-vs-strings
+    kind: open
+    difficulty: junior
+    title: "When would you use a Symbol and when a String?"
+    body: |
+      Explain the difference between `:name` and `"name"`. Why are hash keys and method names usually
+      symbols? Is there any memory concern with symbols?
+    answer: |
+      - A Symbol is an immutable, interned identifier: there is exactly one `:name` object per process,
+        so comparison is identity (fast) and no allocation happens on each use.
+      - A String is a mutable sequence of bytes with an encoding; each literal creates a new object unless frozen.
+      - Use symbols for *names of things*: hash keys, method names (`send(:foo)`), options, enum-like values.
+        Use strings for *data*: text to display, parse, concatenate or send over the wire.
+      - Converting between them is easy (`to_sym`, `to_s`, `String#to_sym`), but `{"a" => 1}[:a]` is `nil`:
+        they are never equal, which is the classic bug with params and JSON (`JSON.parse` gives string keys
+        unless `symbolize_names: true`).
+      - Since Ruby 2.2 dynamically created symbols are garbage-collected, so `to_sym` on user input is no longer
+        a memory leak, though it is still a smell.
+    explanation: |
+      Follow-ups: "Why is `:a.object_id == :a.object_id` true but `"a".object_id == "a".object_id` false?",
+      "What does `frozen_string_literal` change about that answer?" (frozen literals are deduplicated, so the
+      same literal in the same file returns the same object), "Can a symbol contain spaces?" (`:"with space"`).
+    tags: [symbols, strings]
+    source: https://dev.to/hinokami_dev/why-ruby-devs-keep-mixing-up-symbols-and-frozen-strings-3id8
+
+  - slug: ruby-core-frozen-string-literal
+    kind: open
+    difficulty: senior
+    title: "Explain `# frozen_string_literal: true`"
+    body: |
+      Almost every Ruby file in modern codebases starts with `# frozen_string_literal: true`. What does
+      it do, why do we want it, and how do you build a mutable string in such a file?
+    answer: |
+      - It is a *magic comment* (must be in the first comment block) that makes every String literal in that
+        file frozen and allocated once at parse time, instead of a fresh mutable String per evaluation.
+      - Benefits: fewer allocations and less GC pressure in hot paths (a literal in a loop no longer allocates
+        each iteration), and protection against accidental mutation of shared strings (`FrozenError` instead of
+        a spooky-action-at-a-distance bug).
+      - Interpolated strings (`"#{x}"`) are not frozen even with the comment (since Ruby 3.0); `"abc".dup`,
+        `+"abc"`, `String.new("abc")` and `"abc".dup` give mutable copies; `-"abc"` returns a deduplicated
+        frozen string.
+      - It only affects literals; strings from `gets`, `JSON.parse`, `String#*` etc. are still mutable.
+      - Direction of travel: Ruby 3.4 warns (with `-W:deprecated`) when a literal is mutated in a file without
+        the comment, as a step toward frozen literals by default.
+    explanation: |
+      Follow-ups: "Does freezing a string freeze objects it references?" (strings hold only bytes, but for
+      arrays/hashes `freeze` is shallow). "What does `String#-@` do?" (`-str` dedups and freezes;
+      `+str` returns an unfrozen copy or self). Common mistake: assuming `frozen_string_literal` applies
+      project-wide; it is per file (or `--enable=frozen-string-literal` on the command line).
+    tags: [frozen_string_literal, strings, performance]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/comments_rdoc.html
+
+  - slug: ruby-core-dup-vs-clone
+    kind: open
+    difficulty: senior
+    title: "What is the difference between `dup` and `clone`?"
+    body: |
+      ```ruby
+      s = "abc".freeze
+      def s.shout = upcase + "!"
+      ```
+      Compare `s.dup` and `s.clone`. Which one is frozen, which one responds to `shout`, and how deep is
+      the copy in either case?
+    answer: |
+      - Both make a **shallow** copy: instance variables are copied, but the objects they reference are shared
+        (`[[1]].dup[0].equal?(arr[0])` is `true`). Neither is a deep copy; for that use `Marshal.load(Marshal.dump(obj))`
+        or a hand-written copy.
+      - `clone` copies the **singleton class** (so `s.clone.shout` works) and the **frozen state**
+        (`s.clone.frozen?` is `true`). `clone(freeze: false)` gives an unfrozen clone.
+      - `dup` copies neither: `s.dup.frozen?` is `false` and `s.dup.shout` raises `NoMethodError`. Modules the
+        object was `extend`ed with are likewise dropped by `dup` and kept by `clone`.
+      - Both call `initialize_copy` (`dup` via `initialize_dup`, `clone` via `initialize_clone`) so a class can
+        customise copying, e.g. to deep-copy an internal array.
+      - Rule of thumb: `dup` for "give me a mutable copy of this value", `clone` for "give me an exact twin".
+    explanation: |
+      Follow-up: "How would you implement a deep copy for a class with an array attribute?" (override
+      `initialize_copy(source)` and call `super` then `@items = source.items.map(&:dup)`). Common mistake:
+      thinking `dup` on a frozen Hash yields a frozen Hash. Also note that Integer, Symbol, nil, true and false
+      return themselves from `dup`/`clone`.
+    tags: [dup, clone, copying]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-core-equality-methods
+    kind: open
+    difficulty: middle
+    title: "Compare `==`, `eql?`, `equal?` and `===`"
+    body: |
+      Ruby has four equality-ish methods. What does each one mean, which one does `Hash` use, and which
+      one does `case/when` use? When do you override which?
+    answer: |
+      - `equal?` is object identity (same `object_id`). Never override it.
+      - `==` is value equality as the class defines it. `Object#==` defaults to identity; `String`, `Array`,
+        `Struct` etc. override it. This is the one you override for domain value objects.
+      - `eql?` is stricter equality used by `Hash` (together with `hash`) for key lookup and by `Array#uniq`.
+        For most classes it equals `==`, but Numeric does not coerce: `1 == 1.0` is true, `1.eql?(1.0)` is false.
+        If you override `eql?` you **must** override `hash` so equal objects hash the same.
+      - `===` is "case equality": `Range#===` is `cover?`, `Class#===` is `is_a?`, `Regexp#===` is `match?`,
+        `Proc#===` calls the proc. `case/when` calls `pattern === value`. Override it to make your objects
+        usable in `when` clauses.
+      - `!=` is derived from `==` automatically; `equal?` and `==` are not derived from each other.
+    explanation: |
+      Follow-up: "Why does `{[1] => :a}[[1]]` work but a custom class with only `==` overridden does not work as
+      a Hash key?" (Hash uses `hash` + `eql?`, which still default to identity). "Where does `Comparable#==`
+      come from?" (derived from `<=>` returning 0).
+    tags: [equality, hash, case]
+    source: https://makandracards.com/makandra/530786-ruby-object-equality
+
+  - slug: ruby-core-variable-scopes
+    kind: open
+    difficulty: junior
+    title: "Explain Ruby's variable sigils and their scope"
+    body: |
+      What do `x`, `@x`, `@@x`, `$x` and `X` mean? Where is each visible, and which of them does the
+      community advise against?
+    answer: |
+      - `x` local variable: visible in the method, block or file where it is assigned; blocks see the
+        enclosing locals, but `def` creates a brand new scope (no closure over outer locals).
+      - `@x` instance variable: belongs to one object, visible in that object's instance methods;
+        uninitialized reads return `nil`. Inside a class body (not a method) `@x` belongs to the Class
+        object itself, a *class instance variable*.
+      - `@@x` class variable: shared by the class, all its subclasses and their instances; reading an undefined
+        one raises `NameError`. Discouraged because a subclass assignment leaks into the parent.
+      - `$x` global: visible everywhere; discouraged apart from built-ins (`$stdout`, `$PROGRAM_NAME`).
+      - `X` constant: lexically scoped to the module/class where it is defined; can be reassigned with a warning
+        and is not deeply frozen unless you freeze the value.
+    explanation: |
+      Follow-ups: "Why is `@@count` dangerous with inheritance?" (one shared slot across the hierarchy),
+      "What is the difference between a class variable and a class instance variable?" (the latter is per
+      class, not inherited), "Can a block create a local that leaks out?" (no; block-local variables stay inside).
+    tags: [variables, scope]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/assignment_rdoc.html
+
+  - slug: ruby-core-and-or-usage
+    kind: open
+    difficulty: middle
+    title: "When, if ever, is `and`/`or` acceptable instead of `&&`/`||`?"
+    body: |
+      Many style guides forbid `and`/`or`. Explain how they differ from `&&`/`||`, show a bug the
+      difference causes, and describe the one idiom where some teams still allow them.
+    answer: |
+      - `&&`/`||` are high-precedence operators (above `=` and `?:`); `and`/`or` are the **lowest**-precedence
+        operators, below assignment, and `and`/`or` have *equal* precedence with each other (left-to-right).
+      - Bug: `result = check or raise "failed"` and `x = a or b` parse as `(x = a) or b`, so `x` is `a` even
+        when `a` is `nil`. With `||`, `x = a || b` does what you expect.
+      - Mixing is worse: `a || b and c` is `(a || b) and c`, but `a or b && c` is `a or (b && c)`; readers
+        cannot keep the table in their head.
+      - The accepted idiom is *control flow*, not value computation: `user.save or raise ActiveRecord::RecordInvalid`,
+        `File.exist?(path) and return`. Here the low precedence is the point: the whole left expression runs first.
+      - Most teams (and RuboCop `Style/AndOr`) simply ban them and use `||`, `unless` or explicit `if`.
+    explanation: |
+      Follow-up: "What does `not` do?" (lower than `!`, above `and`/`or`; `not x == y` is `not (x == y)`).
+      Interviewers also like `puts a or b`: the `or` applies to the result of `puts`, which is `nil`, so `b`
+      is evaluated but never printed.
+    tags: [precedence, and, or, style]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/precedence_rdoc.html
+
+  - slug: ruby-core-safe-navigation
+    kind: open
+    difficulty: middle
+    title: "How does the safe navigation operator `&.` work and where does it bite?"
+    body: |
+      ```ruby
+      user&.profile.avatar_url
+      ```
+      Explain what `&.` does, whether this line is nil-safe, and how it differs from Rails' `try`.
+    answer: |
+      - `a&.b` calls `b` only if `a` is not `nil`; otherwise the call is skipped and the expression returns `nil`.
+        It checks **only for `nil`**, not for `false`, and it does not swallow `NoMethodError` for other reasons.
+      - It short-circuits a single call, not the whole chain: if `user` is `nil`, `user&.profile` is `nil` and then
+        `.avatar_url` is called on `nil` and raises. You must write `user&.profile&.avatar_url`.
+      - Arguments are not evaluated when the receiver is `nil`: `nil&.push(expensive)` never runs `expensive`.
+      - `obj&.attr = value` and `obj&.count += 1` are allowed, but a chain of `&.` usually signals a Law-of-Demeter
+        violation; consider a Null Object or a method on the owner (`user.avatar_url`).
+      - Rails `try` is a method on `Object`/`NilClass`: it returns `nil` when the receiver is `nil` **or** does
+        not respond to the method (`try!` raises), so it hides typos in a way `&.` does not.
+    explanation: |
+      Follow-up: "What does `false&.to_s` return?" (`"false"`, because only `nil` is skipped). "How would you
+      rewrite `x && x.y && x.y.z`?" (`x&.y&.z`, which is also faster because it does not call `x.y` twice).
+    tags: [safe-navigation, nil]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/calling_methods_rdoc.html
+
+  - slug: ruby-core-numeric-types
+    kind: open
+    difficulty: senior
+    title: "Integer vs Float vs Rational vs BigDecimal: when do you reach for each?"
+    body: |
+      Compare Ruby's numeric types. Where does each one come from, what are its guarantees and costs, and
+      which would you pick for: a counter, a physics simulation, a currency amount, a 1/3 share?
+    answer: |
+      - `Integer` is arbitrary precision (no overflow; small values are immediates, large ones are heap bignums).
+        Exact, fast for small values. Default for counters, ids, cents.
+      - `Float` is IEEE 754 double: fast, inexact in base 10 (`0.1 + 0.2 != 0.3`), has `NaN`, `Infinity`, `-0.0`.
+        Fine for physics, graphics, statistics where relative error is acceptable.
+      - `Rational` (`3r/4`, `Rational(1, 3)`, `1.5.to_r`) is an exact numerator/denominator pair; arithmetic is
+        exact but slow and denominators can explode. Right for "1/3 of the shares" or fractional exponents.
+      - `BigDecimal` (stdlib, `require "bigdecimal"`) is arbitrary-precision decimal; construct from strings
+        (`BigDecimal("0.1")`), never from floats. Standard for money, together with explicit rounding modes.
+        Many teams instead store integer cents (Money gem does this).
+      - Promotion rules: Integer op Float gives Float; Integer op Rational gives Rational; Float op BigDecimal gives
+        BigDecimal in Ruby 3.3 (but a Float operand reintroduces the inexact value). Avoid mixing Float with the exact types.
+    explanation: |
+      Follow-ups: "What is `Integer("0.5")`?" (raises; use `Float()`). "What is `1.0.eql?(1)`?" (`false`; this
+      matters for hash keys). "Why `BigDecimal("1.1")` and not `BigDecimal(1.1)`?" (the Float is already wrong;
+      `BigDecimal(1.1, 2)` needs an explicit precision). Senior candidates mention `Float#round(half: :even)` and
+      banker's rounding in financial reports.
+    tags: [numeric, float, bigdecimal, rational]
+    source: https://docs.ruby-lang.org/en/3.3/BigDecimal.html
+
+  - slug: ruby-core-puts-p-print
+    kind: open
+    difficulty: junior
+    title: "What is the difference between `puts`, `p`, `print` and `pp`?"
+    body: |
+      ```ruby
+      puts "a\n"
+      p "a\n"
+      print "a\n"
+      puts [1, nil, [2]]
+      p [1, nil, [2]]
+      ```
+      Describe the output of each line and the return values. Which one do you use for debugging and why?
+    answer: |
+      - `puts` calls `to_s` on each argument, writes it with a trailing newline (but does not add a second one if
+        the string already ends in `\n`), flattens arrays one element per line (`nil` prints as a blank line),
+        and returns `nil`.
+      - `p` calls `inspect`, so strings print **with quotes and escapes** (`"a\n"`), arrays print as literals
+        (`[1, nil, [2]]`), and it **returns its argument** (or an array if several), so you can wrap any expression
+        with `p(...)` without changing the program.
+      - `print` writes `to_s` with no newline and returns `nil`.
+      - `pp` is `p` with pretty-printing (wraps long nested structures over several lines); since Ruby 2.5 it is
+        available without `require "pp"`.
+      - For debugging use `p`/`pp` because `inspect` reveals type and structure: `puts nil` prints nothing
+        useful, while `p nil` prints `nil`; `puts "1"` and `puts 1` look identical, `p` distinguishes them.
+    explanation: |
+      Follow-up: "How do you make your own class print nicely with `p`?" (override `inspect`; `puts` uses
+      `to_s`). "Where do they write?" (`$stdout`, which can be reassigned; `warn` writes to `$stderr`).
+    tags: [puts, p, print, inspect]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-core-constant-lookup
+    kind: open
+    difficulty: senior
+    title: "How does constant lookup work? Why does `class Admin::User` behave differently?"
+    body: |
+      ```ruby
+      module Admin
+        LIMIT = 10
+        class User; end
+      end
+
+      class Admin::User
+        def limit = LIMIT
+      end
+
+      Admin::User.new.limit
+      ```
+      Does this raise? Explain the algorithm Ruby uses to resolve a constant.
+    answer: |
+      - Constant lookup has two phases: first the **lexical scope** (`Module.nesting`, innermost to outermost,
+        excluding the top level), then the **ancestors** of the innermost `cref` (the class/module being opened),
+        then `Object` (top-level constants).
+      - With `class Admin::User`, `Module.nesting` is `[Admin::User]` only; `Admin` is *not* in the nesting, so
+        `LIMIT` is searched in `Admin::User`, its ancestors (`Object`, `Kernel`, `BasicObject`) and the top level.
+        It is not found: `NameError: uninitialized constant Admin::User::LIMIT`.
+      - Writing `module Admin; class User; ...; end; end` puts `Admin` in the nesting and finds `LIMIT`.
+        Alternatively reference it explicitly: `Admin::LIMIT`.
+      - Blocks keep the lexical scope of where they are written, so `Class.new { X }` resolves `X` from the
+        surrounding code, not from the new class.
+      - Top-level constants are on `Object`, which is why `::Foo` means "the top-level Foo" and why defining a
+        top-level constant pollutes every class.
+    explanation: |
+      Follow-ups: "Why does Rails autoloading (Zeitwerk) insist on one constant per file with matching paths?"
+      (it hooks `const_missing`/`autoload` and needs predictable names). "What does `const_get` do differently?"
+      (it ignores lexical scope: `Admin::User.const_get(:LIMIT)` also raises here). Common mistake: assuming
+      inheritance is searched before lexical scope; it is the other way round.
+    tags: [constants, lookup, nesting]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-core-heredoc-forms
+    kind: open
+    difficulty: junior
+    title: "Explain the three heredoc forms `<<EOS`, `<<-EOS` and `<<~EOS`"
+    body: |
+      ```ruby
+      def sql
+        <<~SQL
+          SELECT *
+            FROM users
+        SQL
+      end
+      ```
+      What does `sql` return? How do the other two forms differ, and how do you disable interpolation?
+    answer: |
+      - `<<~` (squiggly heredoc, Ruby 2.3+) strips the **common leading indentation** (based on the least-indented
+        non-blank line), so this returns `"SELECT *\n  FROM users\n"`. The relative indent of `FROM` is kept.
+      - `<<-` allows the closing identifier to be indented but keeps the body's indentation verbatim.
+      - `<<` (plain) requires the terminator to be at column 0 and keeps everything verbatim.
+      - Quoting the identifier controls interpolation: `<<~'EOS'` is like a single-quoted string (no `#{}`, no
+        escapes); `<<~"EOS"` and the bare form interpolate like double quotes.
+      - The result always ends with a newline; call methods on the opener (`<<~EOS.chomp`, `<<~EOS.strip`) or use
+        `.lines`. Several heredocs can start on the same line (`foo(<<~A, <<~B)`).
+    explanation: |
+      Follow-ups: "How does `<<~` measure tabs?" (a tab counts as advancing to the next multiple of 8).
+      "Can a heredoc be a method argument on the same line?" (yes, the body starts on the next line).
+      Common mistake: using `<<-` and wondering why the string has leading spaces.
+    tags: [heredoc, strings]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/literals_rdoc.html
+
+  - slug: ruby-core-truthy-count
+    kind: code
+    difficulty: junior
+    title: "Count truthy values"
+    body: |
+      Implement `truthy_count(values)` that returns how many elements of the array are truthy according to
+      Ruby's rules (only `nil` and `false` are falsy).
+
+      ```ruby
+      truthy_count([0, "", [], nil, false, true])  # => 4
+      truthy_count([])                              # => 0
+      ```
+    starter_code: |
+      def truthy_count(values)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class TruthyCountTest < Minitest::Test
+        def test_zero_and_empty_are_truthy
+          assert_equal 4, truthy_count([0, "", [], nil, false, true])
+        end
+
+        def test_only_nil_and_false_are_falsy
+          assert_equal 0, truthy_count([nil, false, nil])
+        end
+
+        def test_empty_array
+          assert_equal 0, truthy_count([])
+        end
+
+        def test_all_truthy
+          assert_equal 3, truthy_count([:a, 1.5, {}])
+        end
+      end
+    solution: |
+      def truthy_count(values)
+        values.count { |v| v }
+      end
+    explanation: |
+      `Array#count` with a block counts elements for which the block is truthy, and the block simply returns the
+      element, so Ruby's own truthiness rule does the work. Candidates who write `v != 0 && v != ""` have the
+      JavaScript/Python mental model; `0`, `""`, `[]` and `{}` are all truthy in Ruby. `values.count(&:itself)`
+      is an equivalent one-liner.
+    tags: [truthiness, enumerable]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/control_expressions_rdoc.html
+
+  - slug: ruby-core-deep-symbolize-keys
+    kind: code
+    difficulty: middle
+    title: "Deep symbolize hash keys"
+    body: |
+      Implement `deep_symbolize(obj)` that returns a copy of a nested structure of Hashes and Arrays in which
+      every String hash key is converted to a Symbol. Non-string keys and all values that are not Hash/Array
+      stay as they are. The input must not be mutated.
+
+      ```ruby
+      deep_symbolize({"a" => 1, "b" => {"c" => [{"d" => 2}]}})
+      # => {a: 1, b: {c: [{d: 2}]}}
+      ```
+    starter_code: |
+      def deep_symbolize(obj)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class DeepSymbolizeTest < Minitest::Test
+        def test_nested
+          input = {"a" => 1, "b" => {"c" => [{"d" => 2}, 3]}}
+          assert_equal({a: 1, b: {c: [{d: 2}, 3]}}, deep_symbolize(input))
+        end
+
+        def test_does_not_mutate_input
+          input = {"a" => {"b" => 1}}
+          deep_symbolize(input)
+          assert_equal({"a" => {"b" => 1}}, input)
+        end
+
+        def test_keeps_non_string_keys
+          assert_equal({1 => :x, sym: "v"}, deep_symbolize({1 => :x, :sym => "v"}))
+        end
+
+        def test_array_top_level
+          assert_equal [{k: 1}, "s"], deep_symbolize([{"k" => 1}, "s"])
+        end
+      end
+    solution: |
+      def deep_symbolize(obj)
+        case obj
+        when Hash
+          obj.to_h { |k, v| [k.is_a?(String) ? k.to_sym : k, deep_symbolize(v)] }
+        when Array
+          obj.map { |v| deep_symbolize(v) }
+        else
+          obj
+        end
+      end
+    explanation: |
+      A small recursive transform that shows `case/when` dispatching on class via `===`, `Hash#to_h` with a block
+      to rebuild pairs, and the symbol/string distinction interviewers love (JSON gives string keys, Ruby code
+      wants symbols). Note that `to_h`/`map` build new containers so the input is left intact; a solution using
+      `transform_keys!` would mutate the caller's data.
+    tags: [hash, recursion, symbols]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-core-case-classify
+    kind: code
+    difficulty: middle
+    title: "Classify a value with case/when and `===`"
+    body: |
+      Implement `classify(value)` using a single `case/when` that returns:
+
+      - `"integer"` for Integers
+      - `"float"` for Floats
+      - `"numeric string"` for Strings made only of digits (e.g. `"42"`)
+      - `"string"` for any other String
+      - `"empty"` for an empty Array or Hash
+      - `"collection"` for a non-empty Array or Hash
+      - `"nil"` for `nil`
+      - `"other"` for anything else
+
+      ```ruby
+      classify("42")   # => "numeric string"
+      classify([])     # => "empty"
+      classify(1.5)    # => "float"
+      ```
+    starter_code: |
+      def classify(value)
+        case value
+        # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class ClassifyTest < Minitest::Test
+        def test_numbers
+          assert_equal "integer", classify(7)
+          assert_equal "float", classify(1.5)
+        end
+
+        def test_strings
+          assert_equal "numeric string", classify("42")
+          assert_equal "string", classify("4a2")
+          assert_equal "string", classify("")
+        end
+
+        def test_collections
+          assert_equal "empty", classify([])
+          assert_equal "empty", classify({})
+          assert_equal "collection", classify([1])
+          assert_equal "collection", classify({a: 1})
+        end
+
+        def test_nil_and_other
+          assert_equal "nil", classify(nil)
+          assert_equal "other", classify(:sym)
+          assert_equal "other", classify(1r)
+        end
+      end
+    solution: |
+      def classify(value)
+        case value
+        when Integer then "integer"
+        when Float then "float"
+        when /\A\d+\z/ then "numeric string"
+        when String then "string"
+        when Array, Hash then value.empty? ? "empty" : "collection"
+        when nil then "nil"
+        else "other"
+        end
+      end
+    explanation: |
+      Every `when` relies on a different `===`: `Class#===` is `is_a?`, `Regexp#===` matches strings (and returns
+      `false` for non-strings instead of raising), `nil === nil` is `NilClass#===` which falls back to `==`.
+      Order matters: the regexp must come before `when String`, and `Integer` before any `Numeric` catch-all.
+      `when Array, Hash` is an OR. A `Rational` falls through to `else` because it is neither Integer nor Float.
+    tags: [case, threequals, regexp]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/control_expressions_rdoc.html
+
+  - slug: ruby-core-pattern-match-point
+    kind: code
+    difficulty: middle
+    title: "Parse a point with pattern matching"
+    body: |
+      Implement `parse_point(input)` with `case/in` pattern matching. It accepts:
+
+      - a Hash with numeric `:x` and `:y` keys (extra keys allowed) -> `[x, y]`
+      - a two-element Array of numbers -> `[x, y]`
+      - a String `"x,y"` of two integers, spaces allowed -> `[x, y]` as Integers
+      - anything else -> `nil`
+
+      ```ruby
+      parse_point({x: 1, y: 2, z: 3})  # => [1, 2]
+      parse_point([3, 4.5])            # => [3, 4.5]
+      parse_point("5, 6")              # => [5, 6]
+      parse_point("5,6,7")             # => nil
+      parse_point({x: "1", y: 2})      # => nil
+      ```
+    starter_code: |
+      def parse_point(input)
+        case input
+        # your patterns here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class ParsePointTest < Minitest::Test
+        def test_hash
+          assert_equal [1, 2], parse_point({x: 1, y: 2, z: 3})
+          assert_nil parse_point({x: "1", y: 2})
+          assert_nil parse_point({x: 1})
+        end
+
+        def test_array
+          assert_equal [3, 4.5], parse_point([3, 4.5])
+          assert_nil parse_point([1, 2, 3])
+          assert_nil parse_point(["1", 2])
+        end
+
+        def test_string
+          assert_equal [5, 6], parse_point("5, 6")
+          assert_equal [-1, 0], parse_point("-1,0")
+          assert_nil parse_point("5,6,7")
+          assert_nil parse_point("a,b")
+        end
+
+        def test_other
+          assert_nil parse_point(nil)
+          assert_nil parse_point(42)
+        end
+      end
+    solution: |
+      def parse_point(input)
+        case input
+        in {x: Numeric => x, y: Numeric => y}
+          [x, y]
+        in [Numeric => x, Numeric => y]
+          [x, y]
+        in String if (m = input.match(/\A\s*(-?\d+)\s*,\s*(-?\d+)\s*\z/))
+          [m[1].to_i, m[2].to_i]
+        else
+          nil
+        end
+      end
+    explanation: |
+      Shows the main pattern kinds: hash patterns (which ignore extra keys), array patterns (which require
+      an exact length), `Class => var` binding with a type check, and guards (`in String if ...`). Without the
+      `else`, a non-matching value raises `NoMatchingPatternError`, which is the opposite of `case/when`.
+      A tempting mistake is `in {x:, y:}` without a type: it would accept `{x: "1", y: 2}`.
+    tags: [pattern-matching, case-in]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/pattern_matching_rdoc.html
+
+  - slug: ruby-core-safe-integer
+    kind: code
+    difficulty: middle
+    title: "Strict integer parsing"
+    body: |
+      Implement `safe_int(value)` that converts `value` to an Integer **strictly**: the whole input must be a
+      valid integer representation (surrounding whitespace, `_` digit separators and `0x`/`0b`/`0o` prefixes
+      are fine). Return `nil` for anything invalid instead of raising, including `nil` input.
+      Do not use `String#to_i`.
+
+      ```ruby
+      safe_int("42")     # => 42
+      safe_int(" 42 ")   # => 42
+      safe_int("0x1A")   # => 26
+      safe_int("12abc")  # => nil
+      safe_int(nil)      # => nil
+      ```
+    starter_code: |
+      def safe_int(value)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SafeIntTest < Minitest::Test
+        def test_valid
+          assert_equal 42, safe_int("42")
+          assert_equal 42, safe_int(" 42 ")
+          assert_equal -7, safe_int("-7")
+          assert_equal 1000, safe_int("1_000")
+          assert_equal 26, safe_int("0x1A")
+          assert_equal 5, safe_int("0b101")
+        end
+
+        def test_invalid
+          assert_nil safe_int("12abc")
+          assert_nil safe_int("abc")
+          assert_nil safe_int("")
+          assert_nil safe_int("1.5")
+          assert_nil safe_int(nil)
+        end
+
+        def test_integer_passthrough
+          assert_equal 3, safe_int(3)
+        end
+      end
+    solution: |
+      def safe_int(value)
+        Integer(value, exception: false)
+      end
+    explanation: |
+      `Kernel#Integer` already implements strict parsing, and the `exception: false` keyword (Ruby 2.6+) turns
+      `ArgumentError`/`TypeError` into `nil`, so no `rescue` is needed. Candidates who reach for `to_i` get
+      `"12abc"` wrong (it returns 12) and `""` wrong (it returns 0). A regexp like `/\A-?\d+\z/` works for
+      decimal but misses the prefixes and separators the tests exercise. `Integer(3)` passes an Integer through.
+    tags: [conversion, Integer, validation]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-core-format-money
+    kind: code
+    difficulty: middle
+    title: "Format cents as currency"
+    body: |
+      Implement `format_money(cents)` that takes an Integer number of cents and returns a string like
+      `"$1,234.56"`: a dollar sign, thousands separators, always two decimals, and a leading minus for
+      negative amounts (`"-$0.05"`). Use `format`/`sprintf` for the decimals.
+
+      ```ruby
+      format_money(123456)  # => "$1,234.56"
+      format_money(5)       # => "$0.05"
+      format_money(-100)    # => "-$1.00"
+      ```
+    starter_code: |
+      def format_money(cents)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FormatMoneyTest < Minitest::Test
+        def test_thousands
+          assert_equal "$1,234.56", format_money(123456)
+          assert_equal "$1,000,000.00", format_money(100_000_000)
+        end
+
+        def test_small
+          assert_equal "$0.05", format_money(5)
+          assert_equal "$0.00", format_money(0)
+          assert_equal "$999.99", format_money(99_999)
+        end
+
+        def test_negative
+          assert_equal "-$1.00", format_money(-100)
+          assert_equal "-$12,345.67", format_money(-1_234_567)
+        end
+      end
+    solution: |
+      def format_money(cents)
+        dollars, rest = cents.abs.divmod(100)
+        whole = dollars.to_s.reverse.scan(/\d{1,3}/).join(",").reverse
+        "#{cents.negative? ? "-" : ""}$#{whole}.#{format("%02d", rest)}"
+      end
+    explanation: |
+      Work in Integers: `divmod(100)` splits cents exactly, and `format("%02d", rest)` zero-pads the decimals.
+      Using `cents / 100.0` with `%.2f` would reintroduce Float rounding, which is exactly what money code
+      must avoid. The reverse/scan/reverse trick groups digits in threes from the right; `gsub(/(\d)(?=(\d{3})+$)/, '\1,')`
+      is the regexp alternative. `divmod` on `abs` keeps the sign handling in one place.
+    tags: [format, strings, money]
+    source: https://docs.ruby-lang.org/en/3.3/format_specifications_rdoc.html
+
+  - slug: ruby-core-comparable-version
+    kind: code
+    difficulty: middle
+    title: "A Comparable semantic version"
+    body: |
+      Implement a class `Version` that wraps a dotted version string like `"1.2.10"` and compares
+      **numerically** per segment (so `1.2.10 > 1.2.9`, and `1.2` equals `1.2.0`). Include `Comparable`
+      and define `<=>` so that `<`, `>`, `==`, `between?`, `clamp` and `sort` all work. Expose the original
+      string via `to_s`.
+
+      ```ruby
+      Version.new("1.2.10") > Version.new("1.2.9")    # => true
+      Version.new("1.2") == Version.new("1.2.0")      # => true
+      [Version.new("2.0"), Version.new("1.10")].min.to_s  # => "1.10"
+      ```
+    starter_code: |
+      class Version
+        include Comparable
+
+        def initialize(string)
+          # your code here
+        end
+
+        def <=>(other)
+          # your code here
+        end
+
+        def to_s
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class VersionTest < Minitest::Test
+        def v(s) = Version.new(s)
+
+        def test_numeric_segments
+          assert v("1.2.10") > v("1.2.9")
+          assert v("1.10") > v("1.9")
+          assert v("0.9") < v("1.0")
+        end
+
+        def test_missing_segments_are_zero
+          assert v("1.2") == v("1.2.0")
+          assert_equal 0, v("2") <=> v("2.0.0")
+        end
+
+        def test_comparable_helpers
+          assert v("1.5").between?(v("1.0"), v("2.0"))
+          assert_equal "2.0", v("3.1").clamp(v("1.0"), v("2.0")).to_s
+        end
+
+        def test_sort_and_to_s
+          sorted = [v("2.0"), v("1.10"), v("1.9")].sort.map(&:to_s)
+          assert_equal ["1.9", "1.10", "2.0"], sorted
+        end
+
+        def test_incomparable_returns_nil
+          assert_nil v("1.0") <=> "1.0"
+        end
+      end
+    solution: |
+      class Version
+        include Comparable
+
+        attr_reader :segments
+
+        def initialize(string)
+          @string = string
+          @segments = string.split(".").map(&:to_i)
+        end
+
+        def <=>(other)
+          return nil unless other.is_a?(Version)
+
+          width = [segments.size, other.segments.size].max
+          pad = ->(s) { s + [0] * (width - s.size) }
+          pad.(segments) <=> pad.(other.segments)
+        end
+
+        def to_s = @string
+      end
+    explanation: |
+      `Comparable` derives `<`, `<=`, `==`, `>`, `>=`, `between?` and `clamp` from a single `<=>`, which must
+      return `-1`, `0`, `1`, or `nil` for incomparable objects (then `==` returns `false` and `<` raises
+      `ArgumentError`). The trap in the task is string comparison: `"1.2.10" < "1.2.9"` is `true` lexically,
+      so segments must be converted to Integers; `Array#<=>` then compares element-wise. Padding with zeros makes
+      `1.2` equal `1.2.0`. Note that `Comparable#==` does not make the object a usable Hash key; that needs
+      `eql?` and `hash`.
+    tags: [comparable, spaceship, sorting]
+    source: https://docs.ruby-lang.org/en/3.3/Comparable.html
+
+  - slug: ruby-core-find-pattern-admin
+    kind: code
+    difficulty: senior
+    title: "Find pattern: first admin in a list"
+    body: |
+      Implement `first_admin_name(users)` using a **find pattern** (`in [*, pattern, *]`) in a `case/in`.
+      `users` is an array of hashes; return the `:name` of the first user whose `:role` is `"admin"`, or
+      `nil` if there is none or the input is not an array. Use pattern matching rather than `find`/`detect`.
+
+      ```ruby
+      users = [{name: "ann", role: "user"}, {name: "bob", role: "admin"}, {name: "cy", role: "admin"}]
+      first_admin_name(users)   # => "bob"
+      first_admin_name([])      # => nil
+      first_admin_name(nil)     # => nil
+      ```
+    starter_code: |
+      def first_admin_name(users)
+        case users
+        # your find pattern here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FirstAdminTest < Minitest::Test
+        def test_finds_first_admin
+          users = [{name: "ann", role: "user"}, {name: "bob", role: "admin"}, {name: "cy", role: "admin"}]
+          assert_equal "bob", first_admin_name(users)
+        end
+
+        def test_admin_at_edges
+          assert_equal "a", first_admin_name([{name: "a", role: "admin"}])
+          assert_equal "z", first_admin_name([{name: "x", role: "user"}, {name: "z", role: "admin"}])
+        end
+
+        def test_no_admin
+          assert_nil first_admin_name([{name: "ann", role: "user"}])
+          assert_nil first_admin_name([])
+        end
+
+        def test_not_an_array
+          assert_nil first_admin_name(nil)
+          assert_nil first_admin_name({name: "bob", role: "admin"})
+        end
+
+        def test_ignores_malformed_entries
+          assert_equal "ok", first_admin_name([42, {role: "admin"}, {name: "ok", role: "admin"}])
+        end
+      end
+    solution: |
+      def first_admin_name(users)
+        case users
+        in [*, {name: String => name, role: "admin"}, *]
+          name
+        else
+          nil
+        end
+      end
+    explanation: |
+      The find pattern `[*, pat, *]` (Ruby 3.0+) scans an array for the first element matching `pat` and binds
+      variables from it, so there is no explicit loop. Hash patterns ignore extra keys and match only Hashes, so
+      the Integer `42` and the admin entry without a `:name` are skipped by the pattern itself. The `else` branch
+      covers `nil`, a bare Hash (an array pattern only matches objects responding to `deconstruct`) and arrays
+      with no match; without it `NoMatchingPatternError` would be raised. In production code `find` is clearer;
+      the interview point is knowing the pattern exists and how `deconstruct`/`deconstruct_keys` drive it.
+    tags: [pattern-matching, find-pattern]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/pattern_matching_rdoc.html
+
+  - slug: ruby-core-object-id-immediates
+    kind: theory
+    difficulty: senior
+    title: "object_id, immediates and why `1.object_id` is 3"
+    body: |
+      Every object answers `object_id`, an Integer that is unique while the object lives. The way the value is
+      produced reveals how MRI represents objects.
+
+      ```ruby
+      1.object_id        # => 3
+      2.object_id        # => 5
+      nil.object_id      # => 8
+      true.object_id     # => 20
+      false.object_id    # => 0
+      :a.object_id == :a.object_id        # => true
+      "a".object_id == "a".object_id      # => false (new String each time)
+      (2**64).object_id == (2**64).object_id  # => false (Bignum, heap allocated)
+      1.0.object_id == 1.0.object_id      # => true (flonum on 64-bit)
+      ```
+
+      **Immediates**: small Integers (Fixnum range), Symbols, `nil`, `true`, `false` and, on 64-bit builds,
+      most Floats (flonums) are not heap objects. The value is encoded in the `VALUE` word itself with tag bits:
+      an Integer `n` is stored as `2n + 1`, hence `object_id` 3 for `1`. They are never allocated, never
+      garbage collected, always frozen, and `dup` returns the receiver.
+
+      **Heap objects** (Strings, Arrays, big Integers, your classes) get a lazily assigned, monotonically
+      increasing `object_id` since Ruby 2.7 (it used to be derived from the address, which leaked
+      information and broke with compaction). `ObjectSpace._id2ref` can map it back while the object is alive.
+
+      Why it matters in interviews: it explains why `equal?` is "free" for symbols, why `"a".equal?("a")` is
+      false without `frozen_string_literal`, why you cannot define singleton methods on Integers
+      (`TypeError: can't define singleton`), and why Integer/Symbol keys are the cheapest Hash keys.
+    answer: |
+      **Q:** Why does `"a".equal?("a")` return `false` while `:a.equal?(:a)` and `1.equal?(1)` return `true`?
+      **A:** Each string literal evaluates to a new heap object (unless frozen and deduplicated), so the two
+      references differ. Symbols are interned once per name, and small Integers are immediates whose identity is
+      the value itself, so there is nothing to allocate and every occurrence is the same object.
+    explanation: |
+      Senior follow-ups: "What changed with `object_id` in Ruby 2.7 and why?" (compaction / `GC.compact` needs
+      objects to move, so ids can no longer be addresses). "Can you define `def 1.foo`?" (no; immediates have no
+      singleton class). "Why are Integers frozen?" (immediates have no mutable state at all).
+    tags: [object_id, immediates, internals]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-core-pattern-matching-lesson
+    kind: theory
+    difficulty: senior
+    title: "Pattern matching: case/in, deconstruct and deconstruct_keys"
+    body: |
+      Ruby 2.7 added structural pattern matching; 3.0 made it stable and added the find pattern; 3.1 added
+      one-line forms and bare `in` returning a boolean.
+
+      ```ruby
+      config = {db: {user: "app", port: 5432}, tags: ["prod", "eu"]}
+
+      case config
+      in {db: {user: String => user, port: Integer => port}, tags: [*, "prod", *]}
+        puts "#{user}@#{port} in production"
+      in {db: {user:}}            # key shorthand binds `user`
+        puts "non-prod as #{user}"
+      end
+
+      config => {tags:}           # rightward assignment, raises NoMatchingPatternKeyError on failure
+      config in {db: {port: 5432}} # => true, never raises
+      ```
+
+      Patterns: **value** (`in 1..10`, `in String`, compared with `===`), **array** (`[a, b, *rest]`, exact
+      length unless splatted), **find** (`[*, x, *]`), **hash** (`{k: pat}`, extra keys allowed, `**nil` to
+      forbid them), **alternative** (`in 0 | 1`), **binding** (`Integer => n`), **pin** (`^var`, `^(expr)`),
+      **guard** (`in [x, y] if x < y`).
+
+      Your own classes take part by implementing `deconstruct` (returns an Array, used by array/find patterns)
+      and `deconstruct_keys(keys)` (returns a Hash; `keys` is the list the pattern asks for, or `nil` with
+      `**rest`, so you can compute only what is needed). `Struct` and `Data` implement both out of the box.
+
+      Gotchas: `case/in` **raises** `NoMatchingPatternError` without an `else`; bare identifiers always bind
+      (use `^` to compare); variables bound in a failed branch may remain assigned.
+    answer: |
+      **Q:** Your `Point` class should match `in [x, y]` and `in {x:, y:}`. Which methods do you define, and what
+      is the purpose of the `keys` argument?
+      **A:** Define `deconstruct` returning `[x, y]` and `deconstruct_keys(keys)` returning `{x: x, y: y}`.
+      `keys` lists the keys the pattern needs (or `nil` when the pattern uses `**rest`) so an expensive object
+      can build only those entries; returning extra keys is harmless.
+    explanation: |
+      Follow-ups: "What is the difference between `case/when` and `case/in` on no match?" (nil vs exception),
+      "How do you match a Hash with no extra keys?" (`in {a: 1, **nil}`), "How does `in` differ from `=>`?"
+      (boolean test vs rightward assignment that raises).
+    tags: [pattern-matching, deconstruct]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/pattern_matching_rdoc.html
+
+  - slug: ruby-core-implicit-return
+    kind: theory
+    difficulty: junior
+    title: "Implicit returns and the `puts` trap"
+    body: |
+      A Ruby method returns the value of the **last evaluated expression**; `return` is only needed to exit early.
+      Because almost everything is an expression, `if`, `case`, `begin/rescue` and even `while` produce values.
+
+      ```ruby
+      def grade(score)
+        if score >= 90
+          "A"
+        elsif score >= 80
+          "B"
+        else
+          "C"
+        end
+      end                     # returns the branch's string
+
+      def discount(user)
+        return 0 unless user  # guard clause: early exit
+        user.vip? ? 20 : 5
+      end
+
+      def broken_total(items)
+        total = items.sum
+        puts "total: #{total}"   # puts returns nil, so this method returns nil
+      end
+      ```
+
+      Things that return surprising values: `puts`/`print` return `nil`; `each` returns the receiver (so a
+      method ending in `each` returns the collection, not what the block computed, use `map`); assignment
+      `x = 5` evaluates to `5`; `while` returns `nil` unless broken out of with `break value`; a `def` returns a
+      Symbol (`def foo; end # => :foo`), which is why `private def foo` works.
+
+      `return a, b` returns an Array; in a block `return` exits the **enclosing method** (and raises
+      `LocalJumpError` in a proc whose method has already returned), while `next` returns from the block.
+    answer: |
+      **Q:** What does `def total(items) = items.each { |i| @sum += i }` return, and how do you fix it to return
+      the sum?
+      **A:** It returns `items` because `each` returns its receiver. Return `@sum` explicitly as the last
+      expression, or use `items.sum` / `items.inject(:+)`.
+    explanation: |
+      Interviewers follow with "what does `x = puts 'hi'` leave in `x`?" (`nil`) and "what does `return` inside a
+      block passed to `each` do?" (returns from the method that contains the block, skipping the rest of the
+      iteration). Common mistake: adding `return` on the last line out of habit; it is legal but unidiomatic.
+    tags: [methods, return]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/methods_rdoc.html
+
+  - slug: ruby-core-kernel-and-introspection
+    kind: theory
+    difficulty: senior
+    title: "Kernel, `defined?`, `__method__` and BEGIN/END"
+    body: |
+      `puts`, `require`, `raise`, `loop`, `Integer()`, `format`, `rand`, `sleep` are not keywords: they are
+      **private instance methods of `Kernel`**, a module included in `Object`. That is why you can call them
+      anywhere without a receiver and why `obj.puts "x"` raises `NoMethodError (private method)`.
+      `method(:puts).owner # => Kernel`. `BasicObject` does not include Kernel, so proxies built on it cannot
+      call `puts` without `::Kernel.puts`.
+
+      `defined?(expr)` is a keyword that returns a String describing the expression, or `nil`:
+
+      ```ruby
+      defined?(@x)         # => nil until assigned, then "instance-variable"
+      defined?(String)     # => "constant"
+      defined?(puts)       # => "method"
+      defined?(super)      # => "super" only when a superclass method exists
+      defined?(yield)      # => "yield" when a block was given (older idiom for block_given?)
+      defined?(x = 1)      # => "assignment" (does not assign)
+      defined?(@x && @x.zero?)  # => "expression"  <- precedence trap: always truthy
+      ```
+
+      `__method__` returns the name of the current method as a Symbol (the *defined* name, even when called
+      through an alias); `nil` at top level. Useful for logging and for `send(__method__)`-style dispatch.
+
+      `BEGIN { }` and `END { }` register blocks to run before any other code in the file and at program exit
+      respectively (`END` is like `at_exit`, both run in reverse registration order). They are a `ruby -ne`
+      one-liner feature, almost never seen in application code, but interviewers use them as a trivia filter.
+    answer: |
+      **Q:** Why does `defined?(@config && @config.loaded?)` not protect against an unset `@config`, and what
+      should you write instead?
+      **A:** `defined?` wraps the whole `&&` expression and reports `"expression"`, which is truthy regardless of
+      `@config`. Use `defined?(@config) && @config.loaded?`, or better `instance_variable_defined?(:@config)`
+      or a nil check (`@config&.loaded?`), since uninitialized ivars read as `nil` anyway.
+    explanation: |
+      Follow-ups: "What does `Kernel#Array(nil)` return?" (`[]`), "Where does `method_missing` live?"
+      (`BasicObject`, private), "How does `at_exit` ordering work?" (LIFO). Senior candidates know that
+      `Kernel` methods like `puts` are module functions: callable as `Kernel.puts` too.
+    tags: [kernel, defined, introspection]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/miscellaneous_rdoc.html
+
+  - slug: ruby-core-nil-conversions
+    kind: theory
+    difficulty: junior
+    title: "Taming nil: `nil.to_a`, `Array()`, `to_s` and friends"
+    body: |
+      `nil` is a real object (the single instance of `NilClass`), so it responds to a handful of conversion
+      methods that make defensive code shorter:
+
+      ```ruby
+      nil.to_a   # => []
+      nil.to_h   # => {}
+      nil.to_s   # => ""
+      nil.to_i   # => 0
+      nil.to_f   # => 0.0
+      nil.inspect  # => "nil"
+      nil & true   # => false  (NilClass#& always false)
+      ```
+
+      `Kernel#Array` is the idiomatic way to normalise "one, many or none" arguments:
+
+      ```ruby
+      Array(nil)        # => []
+      Array([1, 2])     # => [1, 2]   (same array, not wrapped again)
+      Array(1..3)       # => [1, 2, 3]
+      Array("str")      # => ["str"]
+      Array({a: 1})     # => [[:a, 1]]  <- surprise: Hash#to_a
+      ```
+
+      `Array(x)` tries `to_ary`, then `to_a`, then wraps. Because `nil.to_a` is `[]`, `Array(nil)` is empty, so
+      `Array(options[:tags]).each` handles missing, single and multiple values with no `if`.
+      Related idioms: `obj.to_s` instead of `obj.nil? ? "" : obj.to_s`; `value.to_i` is lenient and never raises
+      (use `Integer()` when invalid input must be an error); `nil.to_sym` and `nil + 1` raise `NoMethodError`.
+    answer: |
+      **Q:** `params[:ids]` may be `nil`, `"3"` or `["3", "4"]`. Write one expression that always yields an
+      array of Integers.
+      **A:** `Array(params[:ids]).map { |id| Integer(id) }` (or `.map(&:to_i)` if lenient parsing is acceptable).
+      `Array(nil)` gives `[]`, a String is wrapped, an Array is returned as is.
+    explanation: |
+      Follow-up: "Why is `Array({a: 1})` not `[{a: 1}]`?" (Hash implements `to_a` as pairs; wrap explicitly with
+      `[hash]`). "What is the difference between `[*x]` and `Array(x)`?" (nearly the same; splat also calls
+      `to_a`, so `[*{a: 1}]` is `[[:a, 1]]` too).
+    tags: [nil, conversion, Kernel]
+    source: https://docs.ruby-lang.org/en/3.3/NilClass.html
+
+  - slug: ruby-core-ranges-lesson
+    kind: theory
+    difficulty: middle
+    title: "Ranges: inclusive, exclusive, endless, and `include?` vs `cover?`"
+    body: |
+      A `Range` is a pair of endpoints, not a materialised list. `1..5` includes 5, `1...5` excludes it.
+
+      ```ruby
+      (1..5).to_a        # => [1, 2, 3, 4, 5]
+      (1...5).size       # => 4
+      ("a".."e").to_a    # => ["a", "b", "c", "d", "e"]  (uses String#succ)
+      (1..10).step(3).to_a   # => [1, 4, 7, 10]  (returns an ArithmeticSequence without a block)
+      (1..).first(3)     # => [1, 2, 3]   endless range (Ruby 2.6+)
+      (..5).include?(3)  # => true        beginless range (Ruby 2.7+)
+      arr[2..]           # slice to the end;  arr[..-2] drops the last element
+      ```
+
+      `include?` vs `cover?`: for numeric ranges both compare against the endpoints. For other types
+      `include?` enumerates with `succ` and tests membership, while `cover?` only uses `<=>`:
+      `("a".."z").cover?("mm")` is `true` (between the ends) but `("a".."z").include?("mm")` is `false`.
+      `Range#===` uses `cover?`, which makes `when 1..10` and `when "a".."m"` cheap in `case` statements and
+      also lets you write `case date when Date.new(2024,1,1)..Date.new(2024,12,31)`.
+
+      Ranges are lazy by nature: `(1..Float::INFINITY).lazy.map { _1 * 2 }.first(3)` works, and
+      `(1..).each` loops forever; `to_a` on an endless range raises `RangeError`. Ranges are frozen since
+      Ruby 3.0, and a `Range` whose ends do not implement `succ` (Floats) can be covered but not iterated
+      (`(1.0..2.0).each` raises `TypeError`).
+    answer: |
+      **Q:** Why does `("a".."z").include?("mm")` return `false` while `("a".."z") === "mm"` returns `true`?
+      **A:** `include?` on a non-numeric range iterates the actual members (`"a"`, `"b"`, ..., `"z"`) and `"mm"`
+      is not one of them; `===` delegates to `cover?`, which only checks `"a" <= "mm" && "mm" <= "z"` with `<=>`.
+    explanation: |
+      Follow-ups: "How do you build a range of Dates and iterate it?" (`Date` implements `succ`, so
+      `(d1..d2).each` works), "What does `(1..10) % 3` do?" (alias for `step(3)` since 3.0), "Why prefer
+      `cover?` in validations?" (it is O(1) and does not need `succ`).
+    tags: [ranges, include, cover]
+    source: https://docs.ruby-lang.org/en/3.3/Range.html

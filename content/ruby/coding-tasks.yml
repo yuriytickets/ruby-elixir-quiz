@@ -1,0 +1,3461 @@
+language: ruby
+topic: coding-tasks
+items:
+  - slug: ruby-task-palindrome-ignoring-punctuation
+    kind: code
+    difficulty: junior
+    title: "Palindrome check ignoring case and punctuation"
+    body: |
+      Write `palindrome?(str)` that returns `true` when `str` reads the same forwards and
+      backwards, ignoring case and every character that is not a letter or digit.
+
+      ```ruby
+      palindrome?("A man, a plan, a canal: Panama") # => true
+      palindrome?("race a car")                     # => false
+      ```
+    starter_code: |
+      def palindrome?(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_classic_sentence
+          assert palindrome?("A man, a plan, a canal: Panama")
+        end
+
+        def test_not_palindrome
+          refute palindrome?("race a car")
+        end
+
+        def test_empty_and_punctuation_only_are_palindromes
+          assert palindrome?("")
+          assert palindrome?(".,!")
+        end
+
+        def test_single_char
+          assert palindrome?("x")
+        end
+
+        def test_digits_count
+          assert palindrome?("1a2 2A1")
+          refute palindrome?("12")
+        end
+      end
+    solution: |
+      def palindrome?(str)
+        cleaned = str.downcase.gsub(/[^a-z0-9]/, "")
+        cleaned == cleaned.reverse
+      end
+    explanation: |
+      Normalize first (`downcase` + `gsub(/[^a-z0-9]/, "")`), then compare with `reverse`.
+      O(n) time and O(n) extra memory for the cleaned copy; a two-pointer scan avoids the copy
+      but is rarely worth it in an interview. Common pitfalls: forgetting digits in the
+      allowed set, using `/\W/` (which keeps `_`), and treating the empty string as `false`:
+      by definition it is a palindrome.
+    tags: [strings, regex]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/String.html"
+
+  - slug: ruby-task-anagram-groups
+    kind: code
+    difficulty: junior
+    title: "Group words that are anagrams of each other"
+    body: |
+      Write `anagram_groups(words)` that returns an array of groups, where each group is an
+      array of words that are anagrams of each other. Keep words in the order they first
+      appeared, and order groups by the first appearance of their first word. Comparison is
+      case-sensitive.
+
+      ```ruby
+      anagram_groups(%w[eat tea tan ate nat bat])
+      # => [["eat", "tea", "ate"], ["tan", "nat"], ["bat"]]
+      ```
+    starter_code: |
+      def anagram_groups(words)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_classic
+          assert_equal [%w[eat tea ate], %w[tan nat], %w[bat]], anagram_groups(%w[eat tea tan ate nat bat])
+        end
+
+        def test_empty
+          assert_equal [], anagram_groups([])
+        end
+
+        def test_single
+          assert_equal [["a"]], anagram_groups(["a"])
+        end
+
+        def test_duplicates_stay
+          assert_equal [%w[ab ba ab]], anagram_groups(%w[ab ba ab])
+        end
+
+        def test_case_sensitive
+          assert_equal [["Ab"], ["ba"]], anagram_groups(%w[Ab ba])
+        end
+      end
+    solution: |
+      def anagram_groups(words)
+        words.group_by { |w| w.chars.sort }.values
+      end
+    explanation: |
+      The key insight is choosing a canonical key: the sorted characters of a word. `group_by`
+      returns a Hash, and Ruby hashes preserve insertion order, so `.values` gives the groups in
+      first-appearance order for free. Complexity is O(n * k log k) for n words of length k; a
+      26-slot letter-count key would make it O(n * k) but is only worth mentioning. Pitfall:
+      using `w.chars.sort.join` vs `w.chars.sort` both work as keys, but `w.sum`-style hashes
+      collide ("ab" vs "ba" is fine, but "ad" and "bc" would collide).
+    tags: [strings, hash, group_by]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Hash.html"
+
+  - slug: ruby-task-run-length-encoding
+    kind: code
+    difficulty: junior
+    title: "Run-length encode and decode"
+    body: |
+      Implement `rle_encode(str)` and `rle_decode(str)`. Encoding replaces each run of the same
+      character by the count followed by the character; a run of length 1 is written without a
+      count. Input contains only letters.
+
+      ```ruby
+      rle_encode("AAABBC")  # => "3A2BC"
+      rle_decode("3A2BC")   # => "AAABBC"
+      rle_encode("")        # => ""
+      ```
+    starter_code: |
+      def rle_encode(str)
+        # your code here
+      end
+
+      def rle_decode(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_encode
+          assert_equal "3A2BC", rle_encode("AAABBC")
+        end
+
+        def test_decode
+          assert_equal "AAABBC", rle_decode("3A2BC")
+        end
+
+        def test_empty
+          assert_equal "", rle_encode("")
+          assert_equal "", rle_decode("")
+        end
+
+        def test_no_runs
+          assert_equal "ABC", rle_encode("ABC")
+          assert_equal "ABC", rle_decode("ABC")
+        end
+
+        def test_long_run_multi_digit_count
+          assert_equal "12Z", rle_encode("Z" * 12)
+          assert_equal "Z" * 12, rle_decode("12Z")
+        end
+
+        def test_round_trip
+          s = "WWWWWWWWWWWWBWWWWWWWWWWWWBBBWWWWWWWWWWWWWWWWWWWWWWWWB"
+          assert_equal s, rle_decode(rle_encode(s))
+        end
+      end
+    solution: |
+      def rle_encode(str)
+        str.chars.chunk_while { |a, b| a == b }.map do |run|
+          run.size == 1 ? run.first : "#{run.size}#{run.first}"
+        end.join
+      end
+
+      def rle_decode(str)
+        str.scan(/(\d*)([A-Za-z])/).map { |n, ch| ch * (n.empty? ? 1 : n.to_i) }.join
+      end
+    explanation: |
+      `chunk_while` (or `slice_when`) groups consecutive equal characters without manual index
+      juggling; `scan` with a regex does the inverse. Both are O(n). The classic pitfalls are
+      multi-digit counts (a `each_char`-based decoder that reads a single digit breaks on `12Z`)
+      and the length-1 rule, which must be symmetric in encoder and decoder. An interviewer may
+      follow up with "what if the input contains digits?", which forces a delimiter-based format.
+    tags: [strings, chunk_while, regex]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Enumerable.html"
+
+  - slug: ruby-task-camel-snake-case
+    kind: code
+    difficulty: junior
+    title: "Convert between camelCase and snake_case"
+    body: |
+      Write `to_snake(str)` and `to_camel(str)`. `to_snake` turns `"firstName"` or
+      `"FirstName"` into `"first_name"`, handling consecutive capitals as one word boundary at
+      the end (`"parseHTTPResponse"` -> `"parse_http_response"`). `to_camel` turns
+      `"first_name"` into `"firstName"` (lower camel).
+
+      ```ruby
+      to_snake("userID")      # => "user_id"
+      to_camel("user_id")     # => "userId"
+      ```
+    starter_code: |
+      def to_snake(str)
+        # your code here
+      end
+
+      def to_camel(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_snake_simple
+          assert_equal "first_name", to_snake("firstName")
+          assert_equal "first_name", to_snake("FirstName")
+        end
+
+        def test_snake_acronym
+          assert_equal "parse_http_response", to_snake("parseHTTPResponse")
+          assert_equal "user_id", to_snake("userID")
+        end
+
+        def test_snake_already_snake_and_empty
+          assert_equal "already_snake", to_snake("already_snake")
+          assert_equal "", to_snake("")
+        end
+
+        def test_camel
+          assert_equal "firstName", to_camel("first_name")
+          assert_equal "aBC", to_camel("a_b_c")
+          assert_equal "word", to_camel("word")
+        end
+      end
+    solution: |
+      def to_snake(str)
+        str.gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
+           .gsub(/([a-z\d])([A-Z])/, '\1_\2')
+           .downcase
+      end
+
+      def to_camel(str)
+        head, *rest = str.split("_")
+        head.to_s + rest.map(&:capitalize).join
+      end
+    explanation: |
+      This is the same two-regex approach ActiveSupport's `underscore` uses: first split an
+      acronym from a following capitalised word (`HTTPResponse` -> `HTTP_Response`), then split
+      lower/upper boundaries. Doing it in one regex usually breaks either `userID` or
+      `parseHTTPResponse`. `to_camel` is `split`, capitalize the tail, `join`. Both are O(n).
+      Pitfall: `capitalize` lowercases the rest of the word, so `"user_iD"` becomes `"userId"`.
+    tags: [strings, regex, gsub]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Regexp.html"
+
+  - slug: ruby-task-balanced-brackets
+    kind: code
+    difficulty: junior
+    title: "Check for balanced brackets"
+    body: |
+      Write `balanced?(str)` that returns `true` when every `(`, `[`, `{` in `str` is closed by
+      the matching bracket in the correct order. Other characters are ignored.
+
+      ```ruby
+      balanced?("{[()]}")   # => true
+      balanced?("([)]")     # => false
+      balanced?("a(b)c")    # => true
+      ```
+    starter_code: |
+      def balanced?(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_balanced
+          assert balanced?("{[()]}")
+          assert balanced?("a(b)c")
+        end
+
+        def test_wrong_order
+          refute balanced?("([)]")
+        end
+
+        def test_unclosed_and_unopened
+          refute balanced?("((")
+          refute balanced?(")")
+        end
+
+        def test_empty
+          assert balanced?("")
+        end
+      end
+    solution: |
+      def balanced?(str)
+        pairs = { ")" => "(", "]" => "[", "}" => "{" }
+        stack = []
+        str.each_char do |ch|
+          if pairs.value?(ch)
+            stack.push(ch)
+          elsif pairs.key?(ch)
+            return false unless stack.pop == pairs[ch]
+          end
+        end
+        stack.empty?
+      end
+    explanation: |
+      A stack is the canonical answer: push openers, and on each closer pop and compare. The two
+      edge cases interviewers watch for are a closer with an empty stack (`stack.pop` returns
+      `nil`, which fails the comparison, so it is handled) and leftover openers at the end
+      (hence `stack.empty?`, not `true`). O(n) time, O(n) space worst case. A counter-only
+      solution works for one bracket type but cannot detect `([)]`.
+    tags: [strings, stack]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-flatten-without-flatten
+    kind: code
+    difficulty: junior
+    title: "Flatten a nested array without Array#flatten"
+    body: |
+      Write `my_flatten(array)` that returns a new one-dimensional array containing all the
+      elements of arbitrarily nested arrays, in order. Do not call `Array#flatten`.
+
+      ```ruby
+      my_flatten([1, [2, [3, [4]]], 5]) # => [1, 2, 3, 4, 5]
+      my_flatten([])                    # => []
+      ```
+    starter_code: |
+      def my_flatten(array)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_nested
+          assert_equal [1, 2, 3, 4, 5], my_flatten([1, [2, [3, [4]]], 5])
+        end
+
+        def test_empty_and_empty_nested
+          assert_equal [], my_flatten([])
+          assert_equal [], my_flatten([[], [[]]])
+        end
+
+        def test_already_flat
+          assert_equal [1, 2], my_flatten([1, 2])
+        end
+
+        def test_does_not_mutate_input
+          input = [1, [2]]
+          my_flatten(input)
+          assert_equal [1, [2]], input
+        end
+
+        def test_keeps_nil_and_strings
+          assert_equal [nil, "a"], my_flatten([[nil], "a"])
+        end
+
+        def test_does_not_call_array_flatten
+          Array.class_eval { alias_method :__flatten_backup, :flatten; def flatten(*) = raise("use recursion, not Array#flatten") }
+          assert_equal [1, 2, 3], my_flatten([1, [2, [3]]])
+        ensure
+          Array.class_eval { alias_method :flatten, :__flatten_backup }
+        end
+      end
+    solution: |
+      def my_flatten(array)
+        array.each_with_object([]) do |el, out|
+          if el.is_a?(Array)
+            out.concat(my_flatten(el))
+          else
+            out << el
+          end
+        end
+      end
+    explanation: |
+      Recursion mirrors the data: for each element, either recurse (array) or append (leaf).
+      `each_with_object([])` avoids an explicit accumulator variable. Time is O(n) in the total
+      number of leaves; space is O(depth) for the call stack plus the output. Pitfalls:
+      mutating the input, treating `nil` as "nothing" and dropping it, and using `respond_to?(:each)`
+      which would also unwrap Hashes and Ranges. An iterative version with an explicit stack is
+      the follow-up if the interviewer asks about very deep nesting.
+    tags: [arrays, recursion]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-two-sum
+    kind: code
+    difficulty: junior
+    title: "Two sum with a hash in one pass"
+    body: |
+      Write `two_sum(nums, target)` that returns the indexes `[i, j]` (with `i < j`) of the two
+      numbers that add up to `target`, or `nil` if there is no such pair. Assume at most one
+      valid pair. Aim for O(n) time.
+
+      ```ruby
+      two_sum([2, 7, 11, 15], 9) # => [0, 1]
+      two_sum([3, 3], 6)         # => [0, 1]
+      two_sum([1, 2], 5)         # => nil
+      ```
+    starter_code: |
+      def two_sum(nums, target)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_basic
+          assert_equal [0, 1], two_sum([2, 7, 11, 15], 9)
+        end
+
+        def test_same_value_twice
+          assert_equal [0, 1], two_sum([3, 3], 6)
+        end
+
+        def test_no_pair
+          assert_nil two_sum([1, 2], 5)
+          assert_nil two_sum([], 0)
+        end
+
+        def test_negative_numbers
+          assert_equal [1, 3], two_sum([5, -4, 2, 4], 0)
+        end
+
+        def test_does_not_reuse_same_index
+          assert_nil two_sum([4], 8)
+        end
+      end
+    solution: |
+      def two_sum(nums, target)
+        seen = {}
+        nums.each_with_index do |n, i|
+          j = seen[target - n]
+          return [j, i] if j
+          seen[n] = i
+        end
+        nil
+      end
+    explanation: |
+      Store each value's index in a Hash as you go and look up the complement before inserting.
+      Inserting after the lookup is what prevents an element from pairing with itself
+      (`[4], 8`). O(n) time and space versus O(n^2) for the nested loop. Pitfalls: pre-filling
+      the hash (breaks the self-pair case and overwrites duplicate indexes), and returning
+      values instead of indexes. Follow-up: sorted input allows a two-pointer O(1)-space answer.
+    tags: [arrays, hash]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Hash.html"
+
+  - slug: ruby-task-sieve-of-eratosthenes
+    kind: code
+    difficulty: junior
+    title: "Primes up to n with the Sieve of Eratosthenes"
+    body: |
+      Write `primes_up_to(n)` that returns all prime numbers `<= n` in ascending order using the
+      Sieve of Eratosthenes. Do not use the `prime` library.
+
+      ```ruby
+      primes_up_to(10) # => [2, 3, 5, 7]
+      primes_up_to(1)  # => []
+      ```
+    starter_code: |
+      def primes_up_to(n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_small
+          assert_equal [2, 3, 5, 7], primes_up_to(10)
+        end
+
+        def test_below_two
+          assert_equal [], primes_up_to(1)
+          assert_equal [], primes_up_to(0)
+          assert_equal [], primes_up_to(-5)
+        end
+
+        def test_n_is_prime
+          assert_equal [2, 3, 5, 7, 11, 13], primes_up_to(13)
+        end
+
+        def test_count_under_100
+          assert_equal 25, primes_up_to(100).size
+        end
+
+        def test_two
+          assert_equal [2], primes_up_to(2)
+        end
+      end
+    solution: |
+      def primes_up_to(n)
+        return [] if n < 2
+        is_prime = Array.new(n + 1, true)
+        is_prime[0] = is_prime[1] = false
+        (2..Integer.sqrt(n)).each do |i|
+          next unless is_prime[i]
+          (i * i).step(n, i) { |j| is_prime[j] = false }
+        end
+        is_prime.each_index.select { |i| is_prime[i] }
+      end
+    explanation: |
+      Mark multiples of each prime starting at `i*i` (smaller multiples were already marked by
+      smaller primes) and stop the outer loop at `sqrt(n)`. Complexity is O(n log log n) time and
+      O(n) memory. Pitfalls: starting the inner loop at `2*i` (still correct, just slower),
+      looping `i` all the way to `n`, and forgetting that `n < 2` must return an empty array.
+      `Integer.sqrt` avoids float rounding issues that `Math.sqrt(n).to_i` can have for huge n.
+    tags: [numbers, primes]
+    source: "https://en.wikipedia.org/wiki/Sieve_of_Eratosthenes"
+
+  - slug: ruby-task-fibonacci-memo
+    kind: code
+    difficulty: junior
+    title: "Memoized Fibonacci"
+    body: |
+      Write `fib(n)` returning the n-th Fibonacci number (`fib(0) == 0`, `fib(1) == 1`). The
+      naive recursive version is exponential; yours must handle `fib(90)` instantly, so memoize
+      (or iterate). Raise `ArgumentError` for negative `n`.
+
+      ```ruby
+      fib(10) # => 55
+      fib(90) # => 2880067194370816120
+      ```
+    starter_code: |
+      def fib(n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_base_cases
+          assert_equal 0, fib(0)
+          assert_equal 1, fib(1)
+        end
+
+        def test_small
+          assert_equal 55, fib(10)
+        end
+
+        def test_large_is_fast
+          assert_equal 2880067194370816120, fib(90)
+        end
+
+        def test_negative_raises
+          assert_raises(ArgumentError) { fib(-1) }
+        end
+      end
+    solution: |
+      def fib(n, memo = {})
+        raise ArgumentError, "n must be >= 0" if n.negative?
+        return n if n < 2
+        memo[n] ||= fib(n - 1, memo) + fib(n - 2, memo)
+      end
+    explanation: |
+      Passing a memo Hash turns the O(2^n) tree into O(n) calls. The interview follow-ups are:
+      (1) a bottom-up loop with two variables is O(1) space and avoids stack depth limits
+      (`fib(10_000)` would blow the recursive version's stack), (2) `Hash.new { |h, k| h[k] = ... }`
+      is the idiomatic Ruby memoizer, and (3) Ruby Integers are arbitrary precision, so there is
+      no overflow at `fib(90)` unlike in 64-bit languages. Pitfall: a module-level `@memo` that
+      leaks between calls is fine for pure functions but surprises people when inputs change type.
+    tags: [recursion, memoization]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Hash.html"
+
+  - slug: ruby-task-binary-search
+    kind: code
+    difficulty: junior
+    title: "Iterative binary search"
+    body: |
+      Write `binary_search(sorted, target)` that returns the index of `target` in the ascending
+      array `sorted`, or `nil` when absent. Do not use `Array#bsearch` or `Array#index`; the
+      point is to write the loop and get the boundaries right.
+
+      ```ruby
+      binary_search([1, 3, 5, 7, 9], 7) # => 3
+      binary_search([1, 3, 5, 7, 9], 4) # => nil
+      ```
+    starter_code: |
+      def binary_search(sorted, target)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_found
+          assert_equal 3, binary_search([1, 3, 5, 7, 9], 7)
+        end
+
+        def test_missing
+          assert_nil binary_search([1, 3, 5, 7, 9], 4)
+        end
+
+        def test_boundaries
+          assert_equal 0, binary_search([1, 3, 5, 7, 9], 1)
+          assert_equal 4, binary_search([1, 3, 5, 7, 9], 9)
+        end
+
+        def test_empty_and_single
+          assert_nil binary_search([], 1)
+          assert_equal 0, binary_search([42], 42)
+          assert_nil binary_search([42], 41)
+        end
+
+        def test_negative_numbers_even_length
+          assert_equal 1, binary_search([-10, -3, 0, 8], -3)
+        end
+      end
+    solution: |
+      def binary_search(sorted, target)
+        lo = 0
+        hi = sorted.size - 1
+        while lo <= hi
+          mid = (lo + hi) / 2
+          case sorted[mid] <=> target
+          when 0 then return mid
+          when -1 then lo = mid + 1
+          else hi = mid - 1
+          end
+        end
+        nil
+      end
+    explanation: |
+      The invariant is "target, if present, lies in `lo..hi`". Use `lo <= hi` (inclusive `hi`)
+      and move `lo = mid + 1` / `hi = mid - 1`, otherwise you loop forever or skip the last
+      element. O(log n). Pitfalls: `(lo + hi) / 2` overflows in C/Java but not in Ruby;
+      using `hi = sorted.size` with `lo < hi` is the other valid convention, but mixing the two
+      is the classic bug. In real code reach for `sorted.bsearch { |x| x >= target }`, which is
+      the find-minimum mode and also solves "first index >= target".
+    tags: [arrays, search]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-luhn-check
+    kind: code
+    difficulty: junior
+    title: "Luhn check for card numbers"
+    body: |
+      Write `luhn_valid?(str)` that validates a card number with the Luhn algorithm: from the
+      rightmost digit moving left, double every second digit (subtracting 9 if the result is
+      greater than 9), sum everything, and the number is valid when the sum is divisible by 10.
+      Spaces are allowed and ignored; any other non-digit or fewer than 2 digits makes it invalid.
+
+      ```ruby
+      luhn_valid?("4539 3195 0343 6467") # => true
+      luhn_valid?("8273 1232 7352 0569") # => false
+      ```
+    starter_code: |
+      def luhn_valid?(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_valid
+          assert luhn_valid?("4539 3195 0343 6467")
+          assert luhn_valid?("79927398713")
+        end
+
+        def test_invalid
+          refute luhn_valid?("8273 1232 7352 0569")
+        end
+
+        def test_too_short
+          refute luhn_valid?("0")
+          refute luhn_valid?("")
+        end
+
+        def test_non_digits_invalid
+          refute luhn_valid?("4539a3195")
+          refute luhn_valid?("055-444-285")
+        end
+
+        def test_single_zero_pair
+          assert luhn_valid?("0 0")
+        end
+      end
+    solution: |
+      def luhn_valid?(str)
+        digits = str.delete(" ")
+        return false unless digits.match?(/\A\d{2,}\z/)
+
+        sum = digits.chars.reverse.each_with_index.sum do |ch, i|
+          d = ch.to_i
+          next d if i.even?
+          d *= 2
+          d > 9 ? d - 9 : d
+        end
+        (sum % 10).zero?
+      end
+    explanation: |
+      Reverse so that "every second digit from the right" becomes "odd indexes". Validate the
+      shape up front with a regex rather than sprinkling checks in the loop. O(n). Pitfalls:
+      doubling from the left (wrong for odd-length numbers), `str.delete("^0-9")` which silently
+      accepts letters, and forgetting the minimum-length rule. This is an Exercism classic, and the
+      follow-up is usually "now generate a check digit".
+    tags: [strings, numbers, validation]
+    source: "https://en.wikipedia.org/wiki/Luhn_algorithm"
+
+  - slug: ruby-task-slugify
+    kind: code
+    difficulty: junior
+    title: "Slugify a title"
+    body: |
+      Write `slugify(title)` that lowercases the string, replaces every run of non-alphanumeric
+      characters with a single `-`, and strips leading/trailing dashes.
+
+      ```ruby
+      slugify("Hello, World!")             # => "hello-world"
+      slugify("  Ruby 3.3 -- what's new ") # => "ruby-3-3-what-s-new"
+      ```
+    starter_code: |
+      def slugify(title)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_basic
+          assert_equal "hello-world", slugify("Hello, World!")
+        end
+
+        def test_collapses_runs_and_trims
+          assert_equal "ruby-3-3-what-s-new", slugify("  Ruby 3.3 -- what's new ")
+        end
+
+        def test_empty_and_punctuation_only
+          assert_equal "", slugify("")
+          assert_equal "", slugify("!!!")
+        end
+
+        def test_already_slug
+          assert_equal "already-a-slug", slugify("already-a-slug")
+        end
+      end
+    solution: |
+      def slugify(title)
+        title.downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-|-\z/, "")
+      end
+    explanation: |
+      Two `gsub`s: the first collapses any run of unwanted characters into one dash (note the `+`,
+      without it you get `"ruby-3-3---what"`), the second trims the ends. ActiveSupport's
+      `parameterize` does the same plus transliteration of accents, which is the usual follow-up
+      ("what about `Ünïcode`?": `unicode_normalize(:nfkd)` + strip combining marks, or the
+      `I18n.transliterate` helper). O(n).
+    tags: [strings, regex]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/String.html"
+
+  - slug: ruby-task-duration-to-seconds
+    kind: code
+    difficulty: junior
+    title: "Parse a duration like 1h30m into seconds"
+    body: |
+      Write `parse_duration(str)` that converts strings such as `"1h30m"`, `"45s"`, `"2h"` or
+      `"1h2m3s"` into a number of seconds. Units are `h`, `m`, `s`, each optional, always in
+      that order, each appearing at most once. Return `nil` for anything else (including the empty
+      string or unknown units).
+
+      ```ruby
+      parse_duration("1h30m") # => 5400
+      parse_duration("45s")   # => 45
+      parse_duration("3x")    # => nil
+      ```
+    starter_code: |
+      def parse_duration(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_hours_minutes
+          assert_equal 5400, parse_duration("1h30m")
+        end
+
+        def test_single_units
+          assert_equal 45, parse_duration("45s")
+          assert_equal 7200, parse_duration("2h")
+          assert_equal 120, parse_duration("2m")
+        end
+
+        def test_all_three
+          assert_equal 3723, parse_duration("1h2m3s")
+        end
+
+        def test_invalid
+          assert_nil parse_duration("")
+          assert_nil parse_duration("3x")
+          assert_nil parse_duration("30m1h")
+          assert_nil parse_duration("1h1h")
+        end
+      end
+    solution: |
+      def parse_duration(str)
+        m = str.match(/\A(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?\z/)
+        return nil if m.nil? || str.empty?
+        h, mi, s = m.captures.map(&:to_i)
+        h * 3600 + mi * 60 + s
+      end
+    explanation: |
+      One anchored regex with three optional groups encodes the grammar (order, at-most-once)
+      directly, so invalid orderings fail to match instead of needing manual checks. `captures`
+      yields `nil` for missing groups and `nil.to_i` is `0`. The one wrinkle is that all three
+      groups being optional means `""` matches, hence the explicit empty check. A `scan(/(\d+)([hms])/)`
+      approach is more flexible (any order) but then you must validate order and duplicates by
+      hand, which is the pitfall most candidates hit.
+    tags: [strings, regex, parsing]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Regexp.html"
+
+  - slug: ruby-task-queue-with-two-stacks
+    kind: code
+    difficulty: junior
+    title: "Queue built from two stacks"
+    body: |
+      Implement `class TwoStackQueue` with `enqueue(x)`, `dequeue` (returns and removes the
+      oldest element, `nil` when empty), `peek` and `size`. Internally use only two arrays and
+      only their `push` / `pop` / `empty?` / `size` / `last` operations (no `shift`/`unshift`).
+      Amortised O(1) per operation.
+
+      ```ruby
+      q = TwoStackQueue.new
+      q.enqueue(1); q.enqueue(2)
+      q.dequeue # => 1
+      ```
+    starter_code: |
+      class TwoStackQueue
+        def initialize
+          @in = []
+          @out = []
+        end
+
+        def enqueue(x)
+          # your code here
+        end
+
+        def dequeue
+          # your code here
+        end
+
+        def peek
+          # your code here
+        end
+
+        def size
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_fifo
+          q = TwoStackQueue.new
+          q.enqueue(1)
+          q.enqueue(2)
+          q.enqueue(3)
+          assert_equal 1, q.dequeue
+          assert_equal 2, q.dequeue
+        end
+
+        def test_interleaved
+          q = TwoStackQueue.new
+          q.enqueue(1)
+          q.enqueue(2)
+          assert_equal 1, q.dequeue
+          q.enqueue(3)
+          assert_equal 2, q.dequeue
+          assert_equal 3, q.dequeue
+          assert_nil q.dequeue
+        end
+
+        def test_peek_and_size
+          q = TwoStackQueue.new
+          assert_equal 0, q.size
+          assert_nil q.peek
+          q.enqueue(:a)
+          q.enqueue(:b)
+          assert_equal :a, q.peek
+          assert_equal 2, q.size
+        end
+
+        def test_no_shift_used
+          q = TwoStackQueue.new
+          ins = q.instance_variables.map { |v| q.instance_variable_get(v) }
+          ins.each { |a| a.define_singleton_method(:shift) { raise "no shift" } }
+          q.enqueue(1)
+          q.enqueue(2)
+          assert_equal 1, q.dequeue
+        end
+      end
+    solution: |
+      class TwoStackQueue
+        def initialize
+          @in = []
+          @out = []
+        end
+
+        def enqueue(x)
+          @in.push(x)
+          self
+        end
+
+        def dequeue
+          shift_stacks
+          @out.pop
+        end
+
+        def peek
+          shift_stacks
+          @out.last
+        end
+
+        def size
+          @in.size + @out.size
+        end
+
+        private
+
+        def shift_stacks
+          return unless @out.empty?
+          @out.push(@in.pop) until @in.empty?
+        end
+      end
+    explanation: |
+      Push onto the inbox; when the outbox is empty, pour the whole inbox into it (reversing order)
+      and pop from there. Each element is moved at most once, so the cost is amortised O(1) even
+      though a single `dequeue` can be O(n). The key bug is refilling `@out` while it is not yet
+      empty, which reorders elements (the `test_interleaved` case). Interviewers often follow
+      up with "why is `Array#shift` on a plain array acceptable in Ruby?": MRI's arrays shift in
+      O(1) amortised by moving the start pointer, so a plain `[]` queue is fine in practice.
+    tags: [oop, stack, queue]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-happy-number
+    kind: code
+    difficulty: junior
+    title: "Happy number with cycle detection"
+    body: |
+      A number is *happy* if repeatedly replacing it by the sum of the squares of its digits
+      eventually reaches 1; otherwise the process loops forever. Write `happy?(n)` for positive
+      integers. It must terminate for unhappy numbers.
+
+      ```ruby
+      happy?(19) # => true   (19 -> 82 -> 68 -> 100 -> 1)
+      happy?(4)  # => false  (4 -> 16 -> 37 -> 58 -> 89 -> 145 -> 42 -> 20 -> 4 ...)
+      ```
+    starter_code: |
+      def happy?(n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_happy
+          assert happy?(19)
+          assert happy?(1)
+          assert happy?(7)
+        end
+
+        def test_unhappy_terminates
+          refute happy?(4)
+          refute happy?(2)
+        end
+
+        def test_first_happy_numbers
+          assert_equal [1, 7, 10, 13, 19, 23, 28, 31], (1..31).select { |i| happy?(i) }
+        end
+      end
+    solution: |
+      def happy?(n)
+        seen = Set.new
+        until n == 1 || seen.include?(n)
+          seen << n
+          n = n.digits.sum { |d| d * d }
+        end
+        n == 1
+      end
+    explanation: |
+      The task is really about cycle detection: keep a `Set` of visited values and stop when you
+      revisit one. `Integer#digits` gives the digits (least significant first, order irrelevant
+      here). The follow-up is Floyd's tortoise-and-hare to use O(1) memory, or the observation
+      that every unhappy number falls into the single cycle containing 4, so `until n == 1 || n == 4`
+      also works. Pitfall: an infinite loop for unhappy numbers when candidates forget the visited set.
+      `Set` is autoloaded in Ruby 3.2+, so no `require "set"` is needed.
+    tags: [numbers, set, cycle-detection]
+    source: "https://en.wikipedia.org/wiki/Happy_number"
+
+  - slug: ruby-task-mask-credit-card
+    kind: code
+    difficulty: junior
+    title: "Mask all but the last four digits"
+    body: |
+      Write `mask(str)` that replaces every digit except the last four digits with `#`, leaving
+      spaces and dashes in place. Strings with four or fewer digits are returned unchanged.
+
+      ```ruby
+      mask("4556-3646-0793-5616") # => "####-####-####-5616"
+      mask("12345")               # => "#2345"
+      mask("1234")                # => "1234"
+      ```
+    starter_code: |
+      def mask(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_card_with_dashes
+          assert_equal "####-####-####-5616", mask("4556-3646-0793-5616")
+        end
+
+        def test_keeps_last_four
+          assert_equal "#2345", mask("12345")
+        end
+
+        def test_short_unchanged
+          assert_equal "1234", mask("1234")
+          assert_equal "", mask("")
+          assert_equal "ab", mask("ab")
+        end
+
+        def test_does_not_mask_letters
+          assert_equal "ACCT ####-5616", mask("ACCT 0793-5616")
+        end
+      end
+    solution: |
+      def mask(str)
+        remaining = str.count("0-9") - 4
+        str.gsub(/\d/) do |d|
+          remaining -= 1
+          remaining >= 0 ? "#" : d
+        end
+      end
+    explanation: |
+      Count the digits first, then walk left to right with a block-form `gsub` replacing while
+      more than four digits remain. This is O(n) and keeps separators intact without splitting
+      and rejoining. Pitfalls: `str[0...-4].gsub(/\d/, "#") + str[-4..]` masks by *position*, so
+      `"12-34"` would break; and `tr`-based solutions cannot express "all but the last four".
+    tags: [strings, regex, gsub]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/String.html"
+
+  - slug: ruby-task-word-frequency-top-k
+    kind: code
+    difficulty: middle
+    title: "Top-k most frequent words"
+    body: |
+      Write `top_words(text, k)` returning the `k` most frequent words in `text` as
+      `[word, count]` pairs, most frequent first. Words are case-insensitive runs of letters
+      (apostrophes inside words are allowed, e.g. `don't`). Ties are broken alphabetically.
+
+      ```ruby
+      top_words("the cat and the hat. The CAT!", 2) # => [["the", 3], ["cat", 2]]
+      ```
+    starter_code: |
+      def top_words(text, k)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_basic
+          assert_equal [["the", 3], ["cat", 2]], top_words("the cat and the hat. The CAT!", 2)
+        end
+
+        def test_tie_broken_alphabetically
+          assert_equal [["apple", 1], ["banana", 1]], top_words("banana apple", 2)
+        end
+
+        def test_k_larger_than_vocab
+          assert_equal [["a", 1]], top_words("a", 5)
+        end
+
+        def test_empty
+          assert_equal [], top_words("", 3)
+        end
+
+        def test_apostrophes_and_punctuation
+          assert_equal [["don't", 2], ["stop", 1]], top_words("Don't stop, don't!", 2)
+        end
+      end
+    solution: |
+      def top_words(text, k)
+        text.downcase
+            .scan(/[a-z]+(?:'[a-z]+)*/)
+            .tally
+            .sort_by { |word, count| [-count, word] }
+            .first(k)
+      end
+    explanation: |
+      `scan` + `tally` is the idiomatic counting pipeline; `sort_by { [-count, word] }` encodes
+      "descending by count, then ascending by word" in one key, which is the detail most
+      candidates miss (they sort by count only and get nondeterministic ties). Complexity is
+      O(n + v log v) for v distinct words. The senior follow-up is "k is small and v is huge":
+      use `min_by(k)`/a heap for O(v log k), or `max_by(k)` with the same composite key.
+    tags: [strings, tally, sort_by]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Enumerable.html"
+
+  - slug: ruby-task-roman-numerals
+    kind: code
+    difficulty: middle
+    title: "Roman numerals both ways"
+    body: |
+      Implement `to_roman(n)` for integers 1..3999 and `from_roman(str)` for valid uppercase
+      Roman numerals using the standard subtractive notation (IV, IX, XL, XC, CD, CM).
+
+      ```ruby
+      to_roman(1994)    # => "MCMXCIV"
+      from_roman("XLII") # => 42
+      ```
+    starter_code: |
+      def to_roman(n)
+        # your code here
+      end
+
+      def from_roman(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_to_roman
+          assert_equal "MCMXCIV", to_roman(1994)
+          assert_equal "IV", to_roman(4)
+          assert_equal "MMMCMXCIX", to_roman(3999)
+          assert_equal "I", to_roman(1)
+        end
+
+        def test_from_roman
+          assert_equal 42, from_roman("XLII")
+          assert_equal 1994, from_roman("MCMXCIV")
+          assert_equal 9, from_roman("IX")
+        end
+
+        def test_round_trip
+          (1..3999).step(37) { |i| assert_equal i, from_roman(to_roman(i)) }
+        end
+      end
+    solution: |
+      ROMAN = {
+        1000 => "M", 900 => "CM", 500 => "D", 400 => "CD", 100 => "C", 90 => "XC",
+        50 => "L", 40 => "XL", 10 => "X", 9 => "IX", 5 => "V", 4 => "IV", 1 => "I"
+      }.freeze
+
+      def to_roman(n)
+        ROMAN.each_with_object(+"") do |(value, letters), out|
+          count, n = n.divmod(value)
+          out << letters * count
+        end
+      end
+
+      def from_roman(str)
+        values = str.chars.map { |c| ROMAN.key(c) }
+        values.each_with_index.sum do |v, i|
+          nxt = values[i + 1]
+          nxt && nxt > v ? -v : v
+        end
+      end
+    explanation: |
+      Listing the subtractive pairs (900, 400, 90, 40, 9, 4) as first-class entries in a
+      descending table turns encoding into greedy `divmod`. Decoding uses the rule "a symbol
+      smaller than its right neighbour is subtracted". Both are O(length). Pitfalls: a table
+      without the subtractive pairs produces `IIII`; iterating a Hash and relying on order is fine
+      in Ruby because insertion order is guaranteed, but say so out loud. Follow-up: validating
+      malformed input such as `IIII` or `VX` needs a regex or a strict state machine.
+    tags: [strings, numbers, hash]
+    source: "https://en.wikipedia.org/wiki/Roman_numerals"
+
+  - slug: ruby-task-deep-merge-hashes
+    kind: code
+    difficulty: middle
+    title: "Deep merge two hashes"
+    body: |
+      Write `deep_merge(a, b)` returning a new Hash. Where both sides have a Hash under the same
+      key, merge recursively; otherwise the value from `b` wins. Neither input may be mutated.
+
+      ```ruby
+      deep_merge({ a: 1, b: { x: 1, y: 2 } }, { b: { y: 20, z: 30 }, c: 3 })
+      # => { a: 1, b: { x: 1, y: 20, z: 30 }, c: 3 }
+      ```
+    starter_code: |
+      def deep_merge(a, b)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_nested
+          expected = { a: 1, b: { x: 1, y: 20, z: 30 }, c: 3 }
+          assert_equal expected, deep_merge({ a: 1, b: { x: 1, y: 2 } }, { b: { y: 20, z: 30 }, c: 3 })
+        end
+
+        def test_scalar_overrides_hash
+          assert_equal({ a: 5 }, deep_merge({ a: { x: 1 } }, { a: 5 }))
+          assert_equal({ a: { x: 1 } }, deep_merge({ a: 5 }, { a: { x: 1 } }))
+        end
+
+        def test_arrays_are_replaced_not_merged
+          assert_equal({ a: [3] }, deep_merge({ a: [1, 2] }, { a: [3] }))
+        end
+
+        def test_does_not_mutate_inputs
+          a = { b: { x: 1 } }
+          b = { b: { y: 2 } }
+          deep_merge(a, b)
+          assert_equal({ b: { x: 1 } }, a)
+          assert_equal({ b: { y: 2 } }, b)
+        end
+
+        def test_empty
+          assert_equal({}, deep_merge({}, {}))
+          assert_equal({ a: 1 }, deep_merge({}, { a: 1 }))
+        end
+      end
+    solution: |
+      def deep_merge(a, b)
+        a.merge(b) do |_key, old, new|
+          old.is_a?(Hash) && new.is_a?(Hash) ? deep_merge(old, new) : new
+        end
+      end
+    explanation: |
+      `Hash#merge` accepts a conflict-resolution block that receives `(key, old, new)`; recursing
+      only when *both* values are hashes gives the whole algorithm in three lines and mirrors
+      ActiveSupport's `deep_merge`. `merge` returns a new top-level hash, but nested hashes that
+      appear on only one side are shared by reference, which is usually acceptable; mention it.
+      Pitfalls: using `merge!`/`update` (mutates `a`), and recursing when only one side is a
+      Hash (raises `NoMethodError` on `merge`). Arrays are deliberately replaced, not concatenated.
+    tags: [hash, recursion]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Hash.html"
+
+  - slug: ruby-task-spiral-order
+    kind: code
+    difficulty: middle
+    title: "Walk a matrix in spiral order"
+    body: |
+      Write `spiral(matrix)` that returns the elements of a rectangular matrix (array of rows)
+      in clockwise spiral order, starting at the top-left.
+
+      ```ruby
+      spiral([[1, 2, 3], [4, 5, 6], [7, 8, 9]]) # => [1, 2, 3, 6, 9, 8, 7, 4, 5]
+      spiral([])                                # => []
+      ```
+    starter_code: |
+      def spiral(matrix)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_square
+          assert_equal [1, 2, 3, 6, 9, 8, 7, 4, 5], spiral([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+        end
+
+        def test_wide
+          assert_equal [1, 2, 3, 4, 8, 7, 6, 5], spiral([[1, 2, 3, 4], [5, 6, 7, 8]])
+        end
+
+        def test_tall
+          assert_equal [1, 2, 4, 6, 5, 3], spiral([[1, 2], [3, 4], [5, 6]])
+        end
+
+        def test_single_row_and_column
+          assert_equal [1, 2, 3], spiral([[1, 2, 3]])
+          assert_equal [1, 2, 3], spiral([[1], [2], [3]])
+        end
+
+        def test_empty
+          assert_equal [], spiral([])
+        end
+
+        def test_does_not_mutate
+          m = [[1, 2], [3, 4]]
+          spiral(m)
+          assert_equal [[1, 2], [3, 4]], m
+        end
+      end
+    solution: |
+      def spiral(matrix)
+        m = matrix.map(&:dup)
+        out = []
+        until m.empty?
+          out.concat(m.shift)
+          m = m.transpose.reverse
+        end
+        out
+      end
+    explanation: |
+      The Ruby trick: take the first row, then rotate the remainder counter-clockwise
+      (`transpose.reverse`) so the next edge becomes the new first row; repeat. It is short and
+      hard to get wrong, unlike the four-boundary-index version where candidates double-count
+      the last row or column on non-square inputs. Cost is O(rows * cols) per rotation in the
+      worst case, so O(n^1.5)-ish overall for an n-cell matrix, which is fine for interviews;
+      say that the index-based version is strictly O(n). `transpose` raises on ragged rows, so
+      `[[1,2],[3]]` is invalid input by this design. The `dup` keeps the caller's matrix intact.
+    tags: [arrays, matrix, transpose]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-min-stack
+    kind: code
+    difficulty: middle
+    title: "Stack with O(1) min"
+    body: |
+      Implement `class MinStack` with `push(x)`, `pop` (returns the removed element or `nil`),
+      `top`, and `min` (the smallest element currently in the stack, `nil` when empty). Every
+      operation must be O(1).
+
+      ```ruby
+      s = MinStack.new
+      s.push(5); s.push(2); s.push(7)
+      s.min # => 2
+      s.pop # => 7
+      s.pop # => 2
+      s.min # => 5
+      ```
+    starter_code: |
+      class MinStack
+        def initialize
+          # your code here
+        end
+
+        def push(x); end
+        def pop; end
+        def top; end
+        def min; end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_min_tracks_pops
+          s = MinStack.new
+          s.push(5); s.push(2); s.push(7)
+          assert_equal 2, s.min
+          assert_equal 7, s.pop
+          assert_equal 2, s.pop
+          assert_equal 5, s.min
+        end
+
+        def test_duplicate_minimums
+          s = MinStack.new
+          s.push(1); s.push(1); s.push(3)
+          s.pop
+          s.pop
+          assert_equal 1, s.min
+          s.pop
+          assert_nil s.min
+        end
+
+        def test_empty
+          s = MinStack.new
+          assert_nil s.pop
+          assert_nil s.top
+          assert_nil s.min
+        end
+
+        def test_negative_numbers
+          s = MinStack.new
+          s.push(-1); s.push(-5); s.push(0)
+          assert_equal(-5, s.min)
+          assert_equal 0, s.top
+        end
+      end
+    solution: |
+      class MinStack
+        def initialize
+          @items = []
+          @mins = []
+        end
+
+        def push(x)
+          @items.push(x)
+          @mins.push(x) if @mins.empty? || x <= @mins.last
+          self
+        end
+
+        def pop
+          x = @items.pop
+          @mins.pop if !x.nil? && x == @mins.last
+          x
+        end
+
+        def top = @items.last
+
+        def min = @mins.last
+      end
+    explanation: |
+      Keep a second stack of "running minimums": push onto it when the new value is `<=` the
+      current min, pop from it when the popped value equals the current min. Using `<=` rather
+      than `<` is what makes duplicate minimums work (the `1, 1, 3` test): with `<`, the second
+      `1` is never recorded and popping the first `1` loses the min. Both stacks are O(1) per op,
+      O(n) space. The alternative is storing `[value, min_so_far]` pairs in one stack, which is
+      simpler but uses twice the memory.
+    tags: [oop, stack]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-lru-cache
+    kind: code
+    difficulty: middle
+    title: "LRU cache using Hash ordering"
+    body: |
+      Implement `class LRUCache` with `initialize(capacity)`, `get(key)` (returns the value or
+      `nil` and marks the key as most recently used) and `put(key, value)` (inserts or updates,
+      evicting the least recently used entry when over capacity). Both operations must be O(1).
+      Hint: Ruby's `Hash` preserves insertion order, and deleting then re-inserting a key moves it
+      to the end.
+
+      ```ruby
+      c = LRUCache.new(2)
+      c.put(:a, 1); c.put(:b, 2)
+      c.get(:a)        # => 1  (a is now most recent)
+      c.put(:c, 3)     # evicts :b
+      c.get(:b)        # => nil
+      ```
+    starter_code: |
+      class LRUCache
+        def initialize(capacity)
+          @capacity = capacity
+          @store = {}
+        end
+
+        def get(key)
+          # your code here
+        end
+
+        def put(key, value)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_evicts_least_recently_used
+          c = LRUCache.new(2)
+          c.put(:a, 1)
+          c.put(:b, 2)
+          assert_equal 1, c.get(:a)
+          c.put(:c, 3)
+          assert_nil c.get(:b)
+          assert_equal 3, c.get(:c)
+          assert_equal 1, c.get(:a)
+        end
+
+        def test_update_refreshes_recency
+          c = LRUCache.new(2)
+          c.put(:a, 1)
+          c.put(:b, 2)
+          c.put(:a, 10)
+          c.put(:c, 3)
+          assert_nil c.get(:b)
+          assert_equal 10, c.get(:a)
+        end
+
+        def test_missing_key
+          c = LRUCache.new(1)
+          assert_nil c.get(:nope)
+        end
+
+        def test_capacity_one
+          c = LRUCache.new(1)
+          c.put(:a, 1)
+          c.put(:b, 2)
+          assert_nil c.get(:a)
+          assert_equal 2, c.get(:b)
+        end
+
+        def test_get_of_missing_does_not_insert
+          c = LRUCache.new(1)
+          c.get(:x)
+          c.put(:a, 1)
+          assert_equal 1, c.get(:a)
+        end
+      end
+    solution: |
+      class LRUCache
+        def initialize(capacity)
+          @capacity = capacity
+          @store = {}
+        end
+
+        def get(key)
+          return nil unless @store.key?(key)
+          value = @store.delete(key)
+          @store[key] = value
+        end
+
+        def put(key, value)
+          @store.delete(key)
+          @store[key] = value
+          @store.shift if @store.size > @capacity
+          value
+        end
+      end
+    explanation: |
+      In most languages this needs a hash plus a doubly linked list. In Ruby the ordered Hash is
+      both: delete + reinsert moves a key to the end (most recent), and `Hash#shift` removes the
+      oldest in O(1). Explain that explicitly, interviewers want to hear that you know *why* it is
+      O(1). Pitfalls: `get` returning `@store[key]` without touching recency; `put` on an existing
+      key without `delete` first (it keeps its old position); and `Hash.new(nil)` tricks that
+      insert on miss. Thread safety (a `Mutex`) and TTL are the usual follow-ups.
+    tags: [oop, hash, cache]
+    source: "https://en.wikipedia.org/wiki/Cache_replacement_policies"
+
+  - slug: ruby-task-bank-account
+    kind: code
+    difficulty: middle
+    title: "Bank account with history and insufficient funds error"
+    body: |
+      Implement `class BankAccount` and `class InsufficientFundsError < StandardError`.
+
+      - `BankAccount.new(balance = 0)`; `balance` reader.
+      - `deposit(amount)` and `withdraw(amount)` return the new balance. Non-positive amounts
+        raise `ArgumentError`. Withdrawing more than the balance raises
+        `InsufficientFundsError` without changing the balance or the history.
+      - `history` returns an array of `[:deposit | :withdraw, amount]` pairs in order.
+      - `transfer_to(other, amount)` withdraws from `self` and deposits into `other`.
+
+      ```ruby
+      a = BankAccount.new(100)
+      a.withdraw(30)   # => 70
+      a.history        # => [[:withdraw, 30]]
+      ```
+    starter_code: |
+      class InsufficientFundsError < StandardError; end
+
+      class BankAccount
+        attr_reader :balance, :history
+
+        def initialize(balance = 0)
+          # your code here
+        end
+
+        def deposit(amount); end
+        def withdraw(amount); end
+        def transfer_to(other, amount); end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_deposit_and_withdraw
+          a = BankAccount.new(100)
+          assert_equal 150, a.deposit(50)
+          assert_equal 120, a.withdraw(30)
+          assert_equal [[:deposit, 50], [:withdraw, 30]], a.history
+        end
+
+        def test_insufficient_funds_leaves_state_untouched
+          a = BankAccount.new(10)
+          assert_raises(InsufficientFundsError) { a.withdraw(11) }
+          assert_equal 10, a.balance
+          assert_equal [], a.history
+        end
+
+        def test_invalid_amounts
+          a = BankAccount.new
+          assert_raises(ArgumentError) { a.deposit(0) }
+          assert_raises(ArgumentError) { a.withdraw(-5) }
+        end
+
+        def test_transfer
+          a = BankAccount.new(50)
+          b = BankAccount.new
+          a.transfer_to(b, 20)
+          assert_equal 30, a.balance
+          assert_equal 20, b.balance
+        end
+
+        def test_failed_transfer_does_not_credit_other
+          a = BankAccount.new(5)
+          b = BankAccount.new
+          assert_raises(InsufficientFundsError) { a.transfer_to(b, 20) }
+          assert_equal 0, b.balance
+        end
+
+        def test_error_is_standard_error
+          assert InsufficientFundsError.ancestors.include?(StandardError)
+        end
+      end
+    solution: |
+      class InsufficientFundsError < StandardError; end
+
+      class BankAccount
+        attr_reader :balance, :history
+
+        def initialize(balance = 0)
+          @balance = balance
+          @history = []
+        end
+
+        def deposit(amount)
+          validate!(amount)
+          @balance += amount
+          @history << [:deposit, amount]
+          @balance
+        end
+
+        def withdraw(amount)
+          validate!(amount)
+          raise InsufficientFundsError, "balance #{@balance} < #{amount}" if amount > @balance
+          @balance -= amount
+          @history << [:withdraw, amount]
+          @balance
+        end
+
+        def transfer_to(other, amount)
+          withdraw(amount)
+          other.deposit(amount)
+        end
+
+        private
+
+        def validate!(amount)
+          raise ArgumentError, "amount must be positive" unless amount.positive?
+        end
+      end
+    explanation: |
+      This is an OOP-hygiene exercise more than an algorithm: validate before mutating so a
+      failed call leaves no partial state, use a custom error class that inherits from
+      `StandardError` (so a bare `rescue` catches it, unlike `Exception`), and keep history
+      append-only. Doing `withdraw` before `deposit` in `transfer_to` makes a failed transfer
+      harmless. Follow-ups: money as `Integer` cents or `BigDecimal` instead of `Float`;
+      what happens if `other.deposit` raises after `withdraw` succeeded (you would need a
+      compensating action or a transaction); and thread safety with a `Mutex`.
+    tags: [oop, exceptions]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Exception.html"
+
+  - slug: ruby-task-event-emitter
+    kind: code
+    difficulty: middle
+    title: "Event emitter with on, off and emit"
+    body: |
+      Implement `class EventEmitter`:
+
+      - `on(event, &handler)` registers a handler and returns it (so it can be removed later).
+      - `off(event, handler = nil)` removes that handler, or all handlers for `event` when none given.
+      - `emit(event, *args)` calls each handler for `event` in registration order with `args` and
+        returns the number of handlers called.
+      - `once(event, &handler)` registers a handler that removes itself after the first call.
+
+      ```ruby
+      e = EventEmitter.new
+      e.on(:greet) { |name| puts "hi #{name}" }
+      e.emit(:greet, "Ann") # prints "hi Ann", returns 1
+      ```
+    starter_code: |
+      class EventEmitter
+        def initialize
+          @handlers = Hash.new { |h, k| h[k] = [] }
+        end
+
+        def on(event, &handler); end
+        def off(event, handler = nil); end
+        def emit(event, *args); end
+        def once(event, &handler); end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def setup
+          @e = EventEmitter.new
+          @log = []
+        end
+
+        def test_on_and_emit_in_order
+          @e.on(:x) { |v| @log << [:a, v] }
+          @e.on(:x) { |v| @log << [:b, v] }
+          assert_equal 2, @e.emit(:x, 1)
+          assert_equal [[:a, 1], [:b, 1]], @log
+        end
+
+        def test_emit_unknown_event
+          assert_equal 0, @e.emit(:nothing)
+        end
+
+        def test_off_single_handler
+          h = @e.on(:x) { @log << :h }
+          @e.on(:x) { @log << :other }
+          @e.off(:x, h)
+          @e.emit(:x)
+          assert_equal [:other], @log
+        end
+
+        def test_off_all
+          @e.on(:x) { @log << 1 }
+          @e.on(:x) { @log << 2 }
+          @e.off(:x)
+          assert_equal 0, @e.emit(:x)
+        end
+
+        def test_once
+          @e.once(:x) { @log << :once }
+          @e.emit(:x)
+          @e.emit(:x)
+          assert_equal [:once], @log
+        end
+
+        def test_handler_removing_itself_during_emit_does_not_skip_others
+          @e.once(:x) { @log << :first }
+          @e.on(:x) { @log << :second }
+          @e.emit(:x)
+          assert_equal [:first, :second], @log
+        end
+      end
+    solution: |
+      class EventEmitter
+        def initialize
+          @handlers = Hash.new { |h, k| h[k] = [] }
+        end
+
+        def on(event, &handler)
+          @handlers[event] << handler
+          handler
+        end
+
+        def off(event, handler = nil)
+          if handler
+            @handlers[event].delete(handler)
+          else
+            @handlers.delete(event)
+          end
+          nil
+        end
+
+        def emit(event, *args)
+          return 0 unless @handlers.key?(event)
+          handlers = @handlers[event].dup
+          handlers.each { |h| h.call(*args) }
+          handlers.size
+        end
+
+        def once(event, &handler)
+          wrapper = nil
+          wrapper = on(event) do |*args|
+            off(event, wrapper)
+            handler.call(*args)
+          end
+        end
+      end
+    explanation: |
+      Store procs per event in an insertion-ordered Hash of arrays. The subtle bug this task is
+      designed to expose: mutating `@handlers[event]` while iterating it (a `once` handler
+      removing itself) makes `each` skip the next handler. Iterating over a `dup` fixes it.
+      `once` wraps the handler in a proc that unregisters itself; note the `wrapper = nil`
+      line so the closure can reference its own variable. Also beware `Hash.new { ... }` with
+      `@handlers[event]` in `emit`: it would create an empty array on every unknown event, so
+      check `key?` first. Follow-up: error isolation (one failing handler should not stop the rest).
+    tags: [oop, blocks, procs, observer]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Proc.html"
+
+  - slug: ruby-task-money-comparable
+    kind: code
+    difficulty: middle
+    title: "Money value object with Comparable"
+    body: |
+      Implement an immutable `Money` value object storing integer cents and a currency string.
+
+      - `Money.new(cents, currency)`; readers `cents`, `currency`.
+      - `+` and `-` with another `Money` of the same currency return a new `Money`; different
+        currencies raise `ArgumentError`.
+      - Include `Comparable` (so `<`, `==`, `between?`, `sort` work); comparing different
+        currencies raises `ArgumentError`.
+      - Two `Money` objects with equal cents and currency are `eql?` and have the same `hash`
+        (so they work as Hash keys and in `uniq`).
+      - `to_s` formats as `"12.34 EUR"`.
+
+      ```ruby
+      Money.new(150, "EUR") + Money.new(50, "EUR")  # => #<Money 2.00 EUR>
+      [Money.new(5, "EUR"), Money.new(1, "EUR")].min.cents # => 1
+      ```
+    starter_code: |
+      class Money
+        include Comparable
+        attr_reader :cents, :currency
+
+        def initialize(cents, currency)
+          # your code here
+        end
+
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def eur(c) = Money.new(c, "EUR")
+
+        def test_arithmetic
+          assert_equal eur(200), eur(150) + eur(50)
+          assert_equal eur(100), eur(150) - eur(50)
+        end
+
+        def test_comparable
+          assert eur(1) < eur(2)
+          assert eur(5).between?(eur(1), eur(10))
+          assert_equal eur(1), [eur(5), eur(1), eur(3)].min
+          assert_equal [1, 3, 5], [eur(5), eur(1), eur(3)].sort.map(&:cents)
+        end
+
+        def test_currency_mismatch
+          assert_raises(ArgumentError) { eur(1) + Money.new(1, "USD") }
+          assert_raises(ArgumentError) { eur(1) < Money.new(1, "USD") }
+        end
+
+        def test_hash_key_and_uniq
+          assert_equal 1, [eur(1), eur(1)].uniq.size
+          h = { eur(1) => :x }
+          assert_equal :x, h[eur(1)]
+        end
+
+        def test_immutable_and_to_s
+          m = eur(1234)
+          assert_equal "12.34 EUR", m.to_s
+          assert m.frozen?
+          assert_equal "0.05 EUR", eur(5).to_s
+        end
+
+        def test_negative_and_zero
+          assert_equal eur(-50), eur(0) - eur(50)
+          assert_equal "-0.50 EUR", eur(-50).to_s
+        end
+      end
+    solution: |
+      class Money
+        include Comparable
+        attr_reader :cents, :currency
+
+        def initialize(cents, currency)
+          @cents = cents
+          @currency = currency
+          freeze
+        end
+
+        def +(other) = Money.new(cents + same!(other).cents, currency)
+        def -(other) = Money.new(cents - same!(other).cents, currency)
+
+        def <=>(other)
+          return nil unless other.is_a?(Money)
+          same!(other)
+          cents <=> other.cents
+        end
+
+        def eql?(other) = other.is_a?(Money) && cents == other.cents && currency == other.currency
+        def hash = [cents, currency].hash
+
+        def to_s
+          sign = cents.negative? ? "-" : ""
+          whole, frac = cents.abs.divmod(100)
+          format("%s%d.%02d %s", sign, whole, frac, currency)
+        end
+
+        def inspect = "#<Money #{self}>"
+
+        private
+
+        def same!(other)
+          raise ArgumentError, "currency mismatch" unless other.currency == currency
+          other
+        end
+      end
+    explanation: |
+      `Comparable` gives you `<`, `<=`, `==`, `>`, `>=`, `between?` and `clamp` from a single
+      `<=>`. Two things candidates forget: (1) `Comparable#==` is not enough for Hash keys or
+      `uniq`, which use `eql?` and `hash`, so you must define both consistently; (2) `<=>` should
+      return `nil` for incomparable types so `==` returns `false` instead of raising. Cents as
+      Integer avoids float rounding (`0.1 + 0.2`). `freeze` in `initialize` makes the object a
+      true value object. `divmod` on the absolute value keeps formatting of negatives correct.
+      Ruby 3.2+ `Data.define(:cents, :currency)` gives you `eql?`/`hash`/immutability for free.
+    tags: [oop, comparable, value-object]
+    source: "https://docs.ruby-lang.org/en/3.3/Comparable.html"
+
+  - slug: ruby-task-implement-my-reduce
+    kind: code
+    difficulty: middle
+    title: "Implement my_map, my_select and my_reduce on Array"
+    body: |
+      Reopen `Array` and implement `my_map`, `my_select` and `my_reduce` using only `each`
+      (do not call `map`, `select`, `reduce`, `inject` or `sum`).
+
+      - `my_map { |x| ... }` returns a new array of block results.
+      - `my_select { |x| ... }` returns the elements for which the block is truthy.
+      - `my_reduce(initial = nil) { |acc, x| ... }` folds left. When no initial value is given, the
+        first element is the initial accumulator (and `[].my_reduce { }` returns `nil`).
+        It must also accept a symbol: `my_reduce(:+)` and `my_reduce(10, :+)`.
+
+      ```ruby
+      [1, 2, 3].my_map { |x| x * 2 }       # => [2, 4, 6]
+      [1, 2, 3].my_reduce(:+)              # => 6
+      [1, 2, 3].my_reduce(10) { |a, x| a + x } # => 16
+      ```
+    starter_code: |
+      class Array
+        def my_map
+          # your code here
+        end
+
+        def my_select
+          # your code here
+        end
+
+        def my_reduce(*args)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_map
+          assert_equal [2, 4, 6], [1, 2, 3].my_map { |x| x * 2 }
+          assert_equal [], [].my_map { |x| x }
+        end
+
+        def test_select
+          assert_equal [2, 4], [1, 2, 3, 4].my_select(&:even?)
+          assert_equal [], [1, 3].my_select(&:even?)
+        end
+
+        def test_reduce_with_block
+          assert_equal 6, [1, 2, 3].my_reduce { |a, x| a + x }
+          assert_equal 16, [1, 2, 3].my_reduce(10) { |a, x| a + x }
+        end
+
+        def test_reduce_with_symbol
+          assert_equal 6, [1, 2, 3].my_reduce(:+)
+          assert_equal 60, [1, 2, 3].my_reduce(10, :*)
+        end
+
+        def test_reduce_empty
+          assert_nil [].my_reduce { |a, x| a + x }
+          assert_equal 5, [].my_reduce(5) { |a, x| a + x }
+        end
+
+        def test_single_element_without_initial_does_not_call_block
+          calls = 0
+          assert_equal 7, [7].my_reduce { |a, x| calls += 1; a + x }
+          assert_equal 0, calls
+        end
+
+        def test_does_not_use_builtin_map
+          Array.class_eval { alias_method :__map_backup, :map; def map(*) = raise("use each") }
+          assert_equal [2], [1].my_map { |x| x * 2 }
+        ensure
+          Array.class_eval { alias_method :map, :__map_backup }
+        end
+      end
+    solution: |
+      class Array
+        def my_map
+          out = []
+          each { |x| out << yield(x) }
+          out
+        end
+
+        def my_select
+          out = []
+          each { |x| out << x if yield(x) }
+          out
+        end
+
+        def my_reduce(*args, &block)
+          op = args.pop if args.last.is_a?(Symbol)
+          block ||= ->(acc, x) { acc.public_send(op, x) }
+          acc = args.empty? ? :__none : args.first
+          each do |x|
+            acc = acc == :__none ? x : block.call(acc, x)
+          end
+          acc == :__none ? nil : acc
+        end
+      end
+    explanation: |
+      `my_map` and `my_select` are warm-ups that show you understand `yield`. The real test is
+      `my_reduce`: the "no initial value" rule means the first element seeds the accumulator and
+      the block is *not* called for it, and the symbol form must work with or without an initial
+      value, so you have to parse `*args` carefully. A `nil` sentinel is wrong because `nil` can be
+      a legitimate initial value; use a private sentinel object or a flag. Follow-up questions:
+      "why does `inject` live in `Enumerable` rather than `Array`?" (it only needs `each`) and
+      "implement `my_each_slice(n)` or `my_zip`".
+    tags: [enumerable, blocks, yield]
+    source: "https://docs.ruby-lang.org/en/3.3/Enumerable.html"
+
+  - slug: ruby-task-parse-query-string
+    kind: code
+    difficulty: middle
+    title: "Parse a URL query string"
+    body: |
+      Write `parse_query(str)` that turns `"a=1&b=hello%20world&a=2&flag"` into a Hash. Keys and
+      values are percent-decoded and `+` means space. A key that appears more than once collects
+      its values in an array; a key without `=` gets `nil`. Keys ending in `[]` always produce an
+      array. Do not use `CGI.parse` / `URI.decode_www_form` for the whole thing (you may use
+      `URI.decode_www_form_component` for decoding).
+
+      ```ruby
+      parse_query("a=1&b=hello%20world&a=2&flag")
+      # => { "a" => ["1", "2"], "b" => "hello world", "flag" => nil }
+      parse_query("ids[]=3")   # => { "ids" => ["3"] }
+      ```
+    starter_code: |
+      require "uri"
+
+      def parse_query(str)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_basic
+          expected = { "a" => ["1", "2"], "b" => "hello world", "flag" => nil }
+          assert_equal expected, parse_query("a=1&b=hello%20world&a=2&flag")
+        end
+
+        def test_plus_and_percent
+          assert_equal({ "q" => "ruby & rails" }, parse_query("q=ruby+%26+rails"))
+        end
+
+        def test_bracket_key_is_always_array
+          assert_equal({ "ids" => ["3"] }, parse_query("ids[]=3"))
+          assert_equal({ "ids" => ["3", "4"] }, parse_query("ids[]=3&ids[]=4"))
+        end
+
+        def test_empty_value_and_empty_string
+          assert_equal({ "a" => "" }, parse_query("a="))
+          assert_equal({}, parse_query(""))
+        end
+
+        def test_leading_question_mark_and_encoded_key
+          assert_equal({ "first name" => "Ann" }, parse_query("?first%20name=Ann"))
+        end
+      end
+    solution: |
+      require "uri"
+
+      def parse_query(str)
+        str.delete_prefix("?").split("&").each_with_object({}) do |pair, out|
+          next if pair.empty?
+          raw_key, raw_value = pair.split("=", 2)
+          key = URI.decode_www_form_component(raw_key)
+          value = raw_value && URI.decode_www_form_component(raw_value)
+
+          if key.end_with?("[]")
+            (out[key.delete_suffix("[]")] ||= []) << value
+          elsif out.key?(key)
+            out[key] = Array(out[key]) << value
+          else
+            out[key] = value
+          end
+        end
+      end
+    explanation: |
+      `split("&")` then `split("=", 2)` (the limit matters: values can contain `=`). The three
+      shape rules (repeat -> array, `[]` -> array, missing `=` -> nil) are what interviewers add
+      to see how you grow a parser without turning it into spaghetti. `Array(out[key]) << value`
+      promotes a scalar to an array on the second occurrence. Pitfalls: `split("=")` without a
+      limit, decoding before splitting (an encoded `%26` would then be treated as a separator),
+      and `Array(nil)` returning `[]` which silently drops a first `nil` value, acceptable here
+      but worth stating. Real code: `Rack::Utils.parse_nested_query`.
+    tags: [strings, parsing, uri, hash]
+    source: "https://docs.ruby-lang.org/en/3.3/URI.html"
+
+  - slug: ruby-task-parse-log-line
+    kind: code
+    difficulty: middle
+    title: "Parse an access-log line with named captures"
+    body: |
+      Write `parse_log(line)` for lines in this format:
+
+      ```
+      2024-05-01T12:00:01Z [INFO] GET /users/42 200 12.5ms
+      ```
+
+      Return a Hash with symbol keys `:timestamp` (String), `:level` (lowercase Symbol),
+      `:method` (String), `:path` (String), `:status` (Integer) and `:duration_ms` (Float), or
+      `nil` when the line does not match. Use a regex with named captures.
+    starter_code: |
+      def parse_log(line)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_parses
+          expected = {
+            timestamp: "2024-05-01T12:00:01Z", level: :info, method: "GET",
+            path: "/users/42", status: 200, duration_ms: 12.5
+          }
+          assert_equal expected, parse_log("2024-05-01T12:00:01Z [INFO] GET /users/42 200 12.5ms")
+        end
+
+        def test_other_level_and_integer_duration
+          r = parse_log("2024-05-01T12:00:01Z [ERROR] POST /login 500 3ms")
+          assert_equal :error, r[:level]
+          assert_equal 500, r[:status]
+          assert_in_delta 3.0, r[:duration_ms]
+        end
+
+        def test_no_match
+          assert_nil parse_log("garbage")
+          assert_nil parse_log("")
+        end
+
+        def test_path_with_query
+          assert_equal "/search?q=a+b", parse_log("2024-05-01T12:00:01Z [WARN] GET /search?q=a+b 404 0.2ms")[:path]
+        end
+      end
+    solution: |
+      LOG_RE = /\A(?<timestamp>\S+) \[(?<level>[A-Z]+)\] (?<method>[A-Z]+) (?<path>\S+) (?<status>\d{3}) (?<duration>[\d.]+)ms\z/
+
+      def parse_log(line)
+        m = LOG_RE.match(line) or return nil
+        {
+          timestamp: m[:timestamp],
+          level: m[:level].downcase.to_sym,
+          method: m[:method],
+          path: m[:path],
+          status: m[:status].to_i,
+          duration_ms: m[:duration].to_f
+        }
+      end
+    explanation: |
+      Named captures (`(?<name>...)`) make the regex self-documenting and let you read fields by
+      name from `MatchData`. Anchor with `\A` and `\z` so partial garbage does not match. The
+      conversion step (`to_i`, `to_f`, `to_sym`) is where the value is: a parser that returns
+      only strings pushes the work onto every caller. `m.named_captures` gives you a Hash of
+      strings in one call if the types are not needed. Pitfalls: `$1`-style numbered captures
+      that break when the regex is edited, and forgetting that `[\d.]+` also matches `"1.2.3"`,
+      acceptable for logs you control, not for user input.
+    tags: [regex, parsing, named-captures]
+    source: "https://docs.ruby-lang.org/en/3.3/Regexp.html"
+
+  - slug: ruby-task-next-business-day
+    kind: code
+    difficulty: middle
+    title: "Next business day with holidays"
+    body: |
+      Write `next_business_day(date, holidays = [])` that returns the first `Date` strictly after
+      `date` that is neither a Saturday, a Sunday nor in `holidays` (an array of `Date`s).
+      Also write `business_days_between(from, to)` counting business days in `from...to`
+      (exclusive of `to`), ignoring holidays.
+
+      ```ruby
+      next_business_day(Date.new(2024, 5, 3))              # Friday -> Mon 2024-05-06
+      next_business_day(Date.new(2024, 5, 3), [Date.new(2024, 5, 6)]) # => 2024-05-07
+      ```
+    starter_code: |
+      require "date"
+
+      def next_business_day(date, holidays = [])
+        # your code here
+      end
+
+      def business_days_between(from, to)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_friday_to_monday
+          assert_equal Date.new(2024, 5, 6), next_business_day(Date.new(2024, 5, 3))
+        end
+
+        def test_skips_holiday
+          assert_equal Date.new(2024, 5, 7), next_business_day(Date.new(2024, 5, 3), [Date.new(2024, 5, 6)])
+        end
+
+        def test_midweek
+          assert_equal Date.new(2024, 5, 8), next_business_day(Date.new(2024, 5, 7))
+        end
+
+        def test_consecutive_holidays_over_weekend
+          holidays = [Date.new(2024, 5, 6), Date.new(2024, 5, 7)]
+          assert_equal Date.new(2024, 5, 8), next_business_day(Date.new(2024, 5, 3), holidays)
+        end
+
+        def test_business_days_between
+          assert_equal 5, business_days_between(Date.new(2024, 5, 6), Date.new(2024, 5, 13))
+          assert_equal 0, business_days_between(Date.new(2024, 5, 4), Date.new(2024, 5, 6))
+          assert_equal 0, business_days_between(Date.new(2024, 5, 6), Date.new(2024, 5, 6))
+        end
+      end
+    solution: |
+      require "date"
+
+      def business_day?(date, holidays = [])
+        !date.saturday? && !date.sunday? && !holidays.include?(date)
+      end
+
+      def next_business_day(date, holidays = [])
+        d = date + 1
+        d += 1 until business_day?(d, holidays)
+        d
+      end
+
+      def business_days_between(from, to)
+        (from...to).count { |d| business_day?(d) }
+      end
+    explanation: |
+      `Date` supports `+ 1`, `saturday?`/`sunday?`, and ranges, so the loop is trivial. The
+      interview points: extract the `business_day?` predicate, start from `date + 1` ("strictly
+      after"), and make holidays a `Set` if the list is large (`include?` on an Array is O(n) per
+      day). `business_days_between` as `(from...to).count` is O(days); for very wide ranges
+      compute full weeks * 5 plus the remainder. Pitfalls: using `Time` (time zones, DST) when
+      only dates matter, and `wday` magic numbers instead of the named predicates.
+    tags: [date, time]
+    source: "https://docs.ruby-lang.org/en/3.3/Date.html"
+
+  - slug: ruby-task-merge-sort
+    kind: code
+    difficulty: middle
+    title: "Merge sort"
+    body: |
+      Implement `merge_sort(array)` returning a new sorted array (ascending), without using
+      `sort`/`sort_by`/`min`/`max`. Also implement the helper `merge(left, right)` that merges two
+      sorted arrays in O(n). The sort must be stable.
+
+      ```ruby
+      merge_sort([5, 2, 4, 1, 3]) # => [1, 2, 3, 4, 5]
+      merge([1, 4], [2, 3])       # => [1, 2, 3, 4]
+      ```
+    starter_code: |
+      def merge_sort(array)
+        # your code here
+      end
+
+      def merge(left, right)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_sorts
+          assert_equal [1, 2, 3, 4, 5], merge_sort([5, 2, 4, 1, 3])
+        end
+
+        def test_edge_cases
+          assert_equal [], merge_sort([])
+          assert_equal [1], merge_sort([1])
+          assert_equal [-3, -1, 0, 2], merge_sort([0, -1, 2, -3])
+          assert_equal [2, 2, 2], merge_sort([2, 2, 2])
+        end
+
+        def test_merge
+          assert_equal [1, 2, 3, 4], merge([1, 4], [2, 3])
+          assert_equal [1, 2], merge([], [1, 2])
+        end
+
+        def test_stable
+          pairs = [[1, :a], [0, :b], [1, :c], [0, :d]]
+          sorted = merge_sort(pairs)
+          assert_equal [[0, :b], [0, :d], [1, :a], [1, :c]], sorted
+        end
+
+        def test_does_not_mutate
+          a = [3, 1, 2]
+          merge_sort(a)
+          assert_equal [3, 1, 2], a
+        end
+
+        def test_larger
+          input = (1..200).to_a.reverse
+          assert_equal (1..200).to_a, merge_sort(input)
+        end
+      end
+    solution: |
+      def merge_sort(array)
+        return array.dup if array.size <= 1
+        mid = array.size / 2
+        merge(merge_sort(array[0...mid]), merge_sort(array[mid..]))
+      end
+
+      def merge(left, right)
+        out = []
+        i = j = 0
+        while i < left.size && j < right.size
+          if (left[i] <=> right[j]) <= 0
+            out << left[i]
+            i += 1
+          else
+            out << right[j]
+            j += 1
+          end
+        end
+        out.concat(left[i..]).concat(right[j..])
+      end
+    explanation: |
+      Divide, recurse, merge: O(n log n) time in every case and O(n) extra space, which is the
+      trade-off versus in-place quicksort. Stability comes from the `<= 0` comparison: on ties
+      take from the left half first. Using `<=>` (not `<`) keeps it working for arrays of arrays.
+      Pitfalls: `array[mid..-1]` vs `array[mid..]` are fine, but `array[mid, mid]` drops an element
+      for odd sizes; `shift`-based merges are O(n) per call in theory but fine in MRI. MRI's
+      `Array#sort` is an unstable quicksort, so `sort_by { |x| [key, index] }` is the usual
+      stable-sort answer in real code.
+    tags: [algorithms, sorting, recursion]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-bfs-shortest-path
+    kind: code
+    difficulty: middle
+    title: "BFS shortest path on an adjacency hash"
+    body: |
+      Given an undirected, unweighted graph as a Hash from node to array of neighbours, write
+      `shortest_path(graph, from, to)` returning the list of nodes on a shortest path (inclusive),
+      or `nil` when unreachable. `shortest_path(g, :a, :a)` is `[:a]`.
+
+      ```ruby
+      g = { a: [:b, :c], b: [:a, :d], c: [:a, :d], d: [:b, :c, :e], e: [:d] }
+      shortest_path(g, :a, :e) # => [:a, :b, :d, :e]
+      ```
+    starter_code: |
+      def shortest_path(graph, from, to)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        G = { a: [:b, :c], b: [:a, :d], c: [:a, :d], d: [:b, :c, :e], e: [:d], f: [] }.freeze
+
+        def test_shortest
+          assert_equal [:a, :b, :d, :e], shortest_path(G, :a, :e)
+        end
+
+        def test_same_node
+          assert_equal [:a], shortest_path(G, :a, :a)
+        end
+
+        def test_unreachable
+          assert_nil shortest_path(G, :a, :f)
+        end
+
+        def test_unknown_node
+          assert_nil shortest_path(G, :a, :zzz)
+        end
+
+        def test_prefers_fewer_hops
+          g = { 1 => [2, 3], 2 => [4], 3 => [4], 4 => [] }
+          assert_equal 3, shortest_path(g, 1, 4).size
+        end
+
+        def test_handles_cycles
+          g = { a: [:b], b: [:a, :c], c: [:b] }
+          assert_equal [:a, :b, :c], shortest_path(g, :a, :c)
+        end
+      end
+    solution: |
+      def shortest_path(graph, from, to)
+        return [from] if from == to
+        parent = { from => nil }
+        queue = [from]
+        until queue.empty?
+          node = queue.shift
+          graph.fetch(node, []).each do |nb|
+            next if parent.key?(nb)
+            parent[nb] = node
+            if nb == to
+              path = [to]
+              path.unshift(parent[path.first]) while parent[path.first]
+              return path
+            end
+            queue << nb
+          end
+        end
+        nil
+      end
+    explanation: |
+      BFS explores by distance, so the first time you reach `to` you have a shortest path in an
+      unweighted graph. Record each node's parent when you first enqueue it (that doubles as the
+      visited set) and walk parents back to reconstruct the path. O(V + E). Pitfalls: marking
+      visited when *dequeuing* instead of enqueuing (nodes get enqueued multiple times), DFS
+      instead of BFS (finds *a* path, not the shortest), and `graph[node]` raising `NoMethodError`
+      on `nil` for leaf nodes missing from the hash, hence `fetch(node, [])`.
+    tags: [algorithms, graphs, bfs]
+    source: "Classic interview exercise; see https://en.wikipedia.org/wiki/Breadth-first_search"
+
+  - slug: ruby-task-max-subarray-kadane
+    kind: code
+    difficulty: middle
+    title: "Maximum subarray sum (Kadane)"
+    body: |
+      Write `max_subarray(nums)` that returns the largest sum of any non-empty contiguous
+      subarray in O(n). For an empty array return `nil`. Also write `max_subarray_range(nums)`
+      that returns `[start_index, end_index]` of that subarray (the leftmost one on ties).
+
+      ```ruby
+      max_subarray([-2, 1, -3, 4, -1, 2, 1, -5, 4])       # => 6   ([4, -1, 2, 1])
+      max_subarray_range([-2, 1, -3, 4, -1, 2, 1, -5, 4]) # => [3, 6]
+      ```
+    starter_code: |
+      def max_subarray(nums)
+        # your code here
+      end
+
+      def max_subarray_range(nums)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_classic
+          assert_equal 6, max_subarray([-2, 1, -3, 4, -1, 2, 1, -5, 4])
+          assert_equal [3, 6], max_subarray_range([-2, 1, -3, 4, -1, 2, 1, -5, 4])
+        end
+
+        def test_all_negative
+          assert_equal(-1, max_subarray([-3, -1, -2]))
+          assert_equal [1, 1], max_subarray_range([-3, -1, -2])
+        end
+
+        def test_all_positive
+          assert_equal 10, max_subarray([1, 2, 3, 4])
+          assert_equal [0, 3], max_subarray_range([1, 2, 3, 4])
+        end
+
+        def test_single_and_empty
+          assert_equal 5, max_subarray([5])
+          assert_nil max_subarray([])
+        end
+
+        def test_leftmost_on_tie
+          assert_equal [0, 0], max_subarray_range([2, -2, 2])
+        end
+      end
+    solution: |
+      def max_subarray(nums)
+        return nil if nums.empty?
+        best = current = nums.first
+        nums.drop(1).each do |n|
+          current = [n, current + n].max
+          best = current if current > best
+        end
+        best
+      end
+
+      def max_subarray_range(nums)
+        return nil if nums.empty?
+        best = current = nums.first
+        best_range = [0, 0]
+        start = 0
+        nums.each_with_index.drop(1).each do |n, i|
+          if current + n < n
+            current = n
+            start = i
+          else
+            current += n
+          end
+          if current > best
+            best = current
+            best_range = [start, i]
+          end
+        end
+        best_range
+      end
+    explanation: |
+      Kadane's insight: the best subarray ending at `i` is either `nums[i]` alone or the best
+      ending at `i-1` extended by `nums[i]`. One pass, O(1) space. The classic bug is initialising
+      `best = 0`, which returns 0 for an all-negative array instead of the largest element; seed
+      from the first element instead. Tracking the range only requires remembering where the
+      current run restarted, and using strict `>` keeps the leftmost answer on ties. The brute
+      force is O(n^2) with prefix sums, O(n^3) naively; say the complexities out loud.
+    tags: [algorithms, dynamic-programming, arrays]
+    source: "https://en.wikipedia.org/wiki/Maximum_subarray_problem"
+
+  - slug: ruby-task-word-wrap
+    kind: code
+    difficulty: middle
+    title: "Word wrap at a given width"
+    body: |
+      Write `wrap(text, width)` that reflows `text` (words separated by whitespace) into lines of
+      at most `width` characters, breaking only between words, and returns the lines joined by
+      `"\n"`. A single word longer than `width` goes on its own line unbroken. Collapse all runs of
+      whitespace in the input to single spaces.
+
+      ```ruby
+      wrap("The quick brown fox jumps over the lazy dog", 10)
+      # => "The quick\nbrown fox\njumps over\nthe lazy\ndog"
+      ```
+    starter_code: |
+      def wrap(text, width)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_basic
+          expected = "The quick\nbrown fox\njumps over\nthe lazy\ndog"
+          assert_equal expected, wrap("The quick brown fox jumps over the lazy dog", 10)
+        end
+
+        def test_no_line_exceeds_width_unless_single_word
+          wrap("The quick brown fox jumps over the lazy dog", 12).split("\n").each do |line|
+            assert line.length <= 12, line
+          end
+        end
+
+        def test_long_word_alone
+          assert_equal "a\nsupercalifragilistic\nb", wrap("a supercalifragilistic b", 5)
+        end
+
+        def test_empty_and_whitespace
+          assert_equal "", wrap("", 10)
+          assert_equal "", wrap("   ", 10)
+        end
+
+        def test_collapses_whitespace_and_exact_fit
+          assert_equal "ab cd\nef", wrap("ab   cd\n ef", 5)
+        end
+      end
+    solution: |
+      def wrap(text, width)
+        lines = []
+        line = +""
+        text.split.each do |word|
+          if line.empty?
+            line << word
+          elsif line.size + 1 + word.size <= width
+            line << " " << word
+          else
+            lines << line
+            line = +word
+          end
+        end
+        lines << line unless line.empty?
+        lines.join("\n")
+      end
+    explanation: |
+      Greedy word wrap: append a word if it fits (`current + space + word <= width`), otherwise
+      flush the line. `String#split` with no argument collapses whitespace and handles the empty
+      case. O(n) in characters. Pitfalls: off-by-one on the separating space, dropping the final
+      line, and a regex solution like `gsub(/(.{1,10})(\s+|$)/, "\\1\n")` which is clever but
+      fails on words longer than the width. Rails' `word_wrap` helper does exactly this; TeX's
+      optimal (minimum raggedness) algorithm is the dynamic-programming follow-up.
+    tags: [strings, greedy]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/String.html"
+
+  - slug: ruby-task-deep-symbolize-keys
+    kind: code
+    difficulty: middle
+    title: "deep_symbolize_keys for nested hashes and arrays"
+    body: |
+      Write `deep_symbolize_keys(obj)` that returns a copy of `obj` where every Hash key that is a
+      String is converted to a Symbol, recursing into nested Hashes and into Arrays of Hashes.
+      Non-string keys and non-collection values are left as they are. The input must not be mutated.
+
+      ```ruby
+      deep_symbolize_keys({ "a" => { "b" => [{ "c" => 1 }, 2] }, 3 => "x" })
+      # => { a: { b: [{ c: 1 }, 2] }, 3 => "x" }
+      ```
+    starter_code: |
+      def deep_symbolize_keys(obj)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_nested
+          input = { "a" => { "b" => [{ "c" => 1 }, 2] }, 3 => "x" }
+          assert_equal({ a: { b: [{ c: 1 }, 2] }, 3 => "x" }, deep_symbolize_keys(input))
+        end
+
+        def test_does_not_mutate
+          input = { "a" => { "b" => 1 } }
+          deep_symbolize_keys(input)
+          assert_equal({ "a" => { "b" => 1 } }, input)
+        end
+
+        def test_array_root_and_scalars
+          assert_equal [{ a: 1 }, "s"], deep_symbolize_keys([{ "a" => 1 }, "s"])
+          assert_equal 42, deep_symbolize_keys(42)
+          assert_nil deep_symbolize_keys(nil)
+        end
+
+        def test_string_values_untouched
+          assert_equal({ a: "keep me" }, deep_symbolize_keys({ "a" => "keep me" }))
+        end
+
+        def test_empty
+          assert_equal({}, deep_symbolize_keys({}))
+        end
+      end
+    solution: |
+      def deep_symbolize_keys(obj)
+        case obj
+        when Hash
+          obj.to_h { |k, v| [k.is_a?(String) ? k.to_sym : k, deep_symbolize_keys(v)] }
+        when Array
+          obj.map { |v| deep_symbolize_keys(v) }
+        else
+          obj
+        end
+      end
+    explanation: |
+      A `case` on type with two recursive branches and a pass-through default is the whole
+      solution; `Hash#to_h` with a block builds the new hash in one pass. It is the same shape as
+      ActiveSupport's `deep_symbolize_keys`, which also recurses into arrays. Pitfalls:
+      `transform_keys(&:to_sym)` alone is shallow and raises on Integer keys; `symbolize_keys!`
+      mutates; and recursing with `respond_to?(:each)` would also walk Strings in old Rubies
+      and Structs. Mention that symbolising keys from untrusted JSON used to be a memory concern,
+      but Symbols have been garbage-collected since Ruby 2.2.
+    tags: [hash, recursion]
+    source: "https://docs.ruby-lang.org/en/3.3/Hash.html"
+
+  - slug: ruby-task-sliding-window-rate-limiter
+    kind: code
+    difficulty: senior
+    title: "Sliding-window-log rate limiter"
+    body: |
+      Implement `class RateLimiter` with `initialize(limit:, window:)` (window in seconds) and
+      `allow?(key, now)` which returns `true` and records the request if `key` has made fewer than
+      `limit` requests in the half-open interval `(now - window, now]`, otherwise `false` without
+      recording. `now` is passed in explicitly (a Float or Integer) so the class is testable;
+      calls for a given key arrive with non-decreasing `now`. Memory per key must not grow beyond
+      `limit` timestamps.
+
+      ```ruby
+      rl = RateLimiter.new(limit: 2, window: 10)
+      rl.allow?(:u1, 0)  # => true
+      rl.allow?(:u1, 5)  # => true
+      rl.allow?(:u1, 9)  # => false
+      rl.allow?(:u1, 10) # => true (the request at 0 has left the window)
+      ```
+    starter_code: |
+      class RateLimiter
+        def initialize(limit:, window:)
+          @limit = limit
+          @window = window
+          @log = Hash.new { |h, k| h[k] = [] }
+        end
+
+        def allow?(key, now)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_limit_within_window
+          rl = RateLimiter.new(limit: 2, window: 10)
+          assert rl.allow?(:u1, 0)
+          assert rl.allow?(:u1, 5)
+          refute rl.allow?(:u1, 9)
+        end
+
+        def test_window_slides
+          rl = RateLimiter.new(limit: 2, window: 10)
+          rl.allow?(:u1, 0)
+          rl.allow?(:u1, 5)
+          refute rl.allow?(:u1, 9.9)
+          assert rl.allow?(:u1, 10)
+          refute rl.allow?(:u1, 11)
+          assert rl.allow?(:u1, 15.5)
+        end
+
+        def test_keys_are_independent
+          rl = RateLimiter.new(limit: 1, window: 60)
+          assert rl.allow?(:a, 0)
+          assert rl.allow?(:b, 0)
+          refute rl.allow?(:a, 1)
+        end
+
+        def test_rejected_requests_are_not_recorded
+          rl = RateLimiter.new(limit: 1, window: 10)
+          assert rl.allow?(:a, 0)
+          refute rl.allow?(:a, 1)
+          refute rl.allow?(:a, 9)
+          assert rl.allow?(:a, 10.1)
+        end
+
+        def test_memory_is_bounded
+          rl = RateLimiter.new(limit: 3, window: 1)
+          100.times { |i| rl.allow?(:a, i * 10) }
+          log = rl.instance_variable_get(:@log)
+          assert log[:a].size <= 3
+        end
+      end
+    solution: |
+      class RateLimiter
+        def initialize(limit:, window:)
+          @limit = limit
+          @window = window
+          @log = Hash.new { |h, k| h[k] = [] }
+        end
+
+        def allow?(key, now)
+          timestamps = @log[key]
+          timestamps.shift while timestamps.any? && timestamps.first <= now - @window
+          return false if timestamps.size >= @limit
+          timestamps << now
+          true
+        end
+      end
+    explanation: |
+      Sliding window *log*: keep each key's recent timestamps, evict those that fell out of the
+      window, then compare the count with the limit. It is exact (no fixed-window boundary burst)
+      at the cost of O(limit) memory per key; the sliding window *counter* approximation and the
+      token bucket are the cheaper cousins you should be able to compare. Points interviewers
+      probe: the boundary (`<=` vs `<` on eviction, the window is half-open), not recording
+      rejected requests, injecting `now` instead of calling `Time.now` (testability), and what
+      changes in a multi-process deployment (shared store such as Redis `ZADD`/`ZREMRANGEBYSCORE`
+      in a Lua script or `MULTI` for atomicity).
+    tags: [oop, rate-limiting, sliding-window]
+    source: "https://www.azion.com/en/learning/api/rate-limiting-algorithms/"
+
+  - slug: ruby-task-lazy-primes-enumerator
+    kind: code
+    difficulty: senior
+    title: "Infinite lazy prime generator with Enumerator"
+    body: |
+      Write `primes` that returns an `Enumerator` yielding prime numbers forever (2, 3, 5, ...)
+      without the `prime` library, and `nth_prime(n)` using it. The enumerator must be lazy: the
+      caller can `take(5)`, `lazy.select { }.first(3)`, or `each` with `break`.
+
+      ```ruby
+      primes.take(5)                               # => [2, 3, 5, 7, 11]
+      primes.lazy.select { |p| p % 10 == 3 }.first(3) # => [3, 13, 23]
+      nth_prime(100)                               # => 541
+      ```
+    starter_code: |
+      def primes
+        Enumerator.new do |y|
+          # your code here
+        end
+      end
+
+      def nth_prime(n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_take
+          assert_equal [2, 3, 5, 7, 11], primes.take(5)
+        end
+
+        def test_is_enumerator_and_restarts
+          assert_kind_of Enumerator, primes
+          e = primes
+          assert_equal [2, 3], e.take(2)
+          assert_equal [2, 3], e.take(2)
+        end
+
+        def test_lazy_chain
+          assert_equal [3, 13, 23], primes.lazy.select { |p| p % 10 == 3 }.first(3)
+        end
+
+        def test_nth_prime
+          assert_equal 2, nth_prime(1)
+          assert_equal 541, nth_prime(100)
+        end
+
+        def test_external_iteration
+          e = primes
+          assert_equal 2, e.next
+          assert_equal 3, e.next
+          assert_equal 5, e.peek
+        end
+      end
+    solution: |
+      def primes
+        Enumerator.new do |y|
+          found = []
+          n = 2
+          loop do
+            if found.none? { |p| break true if p * p > n; (n % p).zero? }
+              found << n
+              y << n
+            end
+            n += 1
+          end
+        end
+      end
+
+      def nth_prime(n)
+        primes.take(n).last
+      end
+    explanation: |
+      `Enumerator.new { |y| ... }` turns a generator-style block into a lazy sequence: the block
+      only runs as far as the consumer pulls, driven by a Fiber under the hood. Trial division by
+      the primes found so far, stopping at `sqrt(n)` (the `break true` inside `none?` is the
+      early exit), is enough here; a segmented sieve is the follow-up for scale. Things to say:
+      `take(5)` on an `Enumerator` is eager but finite, `lazy` is needed before `select` or
+      `map` on an infinite stream, and `next`/`peek` give external iteration. Pitfalls: building
+      an infinite `Range#select` (never returns), and `Enumerator` objects keeping Fiber state
+      per `next` call, which is why the stdlib `Prime.each` exists.
+    tags: [enumerator, lazy, primes, fiber]
+    source: "https://docs.ruby-lang.org/en/3.3/Enumerator/Lazy.html"
+
+  - slug: ruby-task-parse-csv-line-with-quotes
+    kind: code
+    difficulty: senior
+    title: "Parse one CSV line with quoted fields (RFC 4180)"
+    body: |
+      Write `parse_csv_line(line)` that splits a single CSV line into fields following RFC 4180:
+      fields are separated by commas; a field may be wrapped in double quotes, in which case it
+      may contain commas and a doubled quote `""` means a literal `"`. Return an Array of Strings.
+      Do not use the `csv` library. Raise `ArgumentError` for an unterminated quote.
+
+      ```ruby
+      parse_csv_line('a,"b,c",d')       # => ["a", "b,c", "d"]
+      parse_csv_line('"say ""hi""",x')  # => ['say "hi"', "x"]
+      parse_csv_line('a,,b')            # => ["a", "", "b"]
+      ```
+    starter_code: |
+      def parse_csv_line(line)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_quoted_comma
+          assert_equal ["a", "b,c", "d"], parse_csv_line('a,"b,c",d')
+        end
+
+        def test_escaped_quote
+          assert_equal ['say "hi"', "x"], parse_csv_line('"say ""hi""",x')
+        end
+
+        def test_empty_fields
+          assert_equal ["a", "", "b"], parse_csv_line("a,,b")
+          assert_equal ["", ""], parse_csv_line(",")
+          assert_equal [""], parse_csv_line("")
+        end
+
+        def test_quoted_empty_and_trailing_comma
+          assert_equal ["", "x", ""], parse_csv_line('"",x,')
+        end
+
+        def test_unterminated_quote
+          assert_raises(ArgumentError) { parse_csv_line('a,"b') }
+        end
+
+        def test_no_quotes
+          assert_equal %w[1 2 3], parse_csv_line("1,2,3")
+        end
+      end
+    solution: |
+      def parse_csv_line(line)
+        fields = []
+        field = +""
+        in_quotes = false
+        i = 0
+        while i < line.size
+          ch = line[i]
+          if in_quotes
+            if ch == '"' && line[i + 1] == '"'
+              field << '"'
+              i += 1
+            elsif ch == '"'
+              in_quotes = false
+            else
+              field << ch
+            end
+          elsif ch == '"'
+            in_quotes = true
+          elsif ch == ","
+            fields << field
+            field = +""
+          else
+            field << ch
+          end
+          i += 1
+        end
+        raise ArgumentError, "unterminated quoted field" if in_quotes
+        fields << field
+      end
+    explanation: |
+      A quoted field means `split(",")` is wrong, and that is the point of the task: you need a
+      small state machine (`in_quotes` on/off) with one character of lookahead for the `""`
+      escape. The structure to narrate: current field buffer, list of done fields, flag; on
+      `,` outside quotes flush, at end-of-line flush once (which is why `""` produces `[""]`).
+      O(n). Pitfalls: forgetting the final flush, `+""` vs frozen string literals, and regex
+      solutions like `/("([^"]|"")*"|[^,]*)(,|$)/` which work but are hard to defend at a
+      whiteboard. Real code: `CSV.parse_line` handles encodings, newlines inside quotes and more.
+    tags: [strings, parsing, state-machine]
+    source: "https://www.rfc-editor.org/rfc/rfc4180"
+
+  - slug: ruby-task-topological-sort
+    kind: code
+    difficulty: senior
+    title: "Topological sort with cycle detection (Kahn)"
+    body: |
+      Write `topo_sort(deps)` where `deps` is a Hash mapping each task to the array of tasks it
+      depends on. Return an array in which every task appears after all its dependencies. Tasks
+      that appear only as dependencies must be included too. When there is a cycle raise
+      `ArgumentError`. For determinism, whenever several tasks are ready, emit them in sorted order.
+
+      ```ruby
+      topo_sort({ "app" => ["lib", "db"], "lib" => ["core"], "db" => ["core"] })
+      # => ["core", "db", "lib", "app"]
+      ```
+    starter_code: |
+      def topo_sort(deps)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_orders_dependencies_first
+          assert_equal ["core", "db", "lib", "app"], topo_sort({ "app" => ["lib", "db"], "lib" => ["core"], "db" => ["core"] })
+        end
+
+        def test_includes_dependency_only_nodes
+          assert_equal %w[a b], topo_sort({ "b" => ["a"] })
+        end
+
+        def test_independent_nodes_sorted
+          assert_equal %w[x y z], topo_sort({ "z" => [], "y" => [], "x" => [] })
+        end
+
+        def test_empty
+          assert_equal [], topo_sort({})
+        end
+
+        def test_cycle_raises
+          assert_raises(ArgumentError) { topo_sort({ "a" => ["b"], "b" => ["a"] }) }
+          assert_raises(ArgumentError) { topo_sort({ "a" => ["a"] }) }
+        end
+
+        def test_every_dependency_precedes_dependent
+          deps = { 1 => [2, 3], 2 => [4], 3 => [4], 4 => [5], 6 => [1] }
+          order = topo_sort(deps)
+          deps.each { |t, ds| ds.each { |d| assert order.index(d) < order.index(t) } }
+        end
+      end
+    solution: |
+      def topo_sort(deps)
+        indegree = Hash.new(0)
+        dependents = Hash.new { |h, k| h[k] = [] }
+        deps.each do |task, ds|
+          indegree[task] += 0
+          ds.each do |d|
+            indegree[d] += 0
+            indegree[task] += 1
+            dependents[d] << task
+          end
+        end
+
+        ready = indegree.select { |_, n| n.zero? }.keys.sort
+        order = []
+        until ready.empty?
+          node = ready.shift
+          order << node
+          dependents[node].each do |t|
+            indegree[t] -= 1
+            if indegree[t].zero?
+              ready << t
+              ready.sort!
+            end
+          end
+        end
+        raise ArgumentError, "cycle detected" if order.size != indegree.size
+        order
+      end
+    explanation: |
+      Kahn's algorithm: compute in-degrees (number of unmet dependencies), repeatedly emit a node
+      with in-degree 0 and decrement its dependents. If you run out of ready nodes before emitting
+      every node, the remainder forms a cycle, which is a cleaner detection than DFS colouring.
+      O(V + E) plus the sort of the ready set. Pitfalls: forgetting nodes that appear only as
+      dependencies (`indegree[d] += 0` registers them), confusing "depends on" with "is depended
+      on by" (the edge direction), and `ready.sort!` per push being O(k log k) where a heap or a
+      `SortedSet` would be the senior answer. This is literally how Bundler, Rake and migrations order work.
+    tags: [algorithms, graphs, topological-sort]
+    source: "https://en.wikipedia.org/wiki/Topological_sorting"
+
+  - slug: ruby-task-dijkstra-lite
+    kind: code
+    difficulty: senior
+    title: "Dijkstra on a small weighted graph"
+    body: |
+      Write `shortest_distances(graph, source)` where `graph` is a Hash of
+      `node => { neighbour => weight }` with non-negative weights. Return a Hash of the shortest
+      distance from `source` to every reachable node (including `source => 0`). Unreachable nodes
+      are omitted. A plain O(V^2) "pick the unvisited node with the smallest tentative distance"
+      is acceptable; mention the heap-based version in your explanation.
+
+      ```ruby
+      g = { a: { b: 1, c: 4 }, b: { c: 2, d: 5 }, c: { d: 1 }, d: {} }
+      shortest_distances(g, :a) # => { a: 0, b: 1, c: 3, d: 4 }
+      ```
+    starter_code: |
+      def shortest_distances(graph, source)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_basic
+          g = { a: { b: 1, c: 4 }, b: { c: 2, d: 5 }, c: { d: 1 }, d: {} }
+          assert_equal({ a: 0, b: 1, c: 3, d: 4 }, shortest_distances(g, :a))
+        end
+
+        def test_unreachable_omitted
+          g = { a: { b: 1 }, b: {}, c: { a: 1 } }
+          assert_equal({ a: 0, b: 1 }, shortest_distances(g, :a))
+        end
+
+        def test_single_node
+          assert_equal({ x: 0 }, shortest_distances({ x: {} }, :x))
+        end
+
+        def test_prefers_longer_path_with_lower_weight
+          g = { s: { a: 10, b: 1 }, b: { c: 1 }, c: { a: 1 }, a: {} }
+          assert_equal 3, shortest_distances(g, :s)[:a]
+        end
+
+        def test_zero_weight_edges
+          g = { a: { b: 0 }, b: { c: 0 }, c: {} }
+          assert_equal({ a: 0, b: 0, c: 0 }, shortest_distances(g, :a))
+        end
+      end
+    solution: |
+      def shortest_distances(graph, source)
+        dist = { source => 0 }
+        visited = Set.new
+        loop do
+          node, d = dist.reject { |n, _| visited.include?(n) }.min_by { |_, v| v }
+          break if node.nil?
+          visited << node
+          graph.fetch(node, {}).each do |nb, w|
+            nd = d + w
+            dist[nb] = nd if dist[nb].nil? || nd < dist[nb]
+          end
+        end
+        dist
+      end
+    explanation: |
+      Dijkstra = BFS where "next" means "smallest tentative distance so far". With non-negative
+      weights, once a node is picked its distance is final, so you visit each node once and relax
+      its edges. This version scans for the minimum each round, O(V^2), fine for interview-sized
+      graphs; the production version uses a binary heap (O((V+E) log V)) and Ruby's stdlib has no
+      priority queue, so you would hand-roll one or use a sorted insertion. Points to make:
+      why negative weights break it (Bellman-Ford instead), and why relaxing only when strictly
+      smaller keeps the loop terminating. Pitfall: re-visiting nodes, which turns it into an
+      exponential search on dense graphs.
+    tags: [algorithms, graphs, dijkstra]
+    source: "https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm"
+
+  - slug: ruby-task-coin-change-memo
+    kind: code
+    difficulty: senior
+    title: "Minimum coins with memoised recursion"
+    body: |
+      Write `min_coins(coins, amount)` returning the fewest coins needed to make `amount` from
+      the unlimited denominations in `coins`, or `nil` if impossible. `amount` can be up to a few
+      thousand, so naive recursion is too slow: memoise (top-down) or build a table (bottom-up).
+      Also write `coin_change_ways(coins, amount)` returning the number of distinct combinations.
+
+      ```ruby
+      min_coins([1, 5, 10, 25], 30)  # => 2  (25 + 5)
+      min_coins([2], 3)              # => nil
+      coin_change_ways([1, 2, 5], 5) # => 4
+      ```
+    starter_code: |
+      def min_coins(coins, amount)
+        # your code here
+      end
+
+      def coin_change_ways(coins, amount)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_min_coins
+          assert_equal 2, min_coins([1, 5, 10, 25], 30)
+          assert_equal 2, min_coins([1, 3, 4], 6)
+        end
+
+        def test_greedy_fails_here
+          assert_equal 2, min_coins([1, 15, 25], 30)
+        end
+
+        def test_impossible_and_zero
+          assert_nil min_coins([2], 3)
+          assert_equal 0, min_coins([1, 2], 0)
+          assert_nil min_coins([], 5)
+        end
+
+        def test_large_amount_is_fast
+          assert_equal 200, min_coins([1, 5, 10, 25], 5000)
+        end
+
+        def test_ways
+          assert_equal 4, coin_change_ways([1, 2, 5], 5)
+          assert_equal 0, coin_change_ways([2], 3)
+          assert_equal 1, coin_change_ways([1, 2], 0)
+        end
+      end
+    solution: |
+      def min_coins(coins, amount)
+        best = Array.new(amount + 1)
+        best[0] = 0
+        (1..amount).each do |a|
+          coins.each do |c|
+            next if c > a || best[a - c].nil?
+            cand = best[a - c] + 1
+            best[a] = cand if best[a].nil? || cand < best[a]
+          end
+        end
+        best[amount]
+      end
+
+      def coin_change_ways(coins, amount)
+        ways = Array.new(amount + 1, 0)
+        ways[0] = 1
+        coins.each do |c|
+          (c..amount).each { |a| ways[a] += ways[a - c] }
+        end
+        ways[amount]
+      end
+    explanation: |
+      Both are textbook dynamic programming. `min_coins`: `best[a] = 1 + min(best[a - c])` over
+      coins, O(amount * coins) time and O(amount) space; `nil` marks unreachable sums and the
+      `[1, 15, 25]` case shows why greedy (largest coin first) is wrong. `coin_change_ways`
+      iterates coins in the *outer* loop so each combination is counted once regardless of order;
+      swapping the loops counts permutations, which is the subtle bug interviewers look for. A
+      top-down `Hash` memo with the same recurrence is equally valid; mention stack depth for
+      very large amounts and that Ruby Integers will not overflow the ways count.
+    tags: [algorithms, dynamic-programming, memoization]
+    source: "Classic interview exercise; see https://en.wikipedia.org/wiki/Change-making_problem"
+
+  - slug: ruby-task-json-tokenizer-lite
+    kind: code
+    difficulty: senior
+    title: "Tokenizer for a JSON subset"
+    body: |
+      Write `tokenize(src)` that splits a JSON-like string into tokens, returning an array of
+      `[type, value]` pairs:
+
+      - punctuation `{ } [ ] : ,` -> `[:punct, "{"]` etc.
+      - strings in double quotes (no escapes other than `\"` and `\\`) -> `[:string, "text"]`
+        with escapes resolved
+      - numbers (optional `-`, digits, optional fraction) -> `[:number, 12.5]` (Integer when no fraction)
+      - `true`, `false`, `null` -> `[:true, true]`, `[:false, false]`, `[:null, nil]`
+      - whitespace is skipped; any other character raises `ArgumentError` with the offset.
+
+      ```ruby
+      tokenize('{"a": [1, -2.5, true]}')
+      # => [[:punct, "{"], [:string, "a"], [:punct, ":"], [:punct, "["], [:number, 1],
+      #     [:punct, ","], [:number, -2.5], [:punct, ","], [:true, true], [:punct, "]"], [:punct, "}"]]
+      ```
+    starter_code: |
+      def tokenize(src)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_object_with_array
+          expected = [[:punct, "{"], [:string, "a"], [:punct, ":"], [:punct, "["], [:number, 1],
+                      [:punct, ","], [:number, -2.5], [:punct, ","], [:true, true], [:punct, "]"], [:punct, "}"]]
+          assert_equal expected, tokenize('{"a": [1, -2.5, true]}')
+        end
+
+        def test_string_escapes
+          assert_equal [[:string, 'say "hi" \\ bye']], tokenize('"say \\"hi\\" \\\\ bye"')
+        end
+
+        def test_literals_and_whitespace
+          assert_equal [[:null, nil], [:false, false]], tokenize("  null\n false ")
+        end
+
+        def test_empty
+          assert_equal [], tokenize("")
+        end
+
+        def test_invalid_character_reports_offset
+          err = assert_raises(ArgumentError) { tokenize("[1, @]") }
+          assert_match(/4/, err.message)
+        end
+
+        def test_unterminated_string
+          assert_raises(ArgumentError) { tokenize('"abc') }
+        end
+
+        def test_integer_vs_float
+          assert_equal [[:number, 42]], tokenize("42")
+          assert_equal [[:number, 0.5]], tokenize("0.5")
+        end
+      end
+    solution: |
+      def tokenize(src)
+        tokens = []
+        i = 0
+        while i < src.size
+          rest = src[i..]
+          case rest
+          when /\A\s+/
+            i += $&.size
+          when /\A[{}\[\]:,]/
+            tokens << [:punct, $&]
+            i += 1
+          when /\A"((?:[^"\\]|\\["\\])*)"/
+            m = $~
+            tokens << [:string, m[1].gsub(/\\(["\\])/, '\1')]
+            i += m[0].size
+          when /\A-?\d+(\.\d+)?/
+            tokens << [:number, $1 ? $&.to_f : $&.to_i]
+            i += $&.size
+          when /\A(true|false|null)\b/
+            tokens << [$1.to_sym, { "true" => true, "false" => false, "null" => nil }[$1]]
+            i += $&.size
+          when /\A"/
+            raise ArgumentError, "unterminated string at #{i}"
+          else
+            raise ArgumentError, "unexpected character #{rest[0].inspect} at #{i}"
+          end
+        end
+        tokens
+      end
+    explanation: |
+      A hand-written lexer is a loop over "which token starts here?" with anchored regexes
+      (`\A`) and a cursor. The order of the `when` branches matters: whitespace first, then the
+      unambiguous cases, then the error fallbacks. Resolving escapes with `gsub(/\\(["\\])/, '\1')`
+      after matching keeps the regex readable. O(n) in practice, though `src[i..]` copies the
+      remainder each step, so for a large input use `StringScanner` (`strscan`) which keeps a
+      position instead, the senior-level improvement to mention. Pitfalls: not anchoring (matches
+      a token further ahead), `\d+` matching the `1` in `1abc` and leaving garbage, and `$1` being
+      clobbered by a later match before you use it.
+    tags: [parsing, regex, lexer]
+    source: "Classic interview exercise; see https://docs.ruby-lang.org/en/3.3/Regexp.html"
+
+  - slug: ruby-task-approach-unfamiliar-live-coding
+    kind: open
+    difficulty: junior
+    title: "How do you approach a live-coding task you have never seen?"
+    body: |
+      The interviewer pastes a task you do not recognise ("group these transactions by month and
+      flag months where spending exceeded the average by 20%") and says "go ahead, talk me
+      through it". What do you do in the first five minutes, before writing the real code?
+    answer: |
+      - Restate the problem in your own words and confirm the input/output shapes with a concrete
+        example (`[{date:, amount:}] -> { "2024-05" => { total:, flagged: true } }`).
+      - Ask clarifying questions that change the design: empty input, negative amounts (refunds),
+        time zones, ties at exactly 20%, expected size (fits in memory?).
+      - Sketch the pipeline in plain language or as method names: `group_by month` ->
+        `sum` -> `average` -> `select over threshold`. Say which Enumerable methods map onto each step.
+      - Write the happy-path test or example first, then the simplest working version; only then
+        optimise or clean up.
+      - Narrate trade-offs as you go ("`group_by` builds an intermediate Hash; that is fine for
+        thousands of rows, for millions I would stream").
+      - Finish by walking the edge cases through the code out loud and stating the complexity.
+    explanation: |
+      Interviewers grade communication and process as much as the code. Follow-ups they often
+      add: "what would you test?", "how would this change if the data came from a CSV stream?",
+      and "what would you refactor if this went into production?". Common mistakes: silently
+      coding for 10 minutes, optimising before a working version exists, and never running the
+      example against the code.
+    tags: [interview-process, communication]
+    source: "https://google.github.io/eng-practices/review/reviewer/looking-for.html"
+
+  - slug: ruby-task-complexity-of-common-ruby-operations
+    kind: open
+    difficulty: middle
+    title: "Big-O of everyday Ruby operations"
+    body: |
+      For each of the following, state the time complexity and what you would use instead if it
+      were inside a hot loop over `n` items:
+
+      1. `array.include?(x)`
+      2. `hash[key]` and `set.include?(x)`
+      3. `array.shift` and `array.unshift(x)`
+      4. `str += "chunk"` inside a loop
+      5. `array.uniq` and `array.sort`
+      6. `array.first(k)` after `sort_by` versus `min_by(k)`
+    answer: |
+      - `Array#include?` is O(n) (linear scan). In a loop that makes O(n^2); convert the lookup
+        side to a `Set` or a Hash once (O(n)) and query in O(1) average.
+      - `Hash#[]` and `Set#include?` are O(1) average, O(n) worst case on pathological collisions;
+        keys must have consistent `hash`/`eql?`.
+      - `Array#shift` is amortised O(1) in MRI (it moves the start pointer, no memmove), so a plain
+        Array works as a queue. `unshift` is amortised O(1) too since Ruby 2.x reserves headroom,
+        but repeated `insert(0, x)` into the middle is O(n).
+      - `str += "x"` allocates a new String each time: O(n^2) over the loop. Use `str << "x"`
+        (in place, amortised O(1)) or collect parts and `join`.
+      - `uniq` is O(n) using a Hash internally; `sort` is O(n log n) (introsort/quicksort, not stable).
+      - `sort_by { }.first(k)` is O(n log n); `min_by(k)`/`max_by(k)` is O(n log k) and avoids the
+        full sort when `k << n`.
+    explanation: |
+      Interviewers use this to check that you know the data structures behind the methods, not
+      just the names. Follow-ups: "why is `Hash` ordered and does that cost anything?" (insertion
+      order is tracked by a separate entries array, negligible cost), "what makes a bad Hash key?"
+      (mutable keys whose `hash` changes after insertion; call `rehash`), and "when would you use
+      `Array#bsearch`?" (sorted input, O(log n)). A common mistake is claiming `Array#shift` is O(n)
+      because it is in other languages.
+    tags: [complexity, data-structures]
+    source: "https://docs.ruby-lang.org/en/3.3/Array.html"
+
+  - slug: ruby-task-testing-a-parser-edge-cases
+    kind: open
+    difficulty: middle
+    title: "What tests would you write for a small parser?"
+    body: |
+      You have just written `parse_duration("1h30m") # => 5400` in a pairing session. The
+      interviewer asks: "Before we call this done, what tests would you add, and in what order?"
+    answer: |
+      - Happy paths first, one per grammar rule: `"2h"`, `"30m"`, `"45s"`, `"1h2m3s"`.
+      - Boundaries: `"0s"`, large numbers (`"1000h"`), leading zeros (`"05m"`).
+      - Invalid shapes that must fail: `""`, `"3x"`, wrong order `"30m1h"`, duplicates `"1h1h"`,
+        whitespace `" 1h"`, negative `"-1h"`, missing number `"h"`.
+      - Type of result: Integer, not String or Float; `nil` (or an exception, but pick one) for invalid.
+      - Idempotence/round trip if there is a formatter: `format(parse(x)) == x` for canonical inputs.
+      - A table-driven test (`[input, expected].each`) keeps the suite short and makes it obvious
+        which rule each case covers.
+      - Property-style spot check if time allows: for random `h, m, s`, `parse("#{h}h#{m}m#{s}s") == h*3600 + m*60 + s`.
+    explanation: |
+      The interviewer wants to see you derive cases from the grammar rather than from the
+      implementation, and that you decide the failure contract (`nil` vs raise) explicitly.
+      Follow-ups: "which of these would you drop if you only had time for three?" (one happy
+      path, one ordering violation, the empty string), and "how would you make the error message
+      useful?" (include the offending input or offset). A common mistake is only testing inputs
+      the implementation already handles.
+    tags: [testing, minitest, parsing]
+    source: "https://docs.ruby-lang.org/en/3.3/Regexp.html"
+
+  - slug: ruby-task-memoization-pitfalls
+    kind: open
+    difficulty: middle
+    title: "Memoization in Ruby: ||= and its traps"
+    body: |
+      You memoise an expensive lookup with `@user ||= User.find_by(id: id)`. The interviewer asks:
+      "What is wrong with that, and how would you memoise correctly for (a) a value that may be
+      `nil` or `false`, (b) a method with arguments, and (c) a pure recursive function?"
+    answer: |
+      - `||=` re-runs the expression whenever the cached value is `nil` or `false`, so a legitimate
+        "not found" result is recomputed on every call. It also silently depends on `@user` not
+        being used elsewhere.
+      - (a) Use `defined?`: `return @user if defined?(@user); @user = User.find_by(...)`, or
+        cache a wrapper/sentinel. ActiveSupport's `Memoizable` was removed partly because of this subtlety.
+      - (b) Memoise per argument with a Hash: `@cache ||= {}; @cache.fetch(key) { @cache[key] = compute(key) }`
+        (note `fetch` with a block, not `@cache[key] ||=`, if values can be falsy). Bound the cache or
+        it becomes a memory leak on a long-lived object.
+      - (c) Pass the memo explicitly or use `Hash.new { |h, n| h[n] = ... }` with a recursive
+        default proc; a class-level constant Hash is shared across threads and must be frozen or guarded.
+      - Memoisation assumes the value is stable for the object's lifetime: never memoise something
+        that depends on mutable state (current time, request params) without including it in the key.
+    explanation: |
+      Follow-ups: "is `||=` thread-safe?" (no; a race can compute twice, harmless for pure
+      functions, harmful for side effects; use a `Mutex` or `Concurrent::Map`), "how does Rails
+      `Rails.cache.fetch` differ?" (shared, external, TTL, serialisation), and "what about
+      memoising in a `class << self` singleton?" (lives for the process, needs invalidation).
+      A common mistake is `@results ||= {}` followed by `@results[arg] ||= ...` while claiming it
+      handles `nil` correctly.
+    tags: [memoization, idioms]
+    source: "https://docs.ruby-lang.org/en/3.3/Hash.html"
+
+  - slug: ruby-task-recursion-vs-iteration-stack-depth
+    kind: open
+    difficulty: middle
+    title: "Recursion versus iteration in Ruby"
+    body: |
+      Your recursive `my_flatten` passed the tests. The interviewer asks: "What happens if I pass an
+      array nested 100,000 levels deep? What are your options, and does Ruby do tail-call
+      optimisation?"
+    answer: |
+      - MRI raises `SystemStackError: stack level too deep` once the VM stack is exhausted; the
+        default limit is roughly 10k-12k frames for a simple method and depends on `RUBY_THREAD_VM_STACK_SIZE`.
+      - Convert to iteration with an explicit stack: push the array, loop `until stack.empty?`,
+        pop, and either emit a leaf or push children (reverse order to keep sequence). Same O(n) time,
+        heap memory instead of VM stack.
+      - Ruby *has* a tail-call optimisation but it is off by default (`RubyVM::InstructionSequence.compile_option = { tailcall_optimization: true }`)
+        and only applies to code compiled after that flag, so do not rely on it in production.
+      - For tree-shaped data recursion is usually clearer; prefer it when depth is bounded by the
+        domain (JSON documents, directory trees), switch to iteration when depth is user-controlled.
+      - Memoised recursion (Fibonacci, coin change) has the same depth issue; bottom-up tables avoid it.
+    explanation: |
+      Follow-ups: "would running it in a `Thread` help?" (threads have their own VM stack sized by
+      `RUBY_THREAD_VM_STACK_SIZE`, so it can raise the limit but is a workaround), "how does `Enumerator`
+      with a Fiber relate?" (fibers have their own, smaller stacks), and "is recursion slower?"
+      (method call overhead, but negligible next to clarity unless in a hot path). Common mistake:
+      claiming Ruby optimises tail calls like Elixir does.
+    tags: [recursion, vm, stack]
+    source: "https://docs.ruby-lang.org/en/3.3/RubyVM/InstructionSequence.html"
+
+  - slug: ruby-task-word-count-file-too-big-for-memory
+    kind: open
+    difficulty: senior
+    title: "Top 10 words in a 50 GB log file"
+    body: |
+      "Here is a 50 GB log file on disk and a laptop with 8 GB of RAM. Give me the 10 most
+      frequent words. Talk me through the Ruby you would write and why, then what you would
+      change if the file were on S3 and the job had to run nightly."
+    answer: |
+      - Never `File.read`; stream with `File.foreach(path) { |line| ... }` (or `IO#each_line`)
+        so memory is bounded by one line, and tally into a Hash of `word => count`.
+      - The Hash holds only the *vocabulary*, not the file. For natural-language logs that is
+        millions of keys at most, which fits. If it does not (e.g. UUIDs count as words), hash
+        each word into k buckets, write each bucket to its own temp file, count each bucket
+        separately, and merge the per-bucket top 10s (external partitioning).
+      - Final ranking with `max_by(10) { |_, c| c }` is O(v log 10), no full sort.
+      - Normalise once per line (`downcase`, `scan(/[a-z']+/)`) and avoid creating a String per
+        character; consider `String#split` instead of regex if the format is simple, and run
+        a profiler before optimising further.
+      - Parallelism: MRI's GVL means threads will not speed up CPU-bound tallying; fork workers on
+        byte ranges (`Process.fork`, seek to the next newline) and merge Hashes, or use Ractors.
+      - Nightly on S3: stream the object (ranged GETs or `IO.popen("aws s3 cp ... -")`), run as a
+        background job with checkpoints per chunk so a crash resumes, emit metrics, and store the
+        result rather than recomputing; for repeated analytics push the data into a columnar store instead of Ruby.
+    explanation: |
+      The interviewer is checking that you think in streams, know where memory actually goes
+      (vocabulary, not input), can fall back to external memory algorithms, and understand the
+      GVL. Follow-ups: "approximate answers acceptable?" (Count-Min Sketch / Space-Saving top-k in
+      O(k) memory), "what if lines are not newline-delimited?", and "how do you test this without
+      a 50 GB fixture?" (same code on a 1 MB sample plus a test that asserts memory stays flat
+      using `GC.stat` or a chunked reader double).
+    tags: [streaming, performance, design]
+    source: "https://docs.ruby-lang.org/en/3.3/IO.html"
+
+  - slug: ruby-task-design-batching-writer
+    kind: open
+    difficulty: senior
+    title: "Design a batching writer (flush every N items or T seconds)"
+    body: |
+      "We insert analytics events one row at a time and the database is suffering. Design a Ruby
+      object that buffers events and flushes them in one bulk insert when either 500 events have
+      accumulated or 2 seconds have passed since the first buffered event. Walk me through the
+      interface, the concurrency story and the failure modes."
+    answer: |
+      - Interface: `Batcher.new(size: 500, interval: 2) { |events| bulk_insert(events) }`, `#push(event)`,
+        `#flush` (explicit), `#close` (flush + stop timer). Inject a clock for tests.
+      - Size trigger is trivial in `push`; the time trigger needs either a background `Thread`
+        that sleeps `interval` and flushes, or a lazy check on every `push` ("has the oldest event
+        been waiting more than `interval`?") plus a final flush on shutdown. The lazy version has no
+        thread but cannot flush while idle; the thread version must be stopped cleanly.
+      - Concurrency: `push` is called from request threads (Puma), so guard the buffer with a `Mutex`;
+        swap the full buffer for a new array inside the lock and run the bulk insert *outside* the
+        lock so writers are not blocked by the database.
+      - Failure modes: process crash loses the buffer (acceptable for analytics; otherwise write to
+        a durable queue first), bulk insert failure (retry with backoff; on repeated failure drop or
+        spill to disk and alert), duplicate delivery on retry (idempotent insert via unique key),
+        and memory growth if the DB is slow (cap the buffer and apply backpressure or drop with a metric).
+      - Shutdown: register an `at_exit`/Puma `on_worker_shutdown` hook to flush; forking servers
+        must create the batcher per worker, not before fork.
+      - Observability: counters for batches, batch size histogram, flush latency, dropped events.
+    explanation: |
+      This is a classic "small object, big consequences" design question. Follow-ups: "why not
+      Sidekiq?" (it is per-event again unless you batch there too, but it gives durability),
+      "what if ordering matters?" (single writer per key or sequence numbers), and "how do you
+      test the time trigger deterministically?" (inject the clock, drive it in the test). Common
+      mistakes: holding the lock during I/O, forgetting the idle-flush case, and ignoring fork safety.
+    tags: [design, concurrency, batching]
+    source: "https://docs.ruby-lang.org/en/3.3/Thread/Mutex.html"

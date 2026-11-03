@@ -1,0 +1,24 @@
+<h1>Mock interview: <%= @items.first&.language&.capitalize %></h1>
+<% tally = @results.tally %>
+<div class="stats">
+  <div class="stat"><b><%= tally.fetch("1", 0) %></b><span>correct</span></div>
+  <div class="stat"><b><%= tally.fetch("0", 0) %></b><span>incorrect</span></div>
+  <div class="stat"><b><%= tally.fetch("s", 0) %></b><span>skipped</span></div>
+  <div class="stat"><b><%= @elapsed / 60 %>m <%= @elapsed % 60 %>s</b><span>elapsed</span></div>
+</div>
+<table>
+  <tr><th>#</th><th>Question</th><th>Kind</th><th>Level</th><th>Result</th></tr>
+  <% @items.each_with_index do |it, i| %>
+    <tr>
+      <td><%= i + 1 %></td>
+      <td><a href="/items/<%= it.id %>?reveal=1"><%= h it.title %></a></td>
+      <td><%= it.kind %></td>
+      <td><span class="badge <%= it.difficulty %>"><%= it.difficulty %></span></td>
+      <td><%= { "1" => "✅", "0" => "❌", "s" => "⏭" }.fetch(@results[i], "–") %></td>
+    </tr>
+  <% end %>
+</table>
+<p class="actions">
+  <a class="btn primary" href="/interview/<%= @items.first&.language %>">Another round</a>
+  <a class="btn" href="/">Dashboard</a>
+</p>

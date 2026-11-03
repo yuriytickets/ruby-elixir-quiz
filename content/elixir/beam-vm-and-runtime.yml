@@ -1,0 +1,1211 @@
+language: elixir
+topic: beam-vm-and-runtime
+items:
+  - slug: elixir-beam-schedulers-and-reductions
+    kind: theory
+    difficulty: middle
+    title: "Schedulers, run queues and reductions"
+    body: |
+      The BEAM starts one **scheduler thread per logical core** (`+S`, see `System.schedulers_online/0`). Each
+      scheduler has its own **run queue** of runnable processes and steals work from other queues when idle, so
+      a million processes are multiplexed onto a handful of OS threads.
+
+      Scheduling is **preemptive** and based on **reductions**: roughly one reduction per function call or BIF
+      operation. A process gets a budget of about 4000 reductions (`:erlang.system_info(:context_reductions)`),
+      then it is suspended and put at the back of the queue, no matter what it is doing. It is also descheduled
+      when it blocks in `receive` with no matching message.
+
+      ```elixir
+      {:reductions, before} = Process.info(self(), :reductions)
+      Enum.reduce(1..100_000, 0, &+/2)
+      {:reductions, after_} = Process.info(self(), :reductions)
+      after_ - before   #=> ~100_000: one reduction per iteration
+      ```
+
+      Consequences:
+
+      - A process in an infinite loop cannot starve the others; it just burns its slices.
+      - Fairness is per process, not per task: a GenServer with a huge mailbox gets the same slice as an idle one.
+      - Long-running native code (NIFs) is invisible to the reduction counter, which is why it must either finish
+        in about a millisecond or run on a **dirty scheduler** (separate thread pools for CPU-bound `+SDcpu` and
+        I/O-bound `+SDio` work).
+      - `:erlang.statistics(:run_queue)` (total runnable processes waiting) is the number to watch for
+        saturation; `:erlang.statistics(:scheduler_wall_time)` gives per-scheduler utilization.
+    answer: |
+      **Q:** Why does a CPU-bound Elixir process not freeze a Phoenix app the way a long synchronous handler can
+      freeze a Node.js event loop?
+      **A:** Because the BEAM preempts it after ~4000 reductions and schedules the other processes; the only way
+      to block a scheduler is native code (a long NIF or BIF) that never yields.
+    explanation: |
+      Interviewers ask "what is a reduction?" (a unit of work, roughly a function call; not a fixed time) and
+      "how many schedulers does the VM have?" (one per core by default, with the `+S` flag and
+      `System.schedulers_online/0` to inspect). Mentioning dirty schedulers shows you know the limits.
+    tags: [scheduler, reductions, preemption]
+    source: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+
+  - slug: elixir-beam-infinite-loop-process
+    kind: mcq
+    difficulty: junior
+    title: "What happens to the system when one process loops forever?"
+    body: |
+      In IEx you run `spawn(fn -> loop() end)` where `loop/0` calls itself forever doing arithmetic. What happens
+      to the IEx shell and other processes on that node?
+    choices:
+      - "Everything keeps responding: the VM preempts the looping process every few thousand reductions and shares the scheduler with other processes"
+      - "The shell freezes until you kill the process, because the loop never yields"
+      - "The VM detects the loop after a timeout and kills the process with reason :infinite_loop"
+      - "Only that scheduler freezes; processes on other schedulers keep working until they migrate to it"
+    answer: 0
+    explanation: |
+      BEAM scheduling is preemptive at the reduction level: after roughly 4000 reductions the looping process is
+      put back in the run queue and others run. It will use one core at 100% (or all cores if you spawn enough
+      loops), but it cannot block anyone. The VM has no infinite-loop detection; the only thing that pins a
+      scheduler is native code that does not yield. Work stealing also moves other processes away from a busy
+      scheduler, so the "only that scheduler freezes" answer is wrong too.
+    tags: [scheduler, preemption]
+    source: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+
+  - slug: elixir-beam-dirty-schedulers
+    kind: mcq
+    difficulty: middle
+    title: "What are dirty schedulers for?"
+    body: |
+      Which statement about dirty schedulers is correct?
+    choices:
+      - "They run garbage collection for large processes so normal schedulers are not blocked by GC"
+      - "They are schedulers reserved for processes with a high message queue length"
+      - "They are extra threads for NIFs (and some BIFs) that may run longer than ~1 ms, so long native work does not block a normal scheduler and the reduction-based fairness of Elixir code"
+      - "They handle all I/O: every file and socket operation is moved off the normal schedulers"
+    answer: 2
+    explanation: |
+      A normal scheduler cannot preempt native code. A NIF that takes 100 ms holds the scheduler and every
+      process queued on it. Dirty CPU schedulers (`+SDcpu`, default one per core) and dirty I/O schedulers
+      (`+SDio`, default 10) are thread pools where a NIF flagged as dirty runs while the normal scheduler goes on
+      with other work. GC is per process and runs on the normal scheduler as part of the process's own slice;
+      regular file/socket I/O is handled by ports and the poll set, not dirty schedulers.
+    tags: [dirty-schedulers, nif]
+    source: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+
+  - slug: elixir-beam-per-process-gc
+    kind: open
+    difficulty: senior
+    title: "Why does the BEAM not have stop-the-world GC pauses?"
+    body: |
+      Explain how garbage collection works on the BEAM, why it avoids global pauses, and what the practical
+      consequences are for how you design processes (what is cheap, what is expensive, what to watch for).
+    answer: |
+      - Every process has its **own heap** (plus stack) and is collected **independently**: a copying, generational
+        collector (young heap + old heap). Collecting one process never touches another process's heap, so there
+        is no global pause; a GC pauses only that process for a time proportional to its **live** data.
+      - Minor collections copy only live young data; a **full sweep** (major) happens when the old heap is full,
+        after `fullsweep_after` minor collections (default 65535) or when `:erlang.garbage_collect/1` is called.
+      - Immutability makes this possible: an old term can never point to a younger term, so the collector can skip
+        the old generation during minor GCs, and processes share nothing on their heaps (messages are copied), so
+        there is no cross-heap pointer to track.
+      - Large binaries (> 64 bytes) live off-heap, reference counted, shared between processes; each process has a
+        "virtual binary heap" so holding many refc binaries also triggers GC.
+      - Consequences: many small short-lived processes are nearly free to collect (they die, the heap is freed in
+        one go, no GC at all); a single huge long-lived process (big GenServer state, giant mailbox) has
+        expensive, repeated full sweeps, so split state or keep it in ETS; a process that does one big burst and then
+        idles can keep its large heap until the next GC, so `:hibernate` or `Process.sleep`-free design matters;
+        watch `long_gc` / `large_heap` via `:erlang.system_monitor/2`.
+    explanation: |
+      Follow-ups: "What does `:erlang.garbage_collect/1` do and when would you call it?" (forces a full sweep on one
+      process; rarely, e.g. after a one-off large computation in a long-lived process, or in `recon:bin_leak`).
+      "Why is `Process.info(pid, :memory)` large even though the state is small?" (fragments, old heap not yet
+      collected, or refc binaries pinned by the process).
+    tags: [gc, generational, heap]
+    source: https://www.erlang.org/doc/apps/erts/garbagecollection.html
+
+  - slug: elixir-beam-refc-vs-heap-binary
+    kind: mcq
+    difficulty: middle
+    title: "Heap binaries vs refc binaries"
+    body: |
+      What is the difference between a heap binary and a refc (reference-counted) binary on the BEAM?
+    choices:
+      - "Heap binaries are immutable; refc binaries are mutable buffers used by NIFs"
+      - "Heap binaries are UTF-8 strings; refc binaries are raw bytes from sockets"
+      - "Heap binaries are created by <<>> literals; refc binaries only by IO operations"
+      - "Binaries up to 64 bytes are stored on the process heap and copied when sent; larger ones live off-heap in a shared, reference-counted area and only a small ProcBin pointer is copied"
+    answer: 3
+    explanation: |
+      The threshold is 64 bytes. A small binary is just data on the heap. A large one is allocated off-heap and
+      shared: sending it to another process copies only the ProcBin handle and bumps the refcount, which is why
+      passing a 10 MB binary between processes is cheap. The flip side is that the binary is freed only when
+      *every* process holding a reference has been garbage collected, which is the root of "binary leaks".
+      Both kinds are immutable; the source of the data is irrelevant.
+    tags: [binary, refc, memory]
+    source: https://www.erlang.org/doc/system/binaryhandling.html
+
+  - slug: elixir-beam-binary-leak
+    kind: open
+    difficulty: senior
+    title: "Memory grows forever, :erlang.memory(:binary) dominates. Diagnose."
+    body: |
+      A long-running GenServer receives large JSON payloads from a socket, extracts a few small fields and stores
+      them in its state. `:erlang.memory(:binary)` grows for days, while `:erlang.memory(:processes)` stays flat.
+      Explain the cause and the fixes.
+    answer: |
+      - The fields extracted with binary pattern matching (`<<_::binary-size(10), id::binary-size(8), _::binary>>`,
+        `String.slice`, `binary_part`, `Regex` captures, `Jason` string values) are **sub-binaries**: small handles
+        that point *into* the original large refc binary. Storing a 16-byte sub-binary in state keeps the whole
+        multi-megabyte payload alive.
+      - The GenServer is long-lived and its own heap barely grows (sub-binaries are tiny), so it is rarely
+        garbage collected; even when it is, the refcount only drops for binaries no longer referenced. The payloads
+        accumulate off-heap: memory(:binary) grows, memory(:processes) does not.
+      - Fixes: copy what you keep with `:binary.copy/1` (makes a fresh heap/refc binary of just those bytes);
+        or do the parsing in a short-lived process (`Task`) so the references die with it; or force a GC on the
+        owner periodically (`:erlang.garbage_collect/1`, or `{:noreply, state, :hibernate}` for processes that
+        idle between bursts); and tune `fullsweep_after` / `min_bin_vheap_size` via `spawn_opt` for known hot spots.
+      - Diagnose with `:recon.bin_leak(10)` (forces GC on all processes and reports who freed the most refc
+        binaries) or `Process.info(pid, :binary)` before/after `:erlang.garbage_collect(pid)`.
+    explanation: |
+      Follow-up: "Why does the *same* code not leak when run inside a Phoenix controller?" Because the request
+      process exits after the response and takes its references with it. "Is `:binary.copy` always right?" No:
+      copying a binary you only use briefly is waste; copy only what you *retain* long-term.
+    tags: [binary-leak, refc, binary.copy, recon]
+    source: https://zhongwencool.gitbooks.io/erlang_in_anger/chapter_7_memory_leaks/detecting_leaks.html
+
+  - slug: elixir-beam-match-context
+    kind: mcq
+    difficulty: senior
+    title: "Why is a recursive binary parser fast on the BEAM?"
+    body: |
+      ```elixir
+      def count_commas(<<",", rest::binary>>, n), do: count_commas(rest, n + 1)
+      def count_commas(<<_, rest::binary>>, n), do: count_commas(rest, n)
+      def count_commas(<<>>, n), do: n
+      ```
+      Why does this not copy the binary or allocate a new one on every recursive call?
+    choices:
+      - "Because binaries are mutable buffers and `rest` is a pointer that is advanced in place"
+      - "Because the compiler keeps a match context (a cursor into the original binary) across the calls and only creates a sub-binary when the value escapes, so each step is O(1) with no copying"
+      - "Because the VM interns small binaries so repeated slices are deduplicated"
+      - "Because tail recursion reuses the same stack frame and therefore the same memory for `rest`"
+    answer: 1
+    explanation: |
+      Matching never copies binary data: `rest::binary` would normally create a **sub-binary** (a small term
+      pointing into the original), but when the result is immediately matched again the compiler keeps a
+      **match context**, a direct pointer plus offset, avoiding even the sub-binary allocation. You can verify
+      with `ERL_COMPILER_OPTIONS=bin_opt_info`. Tail recursion keeps the stack flat but says nothing about binary
+      copying; binaries are immutable and not interned.
+    tags: [binary, match-context, optimization]
+    source: https://www.erlang.org/doc/system/binaryhandling.html
+
+  - slug: elixir-beam-atom-table-limit
+    kind: mcq
+    difficulty: junior
+    title: "Why is String.to_atom/1 on user input dangerous?"
+    body: |
+      A controller does `String.to_atom(params["sort"])` to build a keyword list. What is the risk?
+    choices:
+      - "Atoms are never garbage collected and the atom table has a fixed limit (1,048,576 by default); unique user input can fill it and crash the VM"
+      - "Atoms are slow to compare, so the request becomes CPU bound"
+      - "String.to_atom raises for strings longer than 255 characters, causing 500 errors"
+      - "There is no risk: atoms are interned and reused, so repeated values cost nothing"
+    answer: 0
+    explanation: |
+      Every distinct atom is added to a global table that is never collected. An attacker sending new `sort`
+      values exhausts the limit (`+t`, default 1,048,576; check with `:erlang.system_info(:atom_count)`) and the
+      VM terminates with `system_limit`. Use `String.to_existing_atom/1` (raises if the atom was never created,
+      so only atoms already in your code are accepted) or an explicit allow-list / `case` on strings. Atom
+      comparison is fast, and the 255-char limit is not the main issue.
+    tags: [atoms, security, to_existing_atom]
+    source: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+
+  - slug: elixir-beam-ets-basics
+    kind: theory
+    difficulty: junior
+    title: "ETS in one page"
+    body: |
+      **ETS** (Erlang Term Storage) is an in-memory table of tuples living *outside* any process heap, owned by
+      the process that created it and destroyed when that process exits.
+
+      ```elixir
+      t = :ets.new(:users, [:set, :public, :named_table, read_concurrency: true])
+      :ets.insert(:users, {1, "ann", 30})          # key is the 1st element by default (keypos: 1)
+      :ets.lookup(:users, 1)                       #=> [{1, "ann", 30}]
+      :ets.update_counter(:users, 1, {3, 1})       #=> 31 (atomic increment of element 3)
+      :ets.select(:users, [{{:_, :"$1", :"$2"}, [{:>, :"$2", 18}], [:"$1"]}])  #=> ["ann"]
+      ```
+
+      - **Types**: `:set` (one object per key, hash), `:ordered_set` (sorted by key, `==` comparison so `1` and
+        `1.0` collide, range queries with `select`/`next`), `:bag` (many objects per key, no duplicates),
+        `:duplicate_bag` (duplicates allowed, fastest inserts).
+      - **Access**: `:protected` (default: owner writes, everyone reads), `:public` (anyone writes),
+        `:private` (owner only).
+      - **Guarantees**: single operations (`insert`, `lookup`, `update_counter`, `insert_new`, a list insert) are
+        atomic and isolated; multi-step read-modify-write is **not**, use `update_counter`/`update_element`
+        /`select_replace` or serialize writes through one process.
+      - Reads and writes copy the terms between the table and the process heap, so storing huge values and
+        reading them often is expensive; large binaries are shared by reference.
+      - `:named_table` lets you use the atom instead of the tid; names are global per node.
+    answer: |
+      **Q:** A GenServer creates a `:protected` ETS table in `init/1` and crashes. What happens to the data and to
+      readers?
+      **A:** The table is deleted with the owner; readers get `ArgumentError` (`badarg`) on the next lookup until
+      the restarted owner recreates it, empty, in `init/1`. Use a dedicated owner process or an `heir` if the data
+      must outlive the worker.
+    explanation: |
+      Interviewers expect you to know ETS is per node, not distributed (that is `:mnesia`), not persisted (that is
+      `:dets`), and that there is no automatic cleanup except owner death. `read_concurrency`/`write_concurrency`
+      and match specs are typical follow-ups.
+    tags: [ets, basics]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-beam-ets-concurrency-options
+    kind: mcq
+    difficulty: middle
+    title: "read_concurrency and write_concurrency"
+    body: |
+      You create a cache table with `:ets.new(:cache, [:set, :public, read_concurrency: true, write_concurrency: true])`.
+      Which statement is correct?
+    choices:
+      - "read_concurrency makes lookups lock-free; without it every lookup takes a table-wide lock, so it is always a free win"
+      - "write_concurrency makes multi-key inserts transactional"
+      - "read_concurrency optimizes for many concurrent reads between writes, and write_concurrency allows concurrent writes to different keys; both cost memory and make frequent read/write interleaving slower, so set them based on the access pattern"
+      - "The two options are mutually exclusive"
+    answer: 2
+    explanation: |
+      `read_concurrency: true` trades memory and read/write switching cost for faster bursts of concurrent reads;
+      `write_concurrency: true` (or `:auto` on OTP 25+) uses fine-grained locking so writes to different objects
+      proceed in parallel, again for memory. They combine well for tables with long read phases and long write
+      phases, badly for tables where each read is followed by a write (counters updated on every hit). Nothing in
+      ETS makes multi-object operations transactional except a single `insert/2` with a list.
+    tags: [ets, concurrency]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-beam-ets-select-match-spec
+    kind: code
+    difficulty: middle
+    title: "Query an ETS table with a match spec"
+    body: |
+      Implement module `Scores` over an ETS `:set` table of `{name, score}` tuples:
+
+      - `new/0`: creates a public table and returns its tid.
+      - `put(table, name, score)`: inserts or replaces the entry.
+      - `at_least(table, min)`: returns the **sorted list of names** whose score is `>= min`, using a single
+        `:ets.select/2` call with a match specification (no `tab2list` + `Enum.filter`).
+      - `count_at_least(table, min)`: the number of such entries, using `:ets.select_count/2`.
+
+      ```elixir
+      t = Scores.new()
+      Scores.put(t, "ann", 10); Scores.put(t, "bob", 3); Scores.put(t, "cy", 7)
+      Scores.at_least(t, 5)         #=> ["ann", "cy"]
+      Scores.count_at_least(t, 5)   #=> 2
+      ```
+    starter_code: |
+      defmodule Scores do
+        def new, do: :ets.new(:scores, [:set, :public])
+        def put(table, name, score), do: :ets.insert(table, {name, score})
+
+        def at_least(table, min) do
+          # TODO: :ets.select/2 with a match spec [{pattern, guards, body}]
+        end
+
+        def count_at_least(table, min) do
+          # TODO: :ets.select_count/2
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ScoresTest do
+        use ExUnit.Case
+
+        setup do
+          t = Scores.new()
+          Scores.put(t, "ann", 10)
+          Scores.put(t, "bob", 3)
+          Scores.put(t, "cy", 7)
+          Scores.put(t, "dee", 5)
+          %{t: t}
+        end
+
+        test "selects names at or above the threshold", %{t: t} do
+          assert Scores.at_least(t, 5) == ["ann", "cy", "dee"]
+          assert Scores.at_least(t, 10) == ["ann"]
+          assert Scores.at_least(t, 11) == []
+        end
+
+        test "counts without building a list", %{t: t} do
+          assert Scores.count_at_least(t, 5) == 3
+          assert Scores.count_at_least(t, 0) == 4
+        end
+
+        test "put replaces", %{t: t} do
+          Scores.put(t, "bob", 20)
+          assert Scores.at_least(t, 15) == ["bob"]
+        end
+      end
+    solution: |
+      defmodule Scores do
+        def new, do: :ets.new(:scores, [:set, :public])
+        def put(table, name, score), do: :ets.insert(table, {name, score})
+
+        def at_least(table, min) do
+          table
+          |> :ets.select([{{:"$1", :"$2"}, [{:>=, :"$2", min}], [:"$1"]}])
+          |> Enum.sort()
+        end
+
+        def count_at_least(table, min) do
+          :ets.select_count(table, [{{:_, :"$1"}, [{:>=, :"$1", min}], [true]}])
+        end
+      end
+    explanation: |
+      A match spec is `[{head_pattern, [guards], [body]}]`: `:"$1"` binds variables, guards use prefix tuples
+      like `{:>=, :"$2", min}`, and the body says what to return. `select` filters inside the table in one pass,
+      copying only the matching results to the caller, whereas `tab2list` copies the whole table and then filters
+      on the heap. `select_count` needs a body of `[true]`. In Elixir code you can generate match specs with
+      `:ets.fun2ms/1` (Erlang parse transform) or the `Ex2ms` library.
+    tags: [ets, select, match-spec]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-beam-ets-vs-genserver-vs-persistent-term
+    kind: open
+    difficulty: middle
+    title: "GenServer state vs ETS vs :persistent_term: when each?"
+    body: |
+      You need to share some data across many processes on one node. Compare keeping it as GenServer state,
+      in an ETS table, and in `:persistent_term`. What are the read and write characteristics, consistency
+      guarantees and failure modes of each, and how do you choose?
+    answer: |
+      - **GenServer state**: every read is a `call`, serialized through one mailbox: simplest consistency (atomic
+        multi-key updates, invariants in one place) but a bottleneck under heavy reads; state is lost on crash.
+        Choose for complex state machines, low read volume, or when updates must be atomic across keys.
+      - **ETS**: reads and writes go straight to the table, concurrent, no process in the middle; single-object
+        operations atomic, multi-step ones are not; terms copied on each access; table dies with the owner. Choose
+        for caches, registries, counters, read-heavy shared data; typical pattern: a GenServer owns and writes,
+        everyone reads directly.
+      - **:persistent_term**: reads are a constant-time pointer fetch with **no copying**, so it beats ETS for
+        large terms read on hot paths (config, compiled regexes, routing tables). Writes are very expensive: a
+        `put` of a changed term triggers a global GC scan of every process and copies the hash table; so write
+        rarely (seconds-to-hours cadence), store few large terms rather than many small ones, never per-request.
+      - Decision: changes per request -> GenServer or ETS; read-mostly and small -> ETS; read-hot and almost static
+        -> persistent_term; needs atomic coordination -> GenServer (maybe with ETS as read replica).
+      - None of them persist to disk or across nodes; that is a database, `:dets`, or `:mnesia`.
+    explanation: |
+      Follow-up: "Phoenix.PubSub, Registry and Phoenix.Presence all use ETS; why not GenServer state?" Because
+      lookups are the hot path and must not serialize through one process. Another: "What does the warning
+      'don't use ETS as a cache prematurely' mean?" Measure the bottleneck first; a GenServer is often fine.
+    tags: [ets, genserver, persistent_term, design]
+    source: https://dockyard.com/blog/2017/05/19/optimizing-elixir-and-phoenix-with-ets
+
+  - slug: elixir-beam-persistent-term-put-cost
+    kind: mcq
+    difficulty: senior
+    title: "What does :persistent_term.put/2 cost?"
+    body: |
+      A feature-flag module stores flags with `:persistent_term.put({Flags, name}, value)` and an admin UI
+      toggles flags dozens of times per minute. Which statement is correct?
+    choices:
+      - "put/2 is as cheap as an ETS insert; persistent_term is simply a faster ETS"
+      - "put/2 blocks only the calling process while it copies the term; other processes are unaffected"
+      - "put/2 is cheap but get/1 copies the term to the caller's heap, so hot reads are the expensive side"
+      - "Replacing or erasing a term that is not a single immediate word triggers a global GC: every process scans its heap for references to the old term (processes still holding it do a full sweep), plus the key table is copied on each put, so frequent updates can stall the whole node"
+    answer: 3
+    explanation: |
+      `:persistent_term` is optimized for reads: `get/1` is a lock-free constant-time lookup that returns a
+      pointer, no copying. The price is paid on writes: a changed term triggers a scan of every process heap for
+      the old value (and a full-sweep GC on processes that still reference it, at most two at a time), and the
+      key hash table is rebuilt. Atom-valued (single-word) updates skip the global GC but still copy the table.
+      The docs advise few, large terms, bundled into one map, updated rarely. For dozens of toggles a minute an
+      ETS table with `read_concurrency` is the right tool.
+    tags: [persistent_term, gc]
+    source: https://www.erlang.org/doc/apps/erts/persistent_term.html
+
+  - slug: elixir-beam-ets-traversal-cost
+    kind: open
+    difficulty: middle
+    title: "What is wrong with :ets.tab2list on a big table?"
+    body: |
+      A monitoring endpoint computes a sum over a 5-million-row ETS table with
+      `:ets.tab2list(t) |> Enum.map(&elem(&1, 2)) |> Enum.sum()` and is called every 10 seconds. Explain the
+      cost, the consistency caveat, and better ways to do it.
+    answer: |
+      - `tab2list/1` **copies every object** from the table into the calling process's heap: 5M tuples become
+        a 5M-element list, which also triggers large GCs in that process; memory spikes to roughly twice the table
+        size and the call takes hundreds of milliseconds, every 10 s.
+      - Consistency: a traversal of a `:set` while other processes write is **not** a snapshot; objects may be
+        missed or seen twice unless you use `:ets.safe_fixtable/2` (which prevents rehashing but still allows
+        concurrent updates) or an `:ordered_set`, whose traversal order is stable.
+      - Better: maintain the aggregate incrementally with `:ets.update_counter/4` on a summary key (O(1) reads);
+        or use `:ets.select/3` with a limit to stream chunks via continuations and fold them (bounded memory);
+        or `:ets.foldl/3`, which still visits every row but does not materialize the list; for simple sums
+        `:ets.select` with a body returning only the needed element reduces copying to one integer per row.
+      - Also consider whether the table is `:ordered_set` for range scans (`select` on a key range is O(log n +
+        matches) there, but a full scan on a hash `:set`).
+    explanation: |
+      Follow-up: "How does `:ets.info(t, :size)` differ?" It is O(1) (a counter), unless `decentralized_counters`
+      is on, when it is slower. Candidates often forget that ETS reads copy data; it is the main reason huge
+      values should be stored as binaries (shared by reference) rather than deep terms.
+    tags: [ets, tab2list, performance]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-beam-ets-dets-mnesia
+    kind: theory
+    difficulty: junior
+    title: "ETS, DETS and Mnesia: the storage ladder"
+    body: |
+      Three built-in stores, each one level up in durability and complexity:
+
+      | | lives in | survives restart | distributed | transactions |
+      |---|---|---|---|---|
+      | **ETS** | RAM, per node | no (dies with owner process) | no | single-object atomicity only |
+      | **DETS** | a file on disk | yes | no | no; 2 GB file limit, slower, repair on unclean shutdown |
+      | **Mnesia** | RAM and/or disk, replicated | yes (disc_copies) | yes (tables replicated across nodes) | yes (ACID transactions, dirty ops too) |
+
+      ```elixir
+      {:ok, d} = :dets.open_file(:sessions, type: :set, file: ~c"sessions.dets")
+      :dets.insert(d, {"abc", %{user: 1}})
+      :dets.close(d)
+      ```
+
+      Mnesia gives you a distributed, transactional database in the standard library, with the same query API
+      as ETS (`match`, `select`) plus `:mnesia.transaction/1`. Its catch: it was built for soft-realtime telecom
+      data, favouring availability; on a network partition every island keeps accepting writes and you get
+      `{:inconsistent_database, ...}` events to reconcile yourself. It is a fine fit for cluster-local config,
+      sessions or caches with replication, and a poor fit as the system of record for a web app, where Postgres
+      wins on tooling, backups and operational knowledge.
+    answer: |
+      **Q:** You need a cache that survives a node restart but not a disk loss, on a single node. Which store?
+      **A:** DETS (or ETS backed up with `:ets.tab2file/2` on shutdown and `file2tab` on boot, which is often
+      simpler and faster than DETS; DETS also needs repair after a crash).
+    explanation: |
+      Interviewers mostly want to hear that you know these exist and roughly where each breaks: ETS is not
+      persistence, DETS is slow and capped at 2 GB, Mnesia is powerful but partitions are your problem.
+    tags: [ets, dets, mnesia]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-beam-hot-code-loading
+    kind: theory
+    difficulty: senior
+    title: "Two versions of a module: how hot code loading works"
+    body: |
+      The code server keeps at most **two** versions of each module loaded: **current** and **old**.
+      Loading a module (`Code.compile_file`, `:code.load_file`, `mix compile` + reload, a release upgrade) makes
+      the new code *current* and the previous one *old*. Processes keep running whatever version they entered.
+
+      - A **fully qualified call** (`Mod.fun(...)`) always jumps to current code. A **local call** inside the
+        module stays in the version the process is executing. That is why GenServer loops are written as
+        `Mod.loop(state)` style tail calls in Erlang: each iteration picks up new code.
+      - Loading a **third** version purges the old one: any process still executing old code is **killed**
+        (`:code.purge/1`; `:code.soft_purge/1` refuses instead). In dev, `recompile` does exactly this, which is
+        why long-lived processes sometimes die after a recompile.
+      - Funs capture a reference to a specific module version; `&Mod.fun/1` captures by name and survives
+        upgrades, an anonymous `fn` does not.
+      - `GenServer.code_change/3` is called only by the release handler (`:sys.change_code`) during a proper
+        upgrade so the running state can be converted. Plain reloads do not call it; if the state shape changed,
+        the next callback crashes with a `FunctionClauseError`.
+      - `mix release` does **not** support hot upgrades out of the box (no appup/relup generation); most teams
+        deploy by rolling restarts and use hot loading only as a dev convenience or for emergency patches.
+
+      ```elixir
+      :code.is_loaded(MyMod)        #=> {:file, ~c"..."}
+      :code.purge(MyMod)            # kill processes running the old version
+      :code.load_file(MyMod)
+      ```
+    answer: |
+      **Q:** After `recompile` in IEx, a GenServer still shows the old behaviour, then on the second `recompile`
+      it dies. Why?
+      **A:** After the first load it was still executing old code (no fully qualified call happened yet, or it
+      sits in `receive` inside old code). The second load needs to purge old code, and processes executing it are
+      killed.
+    explanation: |
+      Expect follow-ups on `code_change` vs restart, why Elixir's `use GenServer` makes all callbacks go through
+      `:gen_server` (which calls them fully qualified, so they do pick up new code on the next message), and
+      whether hot upgrades are worth it (usually not, except for stateful long connections).
+    tags: [hot-code-loading, code_change, purge]
+    source: https://www.erlang.org/doc/system/code_loading.html
+
+  - slug: elixir-beam-runtime-exs-vs-config-exs
+    kind: mcq
+    difficulty: middle
+    title: "config.exs vs runtime.exs in a release"
+    body: |
+      A team puts `config :my_app, api_key: System.get_env("API_KEY")` in `config/prod.exs`, builds a release in
+      CI, and in production the key is `nil`. Why, and what is the fix?
+    choices:
+      - "System.get_env is not allowed in config files; use Application.put_env at boot instead"
+      - "config/*.exs (except runtime.exs) is evaluated at build time on the CI machine, so the value baked into the release is CI's environment; move the line to config/runtime.exs, which runs on every boot of the release"
+      - "Releases strip all config; you must pass -config sys.config manually"
+      - "prod.exs is only loaded by mix phx.server, not by releases; rename it to release.exs"
+    answer: 1
+    explanation: |
+      `config.exs`, `prod.exs` etc. are compile/build-time: their result is frozen into `sys.config` inside the
+      release, so environment lookups see the build host. `config/runtime.exs` is executed when the release
+      boots (and by Mix before starting the app), so it is the place for secrets and environment-dependent
+      values. It must start with `import Config`, cannot `import_config`, and cannot configure `:kernel`,
+      `:stdlib`, `:elixir` or `:mix` themselves. Values read via `Application.compile_env/3` are different again:
+      they are inlined at compile time and checked at boot for mismatches.
+    tags: [releases, runtime.exs, config]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-beam-release-operations
+    kind: open
+    difficulty: middle
+    title: "Operating a mix release"
+    body: |
+      You deployed `_build/prod/rel/my_app`. Explain what `bin/my_app start | daemon | remote | rpc | eval | stop`
+      do, which environment variables control node naming and the cookie, and why the release is self-contained.
+    answer: |
+      - `start` runs the system in the foreground attached to stdin/stdout (what containers want); `daemon`
+        backgrounds it via `run_erl` with logs in `tmp/log`; `stop` asks a running node to shut down gracefully
+        (`System.stop/0`, all applications stopped in reverse order).
+      - `remote` opens an IEx shell connected to the running node (a hidden node joining with the same cookie);
+        preferred over attaching to a daemon's stdin, where Ctrl+C can kill the system. `rpc "expr"` evaluates an
+        expression on the running node and prints the result (migrations, cache flushes). `eval "expr"` starts a
+        *separate* VM with the release code but without starting the applications or distribution: use it for
+        `Release.migrate()`-style tasks that boot only `:ecto_sql` and the repo.
+      - Env vars read by `bin/my_app`: `RELEASE_NODE` (node name, default the release name), `RELEASE_DISTRIBUTION`
+        (`sname` default, `name` for cross-host clustering, `none`), `RELEASE_COOKIE` (defaults to the random
+        cookie generated into `releases/COOKIE` at build time; all nodes in a cluster must share it), plus
+        `RELEASE_TMP`, `RELEASE_VM_ARGS`. Static VM flags live in `rel/vm.args.eex`, dynamic ones in `rel/env.sh.eex`.
+      - Self-contained: by default the release bundles ERTS (`include_erts: true`), all compiled `.beam` files,
+        `sys.config` from build-time config and `runtime.exs` for boot-time config, so the target host needs no
+        Erlang or Elixir installed; the only constraint is the same OS/architecture/libc as the build machine.
+    explanation: |
+      Follow-up: "Why can `eval` not use `Repo` unless you start it?" Because applications are not started; you
+      must `Application.ensure_all_started(:my_app)` or load and start the repo explicitly. "Where do you run
+      migrations?" `bin/my_app eval "MyApp.Release.migrate()"`, the pattern from the Phoenix deployment guide.
+    tags: [releases, operations, RELEASE_COOKIE]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-beam-distribution-basics
+    kind: open
+    difficulty: senior
+    title: "How does Erlang distribution work, and what happens on a netsplit?"
+    body: |
+      Explain how two Elixir nodes find and authenticate each other, how you call code on another node, what
+      guarantees you do and do not get for messages across nodes, and what a network partition does to a cluster.
+    answer: |
+      - Nodes are named (`--sname app` short, `--name app@host` long; the two kinds cannot talk). `epmd` (port
+        4369) on each host maps names to the TCP port each node listens on. `Node.connect(:"app@host")` opens a
+        TCP connection; connections are transitive by default, so you quickly get a full mesh (`Node.list/0`).
+      - Authentication is a shared **cookie** (`~/.erlang.cookie`, `--cookie`, `Node.set_cookie/2`, `RELEASE_COOKIE`)
+        checked by a challenge handshake; it is an anti-accident measure, not security: distribution traffic is
+        plaintext unless you enable TLS (`-proto_dist inet_tls`) and a connected node can run any code via `:rpc`.
+      - Calling code: pids are location transparent (`send(pid, msg)` works across nodes, terms are serialized
+        with the external term format and copied); `:rpc.call(node, Mod, fun, args)` for synchronous calls,
+        `Node.spawn/2`, `:erpc` (OTP 23+), `GenServer.call({name, node}, msg)` for locally registered names,
+        `:global` or `:pg` for cluster-wide names and groups.
+      - Guarantees: message order between one sender and one receiver is preserved; delivery is not guaranteed
+        (a dropped connection loses in-flight messages silently). Monitors across nodes deliver `:DOWN` with
+        `:noconnection` when the link breaks.
+      - Netsplit: each side sees `:nodedown` for the others; both sides keep running and accepting work
+        (availability over consistency: CAP). Anything relying on cluster-wide uniqueness (`:global` names) can be
+        duplicated; on heal, `:global` resolves conflicts by killing one registrant. Mnesia reports
+        `inconsistent_database`. Design for it: idempotent work, a DB as the source of truth for locks, and
+        `:net_kernel.monitor_nodes/1` to react.
+    explanation: |
+      Follow-up: "Why is a fully connected mesh a problem at scale?" O(n^2) connections and heartbeats; beyond
+      ~50-100 nodes use `-connect_all false`, hidden nodes, or a partitioned topology. "What is the
+      `net_ticktime`?" Nodes heartbeat; an unresponsive peer is declared down after ~60 s by default.
+    tags: [distribution, epmd, cookie, netsplit]
+    source: https://www.erlang.org/doc/system/distributed.html
+
+  - slug: elixir-beam-global-vs-pg
+    kind: mcq
+    difficulty: middle
+    title: ":global vs :pg"
+    body: |
+      Which statement correctly contrasts `:global` and `:pg` (OTP 23+)?
+    choices:
+      - ":global registers one name per process cluster-wide with strong uniqueness enforced via locking on every registration; :pg maintains eventually consistent process groups where a name maps to many pids and joins are cheap and local"
+      - ":pg is the distributed version of Registry with unique keys; :global is deprecated"
+      - ":global is node-local like Registry; :pg is the only cluster-wide registry"
+      - "They are equivalent; :pg is just the newer API for :global"
+    answer: 0
+    explanation: |
+      `:global.register_name/2` takes a cluster-wide lock, so it is consistent but slow and a bottleneck under
+      churn; names are unique and conflicts after a netsplit are resolved by killing one process. `:pg` (which
+      replaced `:pg2`) tracks group membership per node and replicates it asynchronously: joining is a local
+      ETS write plus a broadcast, lookups are local, and a group may temporarily differ between nodes. Use
+      `:global` for singletons you can tolerate being killed, `:pg` for pub/sub style fan-out (Phoenix.PubSub's
+      default adapter uses it). `Registry` is strictly node-local.
+    tags: [global, pg, distribution]
+    source: https://www.erlang.org/doc/system/distributed.html
+
+  - slug: elixir-beam-measure-reductions
+    kind: code
+    difficulty: middle
+    title: "Measure reductions and process memory"
+    body: |
+      Implement module `ProcStats`:
+
+      - `reductions(fun)`: runs the zero-arity `fun` in the **calling** process and returns the number of
+        reductions it consumed, using `Process.info(self(), :reductions)` before and after.
+      - `mailbox_len(pid)`: returns the message queue length of `pid`, or `nil` if the process is dead.
+      - `biggest(pids)`: given a list of pids, returns the pid with the largest `:memory` (dead pids are ignored;
+        returns `nil` for an empty result).
+
+      ```elixir
+      ProcStats.reductions(fn -> Enum.reduce(1..10_000, 0, &+/2) end)   #=> roughly 10_000
+      ```
+    starter_code: |
+      defmodule ProcStats do
+        def reductions(fun) do
+          # TODO
+        end
+
+        def mailbox_len(pid) do
+          # TODO: Process.info/2 returns nil for a dead process
+        end
+
+        def biggest(pids) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ProcStatsTest do
+        use ExUnit.Case
+
+        test "reductions grow with work" do
+          small = ProcStats.reductions(fn -> :ok end)
+          big = ProcStats.reductions(fn -> Enum.reduce(1..50_000, 0, &+/2) end)
+          assert small >= 0
+          assert big > small + 10_000
+        end
+
+        test "mailbox length" do
+          pid = spawn(fn -> receive do :never -> :ok end end)
+          send(pid, :a)
+          send(pid, :b)
+          assert ProcStats.mailbox_len(pid) == 2
+          ref = Process.monitor(pid)
+          Process.exit(pid, :kill)
+          assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+          assert ProcStats.mailbox_len(pid) == nil
+        end
+
+        test "biggest process by memory" do
+          small = spawn(fn -> receive do :never -> :ok end end)
+          big = spawn(fn -> _ = Enum.to_list(1..200_000); receive do :never -> :ok end end)
+          # wait until the big process has built its list
+          Enum.find(1..100, fn _ ->
+            case Process.info(big, :memory) do
+              {:memory, m} when m > 1_000_000 -> true
+              _ -> Process.sleep(5); false
+            end
+          end)
+          assert ProcStats.biggest([small, big]) == big
+          assert ProcStats.biggest([]) == nil
+        end
+      end
+    solution: |
+      defmodule ProcStats do
+        def reductions(fun) do
+          {:reductions, before} = Process.info(self(), :reductions)
+          fun.()
+          {:reductions, after_} = Process.info(self(), :reductions)
+          after_ - before
+        end
+
+        def mailbox_len(pid) do
+          case Process.info(pid, :message_queue_len) do
+            {:message_queue_len, n} -> n
+            nil -> nil
+          end
+        end
+
+        def biggest(pids) do
+          pids
+          |> Enum.flat_map(fn pid ->
+            case Process.info(pid, :memory) do
+              {:memory, m} -> [{m, pid}]
+              nil -> []
+            end
+          end)
+          |> Enum.max(fn -> nil end)
+          |> case do
+            {_m, pid} -> pid
+            nil -> nil
+          end
+        end
+      end
+    explanation: |
+      `Process.info/2` is the primitive behind `:observer`, `recon` and most dashboards: `:reductions` (work
+      done), `:message_queue_len` (backlog), `:memory` (heap + stack + fragments, in bytes), `:binary` (refc
+      binaries referenced), `:current_function`, `:status`. It returns `nil` for a dead process. Note that
+      `:memory` is not the state size: it includes the whole heap, so a process that did a big computation and
+      has not been collected yet looks large.
+    tags: [process_info, reductions, observability]
+    source: https://www.erlang.org/doc/apps/erts/erlang.html
+
+  - slug: elixir-beam-message-copying-vs-ets
+    kind: mcq
+    difficulty: middle
+    title: "What does sending a message actually cost?"
+    body: |
+      Process A sends a 200 KB map and a 5 MB binary to process B on the same node. Which statement is correct?
+    choices:
+      - "Both are passed by reference; BEAM processes share a heap, so sending is O(1)"
+      - "Both are deep-copied, including the 5 MB binary"
+      - "The map is deep-copied into B's heap (cost proportional to its size); the binary is over 64 bytes so it is shared off-heap and only a small reference is copied"
+      - "The map is copied, and the binary is copied unless B has read_concurrency enabled"
+    answer: 2
+    explanation: |
+      Processes share nothing on their heaps, so terms are copied on send; that is the price of isolated GC and
+      crash safety. The exception is refc binaries (> 64 bytes), which live off-heap and are shared by reference.
+      This is why large payloads are best kept as binaries, why fanning out a big map to 1000 processes is
+      expensive (1000 copies), and why ETS is used to *share* large read-mostly data instead of messaging it
+      (an ETS read still copies the object to the reader, but only the parts you select). `read_concurrency` is an
+      ETS option and irrelevant to messaging.
+    tags: [message-passing, copying, binary]
+    source: https://www.erlang.org/doc/system/binaryhandling.html
+
+  - slug: elixir-beam-immutability-tco-stack
+    kind: theory
+    difficulty: middle
+    title: "Immutability, tail calls and the process stack"
+    body: |
+      Two properties of the BEAM that interviewers like to connect:
+
+      **Immutability makes per-process GC cheap.** A term can only reference terms created *before* it, so old
+      data never points to new data. The generational collector therefore never needs to scan the old heap during
+      a minor collection, and message passing can copy terms into another heap without worrying about aliasing.
+
+      **Tail-call optimization makes infinite recursion the loop.** A call in tail position reuses the current
+      stack frame, so a GenServer's `receive` loop or a `def loop(state), do: loop(next(state))` runs forever
+      in constant stack space. Non-tail recursion (`[h | f(t)]`, `1 + f(n - 1)`) grows the stack by one frame per
+      level; the stack is part of the process heap, grows dynamically and is collected like everything else, so
+      deep recursion is a memory problem, not a `StackOverflowError`.
+
+      ```elixir
+      # body-recursive: builds the result after the call returns; O(n) stack
+      def sum([h | t]), do: h + sum(t)
+      def sum([]), do: 0
+
+      # tail-recursive: constant stack
+      def sum(list, acc \\ 0)
+      def sum([h | t], acc), do: sum(t, acc + h)
+      def sum([], acc), do: acc
+      ```
+
+      Myths to avoid: body recursion is not automatically slower (the Erlang Efficiency Guide says it is often as
+      fast, because the tail version has to `reverse` or accumulate), and `Enum.map` over a 10-million list is
+      fine; what matters is live data size at GC time.
+    answer: |
+      **Q:** Why does `Enum.each(1..1_000_000, fn i -> GenServer.cast(pid, i) end)` not overflow anything, but
+      can still cause a memory problem?
+      **A:** No stack grows (each cast returns), but the receiver's mailbox grows unboundedly: 1M messages are
+      copied into its heap, and its GC gets slower as the live mailbox grows. Backpressure (`call` or a bounded
+      queue) is the fix.
+    explanation: |
+      Mention that the "last call" must be *exactly* in tail position: wrapping it in `try`, adding `+ 1` or
+      logging after it defeats the optimization. Interviewers also ask about `Process.info(pid, :stack_size)`
+      and why Erlang has no stack-overflow error (the heap just grows until the VM runs out of memory).
+    tags: [immutability, tail-call, stack, gc]
+    source: https://www.erlang.org/doc/apps/erts/garbagecollection.html
+
+  - slug: elixir-beam-nif-port-cnode
+    kind: open
+    difficulty: senior
+    title: "NIFs vs Ports vs C nodes: how do you call native code safely?"
+    body: |
+      You need to call a C/Rust image-processing library that takes 50-500 ms per image. Compare NIFs, Ports and
+      C nodes, name the risks of each, and recommend an approach.
+    answer: |
+      - **NIF** (`erl_nif`, in Elixir via `Rustler` or `Zigler`): a shared library loaded into the VM. Fastest
+        (no copying beyond term conversion, no context switch) but runs *inside* the VM: a segfault or memory bug
+        takes the whole node down (no supervisor can help), a long call blocks a scheduler and breaks preemption.
+        Rule: a normal NIF should return in about 1 ms; longer work must be a **dirty NIF** (`schedule: :dirty_cpu`
+        in Rustler) so it runs on a dirty scheduler thread, or be chunked with `enif_schedule_nif`. Rust removes
+        memory-safety crashes but not panics (Rustler converts panics to raised errors) or infinite loops.
+      - **Port**: an external OS process talking over stdin/stdout (`Port.open({:spawn_executable, path}, [:binary,
+        :exit_status, packet: 4])`). Fully isolated: if it crashes you get `{port, {:exit_status, n}}` and can
+        restart it from a GenServer under supervision; the cost is serialization and a pipe round-trip per call,
+        plus the need to multiplex requests. Erlang's own `Port.open` with `:spawn` is how `System.cmd` works.
+      - **C node** (`erl_interface`/`ei`): an external program that speaks the distribution protocol and appears
+        as a node; you message it like any process. Isolated like a port, with the richer semantics of
+        distribution, but heavier to build and rarely used today.
+      - Recommendation for 50-500 ms per image: a Rustler dirty-CPU NIF if the library is mature and you accept
+        the crash risk and own the memory profile, otherwise a Port-based worker pool (one OS process per worker,
+        supervised) for isolation. Never a plain NIF: 500 ms on a normal scheduler stalls every process queued
+        on it.
+    explanation: |
+      Follow-up: "What is `Port.open`'s `:exit_status` for?" It turns the external program's death into a message
+      so the owning GenServer can crash or restart it. "Why not `System.cmd` per image?" Process spawn cost per
+      call; keep a long-lived port instead.
+    tags: [nif, port, rustler, dirty-nif]
+    source: https://www.erlang.org/doc/system/nif.html
+
+  - slug: elixir-beam-nif-crash-takes-vm
+    kind: mcq
+    difficulty: middle
+    title: "What happens when a NIF segfaults?"
+    body: |
+      A Rust NIF (via Rustler) calls into a C library that dereferences a null pointer. Which statement is correct?
+    choices:
+      - "The calling process crashes with an ArgumentError and its supervisor restarts it"
+      - "Only the scheduler thread running the NIF dies; the VM continues with one fewer scheduler"
+      - "Rustler catches the fault and returns {:error, :segfault}"
+      - "The entire VM dies immediately; no supervisor, try/rescue or dirty scheduler can contain it, because the NIF runs in the VM's own address space"
+    answer: 3
+    explanation: |
+      A NIF is C/Rust code linked into the emulator process. Memory corruption or a segfault is a fault of that
+      OS process, so the whole node goes down (ideally leaving an `erl_crash.dump`, though a segfault often does
+      not even manage that). Rustler eliminates most memory-safety bugs in Rust code and converts Rust *panics*
+      into raised Elixir errors, but it cannot protect you from unsafe FFI into C. If isolation matters more than
+      latency, use a Port (separate OS process) instead.
+    tags: [nif, rustler, crash]
+    source: https://www.erlang.org/doc/system/nif.html
+
+  - slug: elixir-beam-vs-jvm-go
+    kind: open
+    difficulty: senior
+    title: "BEAM vs JVM vs Go runtime: what is actually different?"
+    body: |
+      An interviewer who knows Java and Go asks: "Go has goroutines, the JVM has virtual threads now. What does the
+      BEAM still do differently, and when does it matter?" Give a precise comparison of scheduling, memory and
+      failure isolation.
+    answer: |
+      - **Scheduling**: BEAM preempts at ~4000 reductions, so a hot loop or a huge `Enum` cannot starve others.
+        Go's scheduler is mostly cooperative with async preemption since 1.14 (signals at ~10 ms), good but
+        coarser; JVM virtual threads are cooperative and pin the carrier thread on `synchronized` blocks and native
+        calls. BEAM's fairness is per process regardless of what the process does (except NIFs).
+      - **Memory and GC**: BEAM has one heap per process and collects them independently; GC pauses are
+        proportional to one process's live data, never global. Go and the JVM have a shared heap with concurrent
+        collectors; pauses are short but global, and a large shared live set affects everyone. Isolation also
+        means BEAM copies messages (Go/JVM share pointers, cheap but requires locks or immutability discipline).
+      - **Failure isolation**: a BEAM process crash is local; links/monitors and supervisors make restart a
+        first-class primitive. A panic in a goroutine without `recover` kills the Go program; an uncaught exception
+        in a JVM thread kills the thread but shared state remains possibly corrupt, with no built-in restart tree.
+      - **Mutability**: BEAM data is immutable, so there are no data races by construction; Go/JVM rely on
+        discipline and the race detector / memory model.
+      - **Raw throughput**: the JVM JIT and Go's compiled code beat BEAM at CPU-bound number crunching (BEAM has a
+        JIT since OTP 24 that narrowed the gap). BEAM wins on *predictable* latency under load, massive numbers of
+        stateful connections, and soft-realtime systems; it is the wrong tool for heavy numeric work, where you
+        reach for NIFs or a separate service.
+      - **Hot code loading and introspection** (`:observer`, tracing live processes) have no equivalent in the
+        other two runtimes.
+    explanation: |
+      Interviewers want nuance, not "BEAM is better": acknowledge Go's async preemption and JVM virtual threads,
+      then land on the real differences: per-process GC, copy semantics, and supervision as a runtime primitive.
+      Mentioning the OTP 24 JIT (BeamAsm) shows you are current.
+    tags: [comparison, jvm, go, scheduling]
+    source: https://elixirforum.com/t/what-are-the-best-elixir-question-asked-you-in-an-interview/29085
+
+  - slug: elixir-beam-predictable-latency
+    kind: theory
+    difficulty: senior
+    title: "Why BEAM latency is predictable"
+    body: |
+      The BEAM was built for telecom switches where a slow response is a failure. Four design choices produce
+      predictable tail latency rather than maximum throughput:
+
+      1. **Reduction-based preemption**: no process can hold a scheduler longer than its slice, so a burst of
+         expensive requests cannot delay cheap ones by more than a few slices.
+      2. **Per-process GC**: a request process with a small heap is collected in microseconds, and a large batch
+         job's full sweep never pauses the request processes next to it. There is no global pause to plan around.
+      3. **Scheduler fairness and work stealing**: run queues are balanced across cores, and the schedulers
+         also prioritize ports/IO to keep sockets drained.
+      4. **Backpressure through mailboxes and `call` timeouts**: a `GenServer.call` either answers or fails in a
+         bounded time; a process that cannot keep up shows up as a growing mailbox you can measure, instead of
+         latency silently spreading.
+
+      Where predictability breaks, and what to watch:
+
+      - NIFs and long BIFs (block a scheduler): keep them under ~1 ms or make them dirty.
+      - A single hot GenServer (serialization point): mailbox grows, p99 climbs; shard it (`PartitionSupervisor`,
+        ETS) or move reads out of the process.
+      - A giant process heap (big state, big mailbox): long full sweeps for *that* process; `:erlang.system_monitor`
+        with `long_gc`/`large_heap` tells you which one.
+      - `:persistent_term` updates (global scan) and `:ets.tab2list` on big tables (large copy + GC) are the usual
+        self-inflicted pauses.
+      - Scheduler busy-waiting (`+sbwt`) can inflate CPU graphs in containers; it is not latency, but it confuses
+        autoscalers.
+    answer: |
+      **Q:** p50 latency is 2 ms but p99 is 900 ms and CPU is only 30%. Which of the four properties is most
+      likely being defeated, and how do you confirm it?
+      **A:** A serialization point: one GenServer every request goes through. Confirm with
+      `Process.info(pid, :message_queue_len)` over time or `:recon.proc_count(:message_queue_len, 5)`; low CPU
+      with high p99 is the signature of queueing, not of computation.
+    explanation: |
+      Senior interviews often frame this as "why would you pick Elixir for a real-time system?"; the answer is
+      this list, plus honesty about the escape hatches (NIFs) that reintroduce unpredictability.
+    tags: [latency, scheduler, gc, design]
+    source: https://www.erlang.org/doc/apps/erts/garbagecollection.html
+
+  - slug: elixir-beam-vm-flags-s-p
+    kind: theory
+    difficulty: middle
+    title: "The VM flags you will actually tune: +S, +P, +SDcpu, +t, +e"
+    body: |
+      Emulator flags are passed to `erl` directly, via `ELIXIR_ERL_OPTIONS`, `iex --erl "+S 4"`, or in a release's
+      `rel/vm.args.eex`. The ones that come up in production:
+
+      | flag | meaning | default |
+      |---|---|---|
+      | `+S N:M` | schedulers created : online | one per logical core |
+      | `+SDcpu N` / `+SDio N` | dirty CPU / IO scheduler threads | cores / 10 |
+      | `+P N` | max simultaneous processes | 1,048,576 (OTP 27; older 262,144) |
+      | `+t N` | max atoms | 1,048,576 |
+      | `+e N` | sizing hint for named ETS tables (not a limit since OTP 21) | 8192 |
+      | `+sbwt none|short|...` | scheduler busy-wait before sleeping | `medium` |
+      | `+Q N` | max ports | 65,536 |
+
+      ```bash
+      # a container limited to 2 CPUs on a 64-core host: BEAM sees 64 cores unless told otherwise
+      bin/my_app start   # with ERL_FLAGS="+S 2:2 +SDcpu 2" or vm.args
+      ```
+
+      Inspect at runtime with `:erlang.system_info/1`: `:schedulers_online`, `:process_limit`, `:process_count`,
+      `:atom_count`/`:atom_limit`, `:port_count`, `:dirty_cpu_schedulers`. Schedulers online can be changed live
+      with `:erlang.system_flag(:schedulers_online, n)`.
+
+      Hitting `+P` raises `system_limit` from `spawn` (seen as `** (SystemLimitError)`); hitting `+t` crashes
+      the node. Both are symptoms (a leak of processes or atoms), not things to "fix" by raising the limit.
+    answer: |
+      **Q:** The VM in a 2-CPU Kubernetes pod reports 48 schedulers and CPU throttling is high. Why, and what do
+      you set?
+      **A:** The BEAM counts the host's logical cores, not the cgroup quota (newer OTP versions try to honour
+      cgroup limits, but check). Set `+S 2:2` (and `+SDcpu 2`) in `vm.args` so 2 scheduler threads do not fight
+      over 2 CPUs' worth of quota, and consider `+sbwt none` to stop busy-waiting from eating the quota.
+    explanation: |
+      Interviewers rarely ask for exact numbers; they ask what `+P` and `+S` are and when you would touch them.
+      Knowing that limits are symptoms and that container CPU detection is a real-world trap is the senior part.
+    tags: [vm-flags, schedulers, process-limit]
+    source: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+
+  - slug: elixir-beam-logger-handlers-telemetry
+    kind: theory
+    difficulty: middle
+    title: "Logger handlers and :telemetry: the observability plumbing"
+    body: |
+      **Logging.** Since OTP 21, Erlang has its own `logger` with *handlers* (where logs go) and *filters*.
+      Elixir's `Logger` (1.15+) is a thin layer on it: `Logger.info/2` becomes an Erlang log event, and the
+      default `:default` handler writes to the console. Elixir's old `Logger` *backends* are deprecated in favour
+      of Erlang handlers (`:logger.add_handler/3`, the `logger_backends` package only for migration).
+
+      ```elixir
+      # config/runtime.exs
+      config :logger, :default_handler, level: :info
+      config :logger, :default_formatter, format: "$time [$level] $metadata$message\n", metadata: [:request_id]
+
+      # a second handler writing JSON to a file
+      :logger.add_handler(:file, :logger_std_h, %{config: %{file: ~c"log/app.log"}, formatter: {MyJson, %{}}})
+      ```
+
+      Useful knobs: `Logger.metadata/1` (per process), `compile_time_purge_matching` (removes debug calls at
+      compile time), `handle_otp_reports`/`handle_sasl_reports` (crash and progress reports), and the
+      overload protection built into `logger_std_h` (sync/drop modes when the handler mailbox grows).
+
+      **Metrics and tracing.** `:telemetry` is the agreed-upon event bus of the ecosystem: libraries call
+      `:telemetry.execute([:my_app, :repo, :query], %{duration: d}, %{query: q})`, and you attach handlers with
+      `:telemetry.attach(id, event, &handler/4, config)` or `attach_many`. Handlers run **synchronously in the
+      emitting process**, so they must be fast and must not raise (a raising handler is detached, with a log
+      line). `:telemetry.span/3` emits `[..., :start]`, `[..., :stop]` and `[..., :exception]` with `duration` in
+      native time units. `telemetry_metrics` + a reporter (Prometheus, StatsD, Phoenix LiveDashboard) turn events
+      into metrics; `telemetry_poller` samples VM stats (`vm.memory`, `vm.total_run_queue_lengths`) on a timer.
+    answer: |
+      **Q:** Why is doing an HTTP request to a metrics backend inside a `:telemetry` handler a bad idea?
+      **A:** The handler runs synchronously in the process that emitted the event (e.g. the request process or
+      the Repo), so every emission pays the HTTP latency and a failure detaches the handler silently. Send a
+      message to a collector process or increment an ETS counter instead, and ship from there.
+    explanation: |
+      Questions here are usually "how would you add metrics to X" and "where does `Logger` differ from Erlang's
+      logger": the answer is that they are one system since Elixir 1.15, with handlers as the extension point.
+    tags: [logger, telemetry, observability]
+    source: https://telemetry.hexdocs.pm/readme.html
+
+  - slug: elixir-beam-telemetry-sync-handler
+    kind: mcq
+    difficulty: middle
+    title: "Where does a :telemetry handler run?"
+    body: |
+      `Ecto` emits `[:my_app, :repo, :query]` after every query. You attach a handler that computes a histogram.
+      In which process and with what consequence does the handler execute?
+    choices:
+      - "Synchronously inside the process that called :telemetry.execute (the one running the query), so handler time is added to the query's latency and an exception detaches the handler"
+      - "In a dedicated :telemetry process, so slow handlers only delay other handlers"
+      - "In a Task spawned per event, so handlers are fully isolated but unordered"
+      - "In the Logger process, batched with log messages"
+    answer: 0
+    explanation: |
+      `:telemetry.execute/3` looks up the handlers in an ETS table and calls each one in the caller. That makes
+      emission cheap and ordered but means a 5 ms handler makes every query 5 ms slower, and a handler that
+      raises is detached with a warning (so your metrics silently stop). Keep handlers to a few microseconds:
+      update an ETS counter, or `send` to an aggregator process.
+    tags: [telemetry, performance]
+    source: https://telemetry.hexdocs.pm/readme.html
+
+  - slug: elixir-beam-system-monitor
+    kind: open
+    difficulty: senior
+    title: "Using :erlang.system_monitor to catch pathological processes"
+    body: |
+      Users report occasional 2-second stalls, but average metrics look fine. Explain how you would use
+      `:erlang.system_monitor/2` (and what `recon` adds) to find the responsible process, and what the common
+      culprits are.
+    answer: |
+      - `:erlang.system_monitor(pid, [{:long_gc, 100}, {:large_heap, 10_000_000}, :busy_port, :busy_dist_port,
+        {:long_schedule, 50}])` makes the VM send `{:monitor, pid, :long_gc, info}` style messages to a collector
+        process whenever a single GC exceeds 100 ms, a heap exceeds 10 M words, a process is blocked on a busy
+        port, or a process/port runs (or a NIF/BIF blocks) for more than 50 ms uninterrupted.
+      - The collector logs `Process.info(pid, [:registered_name, :current_function, :initial_call,
+        :message_queue_len, :memory])` for the offender, so a stall maps to a named process and a function.
+      - Only one system monitor can be set per VM; wrap it in a small GenServer under your supervision tree and
+        emit `:telemetry` events from it. Libraries like `recon` and Phoenix LiveDashboard/`observer_cli` use the
+        same API for their views.
+      - `recon` helpers: `:recon.proc_count(:memory | :message_queue_len | :reductions, n)` for a ranked list,
+        `:recon.proc_window(:reductions, n, ms)` for *rate* over a window (who is busy right now),
+        `:recon.bin_leak/1`, `:recon.scheduler_usage/1` for real per-scheduler utilization, and `:recon_trace`
+        for rate-limited production tracing.
+      - Typical culprits for 2 s stalls: a long full-sweep GC of a process with a giant state or mailbox
+        (`long_gc` + `large_heap`), a NIF or `:binary` BIF on a huge binary (`long_schedule`), a port whose
+        buffer is full (`busy_port`: writing to a slow TCP peer), distribution backpressure (`busy_dist_port`),
+        and a `:persistent_term.put` of a large term.
+    explanation: |
+      Follow-up: "Why can average metrics hide this?" Because one process's 2 s GC stalls only the requests
+      queued behind it; p50 is unaffected while p99.9 explodes. Setting `system_monitor` in production
+      permanently (with sane thresholds) is normal practice.
+    tags: [system_monitor, recon, long_gc, debugging]
+    source: https://www.erlang.org/doc/apps/erts/erlang.html
+
+  - slug: elixir-beam-scheduler-busy-wait
+    kind: mcq
+    difficulty: senior
+    title: "The VM shows 100% CPU while idle. Why?"
+    body: |
+      `top` shows an idle Elixir node at close to 100% CPU on one core, yet `:recon.scheduler_usage(1000)` reports
+      about 1% utilization. What explains it?
+    choices:
+      - "The run queue is saturated with processes that spin in receive; add schedulers"
+      - "Scheduler busy-waiting: when a scheduler runs out of work it spins for a while (the +sbwt setting, default medium) before sleeping, so OS-level CPU looks high even though no Erlang code runs"
+      - "The GC runs continuously in the background on idle schedulers"
+      - "epmd is consuming the CPU polling for nodes"
+    answer: 1
+    explanation: |
+      Schedulers busy-wait before going to sleep to reduce wakeup latency when new work arrives. The OS counts
+      the spin as CPU time; `scheduler_usage` (built on `:erlang.statistics(:scheduler_wall_time)`) does not,
+      which is why the two disagree. In containers with CPU quotas this spin can trigger throttling and confuse
+      autoscalers; set `+sbwt none` (and `+sbwtdcpu none`, `+sbwtdio none`) in `vm.args` when latency of wakeups
+      matters less than CPU accounting. GC is per process and only runs within a process's slice; `epmd` is a tiny
+      separate daemon.
+    tags: [busy-wait, sbwt, cpu]
+    source: https://www.erlang.org/doc/apps/erts/erl_cmd.html
+
+  - slug: elixir-beam-connect-to-running-node
+    kind: open
+    difficulty: junior
+    title: "How do you get a shell into a running production node?"
+    body: |
+      Your app runs as a release in a container. Explain the ways to inspect it live, what each requires, and
+      what you must be careful about.
+    answer: |
+      - `bin/my_app remote`: starts a hidden IEx node, connects it to the running node using the release's
+        cookie and name, and drops you into a shell *on* the running system. Requires the same `RELEASE_COOKIE`
+        and that the node has distribution enabled (`RELEASE_DISTRIBUTION` not `none`), plus `epmd` reachable.
+      - `iex --sname debug --cookie <cookie> --remsh my_app@host`: the manual equivalent from any machine with
+        Elixir installed and network access to epmd (4369) and the node's distribution port.
+      - `bin/my_app rpc "MyApp.Cache.flush()"`: one-off expression without an interactive shell, good for
+        scripts and runbooks.
+      - Inside the shell: `:observer.start()` if a GUI is possible (or run observer locally and connect to the
+        node from its Nodes menu), `:observer_cli.start()` for a terminal top-like view, `recon`,
+        `Supervisor.which_children/1`, `:sys.get_state/1`.
+      - Care: a remote shell is a node *in* your cluster: `Ctrl+C` twice in a `remote` shell only quits your
+        shell, but attaching to a `daemon`'s stdin and pressing `Ctrl+C` stops the system; `:sys.get_state` on a
+        huge state copies it into your shell process; anything you define in the shell lives on the remote node's
+        heap; and `Node.list/0` now includes your hidden node until you leave.
+    explanation: |
+      Interviewers follow with "why hidden?" (so your debug node does not become part of the transitive mesh and
+      is not seen by `:global`) and "what if distribution is off?" (then only `rpc`/`eval`, or enable it; `eval`
+      starts a *separate* VM and cannot see running state).
+    tags: [remsh, release, observer_cli]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-beam-erl-crash-dump
+    kind: open
+    difficulty: senior
+    title: "The node died and left erl_crash.dump. What is in it and how do you read it?"
+    body: |
+      A production node exited overnight with `erl_crash.dump` in the working directory. Explain when the VM
+      writes this file, what sections you look at first, what tools help, and the most common root causes you can
+      identify from it.
+    answer: |
+      - The VM writes it when the *runtime itself* stops abnormally: `system_limit` (too many processes/atoms/
+        ports), out of memory (`eheap_alloc: Cannot allocate N bytes`), the application controller shutting down
+        because a `:permanent` application failed (root supervisor exceeded restart intensity), `:erlang.halt/1`
+        with a string, or a kill from `init`. A segfault in a NIF usually does *not* produce one; an OOM kill by
+        the kernel (SIGKILL) never does.
+      - First line: `Slogan:` is the reason (`Kernel pid terminated (application_controller) ({application_start_failure, my_app, ...})`,
+        `eheap_alloc: Cannot allocate ...`, `init terminating in do_boot`). Then `System version`, `Memory`
+        (total/processes/ets/binary/atom), the `=proc:` sections with per-process state, message queue length,
+        heap size, current function and stack, `=ets:` tables with sizes, `=atoms` count, `=port:` list.
+      - Tools: `:crashdump_viewer.start()` (ships with OTP's `observer` app; GUI) sorts processes by memory and
+        mailbox and shows the supervision tree; `recon`'s `erl_crashdump_analyzer.sh` for a quick text summary.
+      - Common root causes read straight from the dump: one process with a multi-GB heap or a million-message
+        mailbox (a GenServer that could not keep up), memory dominated by `binary` (refc binary leak), atom count
+        at the limit (dynamic `String.to_atom`), ETS memory growing (a cache without eviction), or a slogan that
+        names the application whose start failed (bad config in `runtime.exs`, DB unreachable at boot with a
+        crashing `init/1`).
+      - Prevention: `ERL_CRASH_DUMP` path and `ERL_CRASH_DUMP_SECONDS` to bound dump time, `+P`/`+t` left at
+        defaults so leaks surface as limits, memory alerts on `:erlang.memory/0`, `system_monitor` for
+        `large_heap`.
+    explanation: |
+      The senior-level distinction interviewers look for: an `erl_crash.dump` means the VM shut itself down for a
+      reason it could name; *no* dump after a death usually means the OS killed it (OOM killer, container limit),
+      so you look at `dmesg`/kubelet events instead.
+    tags: [crash-dump, debugging, memory]
+    source: https://www.erlang.org/doc/system/profiling.html
+
+  - slug: elixir-beam-term-to-binary-safe
+    kind: mcq
+    difficulty: junior
+    title: "Deserializing untrusted data with :erlang.binary_to_term"
+    body: |
+      A service receives binaries produced by `:erlang.term_to_binary/1` from external clients and decodes them with
+      `:erlang.binary_to_term(bin)`. What is the risk, and how do you decode safely?
+    choices:
+      - "There is no risk: the external term format cannot encode anything executable"
+      - "binary_to_term executes the term, so remote code execution is possible; use Jason instead"
+      - "Malicious payloads can create unlimited new atoms (exhausting the atom table) and anonymous functions / huge terms; decode with `:erlang.binary_to_term(bin, [:safe])`, which rejects unknown atoms and funs, and keep a size limit"
+      - "Decoding is safe but term_to_binary leaks the VM's internal pointers, so never send it over the network"
+    answer: 2
+    explanation: |
+      ETF (External Term Format, the wire format of distribution, also used by `Plug.Session`'s default cookie
+      store and `:erlang.term_to_binary/2` with `:compressed`) can encode atoms, which are created on decode and
+      never collected, and funs/references. `[:safe]` makes the decoder raise `ArgumentError` for atoms that do not
+      already exist and for external funs, which is enough for most cases; still bound the input size, and prefer
+      a schema format (JSON, Protobuf) across trust boundaries. Decoding never executes code by itself.
+    tags: [etf, term_to_binary, security]
+    source: https://www.erlang.org/doc/apps/erts/erlang.html
+
+  - slug: elixir-beam-bytecode-compile-config
+    kind: open
+    difficulty: middle
+    title: "What is in a .beam file, and what does compile time mean for config?"
+    body: |
+      Explain what the compiler produces for an Elixir module, how it gets loaded, what `Code.compile_string/1`
+      does at runtime, and why `Application.compile_env/3` exists next to `Application.get_env/3`.
+    answer: |
+      - Elixir source is expanded (macros) into Erlang abstract format, then compiled by the Erlang compiler to
+        BEAM bytecode and written to `_build/<env>/lib/<app>/ebin/Elixir.MyMod.beam`. The file holds "chunks":
+        the bytecode, the export and atom tables, docs (`Docs` chunk), debug info (used by `recompile`, Dialyzer
+        and the formatter), and module attributes. Since OTP 24 the loader JIT-compiles bytecode to native code
+        on load (BeamAsm) on x86-64/ARM64.
+      - Loading is lazy: the code server loads `MyMod.beam` from the code path on the first call (interactive
+        mode); releases use embedded mode and load everything at boot so there are no runtime surprises.
+      - `Code.compile_string/2` (and `Code.eval_string`, `Code.compile_file`) run the full compiler *inside* the
+        running VM and load the resulting modules immediately, which is how IEx, `recompile`, test helpers and
+        Livebook work. It is slow and creates atoms/modules permanently, so it is unsuitable per request;
+        `Code.eval_string` with untrusted input is remote code execution.
+      - Config: `Application.get_env/3` reads the application environment at *runtime*, so a module attribute
+        like `@token Application.get_env(:my_app, :token)` captures whatever was in the env when the module
+        compiled (on the build machine, before `runtime.exs` ran), often `nil`, and is silently frozen into the
+        bytecode. `Application.compile_env/3` makes that intent explicit: it reads at compile time **and** Mix
+        records the value, so if the runtime config differs the app refuses to boot with a clear error instead of
+        running with a stale value. Rule: read config in function bodies at runtime; use `compile_env` only for
+        things that genuinely must be compile-time (feature flags that remove code, macro options).
+    explanation: |
+      Follow-ups: "Why does changing `config.exs` sometimes require `mix compile --force`?" Because
+      `compile_env` values are tracked as compile-time dependencies and Mix recompiles affected modules; without
+      it, nothing would know. "What is `MIX_ENV`?" A compile-time switch selecting which config and which
+      `_build` directory; it is not available at runtime in a release except as the frozen config.
+    tags: [beam-files, compile_env, Code.compile_string]
+    source: https://elixir.hexdocs.pm/Application.html

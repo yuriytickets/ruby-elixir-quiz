@@ -1,0 +1,1747 @@
+language: elixir
+topic: processes-and-messaging
+items:
+  - slug: elixir-proc-vs-os-thread
+    kind: mcq
+    difficulty: junior
+    title: "How does a BEAM process differ from an OS thread?"
+    body: |
+      Which statement about BEAM (Erlang VM) processes is correct?
+    choices:
+      - "Each BEAM process maps 1:1 to an OS thread, so you should keep the count under a few thousand."
+      - "BEAM processes share a single heap and synchronise access to it with locks."
+      - "BEAM processes are VM-scheduled, have their own isolated heap, start at roughly 2 KB and can number in the millions."
+      - "BEAM processes are green threads that share memory but are cheaper to create than OS threads."
+    answer: 2
+    explanation: |
+      BEAM processes are not OS threads. The VM runs one scheduler thread per core and multiplexes
+      millions of lightweight processes on top of them. Every process has its own heap, stack and
+      mailbox; nothing is shared, so there are no locks and a crash cannot corrupt another process.
+      A fresh process costs a few hundred words (around 2 KB), which is why `spawn`-per-request is
+      normal. The "green threads that share memory" option is the classic wrong answer: green threads
+      in other runtimes share a heap, BEAM processes do not, and that isolation is what makes
+      per-process garbage collection and "let it crash" possible.
+    tags: [beam, processes, scheduler]
+    source: https://www.erlang.org/doc/system/eff_guide_processes.html
+
+  - slug: elixir-proc-send-to-dead-pid
+    kind: mcq
+    difficulty: junior
+    title: "What happens when you `send` to a process that has already exited?"
+    body: |
+      ```elixir
+      pid = spawn(fn -> :ok end)
+      Process.sleep(10)
+      Process.alive?(pid)   # => false
+      send(pid, :hello)
+      ```
+
+      What does the last line do?
+    choices:
+      - "Raises `ArgumentError` because the pid is not alive"
+      - "Returns `:hello` and silently drops the message"
+      - "Returns `{:error, :noproc}`"
+      - "Blocks until a process with that pid appears"
+    answer: 1
+    explanation: |
+      `send/2` is fire-and-forget: it always returns the message and never fails for a pid, alive or
+      dead (the signal simply does not arrive). This is deliberate: in a distributed system you can
+      never know for sure whether the receiver is alive at the moment of delivery, so the language
+      does not pretend to. If you need to know whether the receiver got the message, use a
+      request/reply protocol (`GenServer.call`) or a monitor. The one exception is sending to a
+      **registered name** that does not exist: `send(:no_such_name, :x)` raises `ArgumentError`
+      because the name lookup happens synchronously in the sender.
+    tags: [send, mailbox]
+    source: https://www.erlang.org/doc/system/ref_man_processes.html
+
+  - slug: elixir-proc-receive-after-zero
+    kind: mcq
+    difficulty: junior
+    title: "What does `receive ... after 0` do?"
+    body: |
+      ```elixir
+      receive do
+        {:data, d} -> d
+      after
+        0 -> :nothing
+      end
+      ```
+    choices:
+      - "Waits forever for `{:data, _}` because 0 means \"no timeout\""
+      - "Returns a matching message if one is already in the mailbox, otherwise returns `:nothing` immediately"
+      - "Raises because the timeout must be positive"
+      - "Returns the first message in the mailbox regardless of pattern"
+    answer: 1
+    explanation: |
+      `after 0` turns `receive` into a non-blocking poll: the mailbox is scanned once for a message
+      matching one of the patterns; if none is found the `after` body runs right away. Waiting
+      forever is what you get with **no** `after` clause (or `after :infinity`). Non-matching
+      messages are left in the mailbox untouched, which is why `after 0` is sometimes used to
+      drain a mailbox selectively in a loop.
+    tags: [receive, timeout]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-self-in-spawned-fn
+    kind: mcq
+    difficulty: junior
+    title: "Which pid does `self()` return inside a spawned function?"
+    body: |
+      ```elixir
+      parent = self()
+      spawn(fn -> send(parent, {:me, self()}) end)
+      receive do
+        {:me, pid} -> pid == parent
+      end
+      ```
+
+      What does the `receive` evaluate to?
+    choices:
+      - "`true` because closures capture the caller's process"
+      - "`false` because `self()` is evaluated in the new process"
+      - "It raises because `self()` cannot be called inside `spawn`"
+      - "It depends on which scheduler runs the function"
+    answer: 1
+    explanation: |
+      `self()` is evaluated at runtime in whatever process is executing it. The anonymous function
+      runs in the new process, so `self()` there is the child's pid, not the parent's. That is why
+      the idiom is to bind `parent = self()` **before** spawning and close over that variable:
+      closures capture values, not "the current process". Forgetting this is a very common bug
+      where a process ends up sending replies to itself.
+    tags: [self, spawn, closures]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-mailbox-basics
+    kind: open
+    difficulty: junior
+    title: "Explain how `send` and `receive` work together"
+    body: |
+      Walk me through what happens, step by step, when process A does `send(b, {:hi, self()})`
+      and process B later runs a `receive` block. What guarantees do you get about ordering?
+    answer: |
+      - `send/2` copies the message term into B's **mailbox** (a per-process FIFO queue) and
+        returns immediately; A never blocks and never learns whether B is alive.
+      - B keeps running whatever it was doing; nothing interrupts it. Messages wait in the mailbox.
+      - When B evaluates `receive`, the VM walks the mailbox from oldest to newest and takes the
+        **first message that matches any clause**; that message is removed, the rest stay.
+      - If nothing matches, B blocks (suspends, consuming no CPU) until a new message arrives or the
+        optional `after` timeout fires.
+      - Ordering guarantee: messages from **one** sender to **one** receiver arrive in the order sent.
+        Across different senders there is no global ordering.
+      - Sending `self()` in the message is how B can reply: pids are plain data.
+    explanation: |
+      Follow-ups an interviewer may ask: what happens if B never reads the mailbox (it grows without
+      bound, there is no limit), what `flush()` does in IEx (prints and drains the mailbox), and why
+      unmatched messages are dangerous (every later `receive` must scan past them).
+    tags: [send, receive, mailbox]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-ping-pong-code
+    kind: code
+    difficulty: junior
+    title: "Ping/pong between two processes with `receive`"
+    body: |
+      Implement a module `PingPong` with:
+
+      - `start_pong/0` — spawns a long-lived process that waits for `{:ping, from, ref, term}` messages
+        and replies to `from` with `{:pong, ref, term}`, then loops.
+      - `ping/2` — `ping(pong_pid, term)` sends a ping to the pong process using a fresh `make_ref()`,
+        waits (at most 1000 ms) for the matching reply and returns `{:pong, term}`.
+
+      ```elixir
+      pid = PingPong.start_pong()
+      PingPong.ping(pid, :hello)   # => {:pong, :hello}
+      ```
+    starter_code: |
+      defmodule PingPong do
+        def start_pong do
+          # spawn a process running a receive loop
+        end
+
+        def ping(pong, term) do
+          # send {:ping, self(), ref, term} and wait for {:pong, ref, term}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PingPongTest do
+        use ExUnit.Case
+
+        test "replies with the same term" do
+          pid = PingPong.start_pong()
+          assert PingPong.ping(pid, :hello) == {:pong, :hello}
+          assert PingPong.ping(pid, 42) == {:pong, 42}
+        end
+
+        test "pong process stays alive and is a different process" do
+          pid = PingPong.start_pong()
+          assert pid != self()
+          PingPong.ping(pid, 1)
+          assert Process.alive?(pid)
+        end
+
+        test "replies are matched by ref, so stale messages are ignored" do
+          pid = PingPong.start_pong()
+          send(self(), {:pong, make_ref(), :stale})
+          assert PingPong.ping(pid, :fresh) == {:pong, :fresh}
+          assert_received {:pong, _, :stale}
+        end
+      end
+    solution: |
+      defmodule PingPong do
+        def start_pong do
+          spawn(fn -> loop() end)
+        end
+
+        defp loop do
+          receive do
+            {:ping, from, ref, term} ->
+              send(from, {:pong, ref, term})
+              loop()
+          end
+        end
+
+        def ping(pong, term) do
+          ref = make_ref()
+          send(pong, {:ping, self(), ref, term})
+
+          receive do
+            {:pong, ^ref, reply} -> {:pong, reply}
+          after
+            1000 -> exit(:timeout)
+          end
+        end
+      end
+    explanation: |
+      The two idioms here are the **recursive receive loop** (a process stays alive only as long
+      as it has code to run, so `loop()` calls itself after handling a message) and the
+      **request/reply with a reference**. Pinning `^ref` in the receive pattern means the caller
+      only picks up the reply to *its* request, even if unrelated `{:pong, ...}` messages are
+      sitting in the mailbox. This is exactly what `GenServer.call` does under the hood.
+    tags: [spawn, receive, make_ref]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-state-via-recursion
+    kind: theory
+    difficulty: junior
+    title: "Keeping state in a process with a recursive loop"
+    body: |
+      Elixir has no mutable variables, so how does a process "remember" anything? By passing the
+      state as an argument to a tail-recursive function:
+
+      ```elixir
+      defmodule KV do
+        def start, do: spawn(fn -> loop(%{}) end)
+
+        defp loop(map) do
+          receive do
+            {:put, k, v} -> loop(Map.put(map, k, v))
+            {:get, k, from} ->
+              send(from, {:value, Map.get(map, k)})
+              loop(map)
+          end
+        end
+      end
+      ```
+
+      Each message handler computes a **new** state and recurses with it. Tail calls do not grow
+      the stack, so the loop can run forever. Because only this process can touch `map`, there is
+      no need for locks: concurrent `put`s are serialised by the mailbox.
+
+      This is the entire idea behind `GenServer`: `init/1` returns the first state, each
+      `handle_*` callback returns the next state, and the behaviour owns the receive loop,
+      timeouts, name registration and error reporting so you do not have to rewrite them.
+    answer: |
+      **Q:** Why does the loop not overflow the stack after millions of messages?
+      **A:** `loop/1` calls itself in tail position; the BEAM performs tail-call optimisation, so
+      each iteration reuses the frame. The "state" is just the argument of the next call.
+    explanation: |
+      Interviewers like to ask what happens if you forget to recurse in one clause (the process
+      exits normally after that message) or if you accidentally call `loop(map)` instead of
+      `loop(new_map)` (the update is lost). Both are bugs that `GenServer` makes structurally
+      harder to write.
+    tags: [state, recursion, genserver]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-loop-counter-code
+    kind: code
+    difficulty: junior
+    title: "A counter process without GenServer"
+    body: |
+      Implement `LoopCounter` using only `spawn`, `send` and `receive` (no GenServer/Agent):
+
+      - `start/1` — `start(initial)` returns the pid of a process holding an integer.
+      - `inc/1` — asynchronously increments the counter by 1, returns `:ok`.
+      - `add/2` — `add(pid, n)` asynchronously adds `n`.
+      - `get/1` — synchronously returns the current value (use a ref so stale replies cannot
+        be confused with the current one).
+
+      ```elixir
+      c = LoopCounter.start(10)
+      LoopCounter.inc(c)
+      LoopCounter.add(c, 5)
+      LoopCounter.get(c)   # => 16
+      ```
+    starter_code: |
+      defmodule LoopCounter do
+        def start(initial) do
+          # your code here
+        end
+
+        def inc(pid), do: :ok
+        def add(pid, n), do: :ok
+
+        def get(pid) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LoopCounterTest do
+        use ExUnit.Case
+
+        test "starts with the initial value" do
+          assert LoopCounter.get(LoopCounter.start(7)) == 7
+        end
+
+        test "inc and add are applied in order" do
+          c = LoopCounter.start(0)
+          assert LoopCounter.inc(c) == :ok
+          LoopCounter.inc(c)
+          LoopCounter.add(c, 10)
+          assert LoopCounter.get(c) == 12
+        end
+
+        test "independent counters do not share state" do
+          a = LoopCounter.start(1)
+          b = LoopCounter.start(100)
+          LoopCounter.inc(a)
+          assert LoopCounter.get(a) == 2
+          assert LoopCounter.get(b) == 100
+        end
+
+        test "get ignores unrelated messages in the caller mailbox" do
+          c = LoopCounter.start(3)
+          send(self(), {:value, make_ref(), 999})
+          assert LoopCounter.get(c) == 3
+        end
+      end
+    solution: |
+      defmodule LoopCounter do
+        def start(initial), do: spawn(fn -> loop(initial) end)
+
+        def inc(pid), do: add(pid, 1)
+
+        def add(pid, n) do
+          send(pid, {:add, n})
+          :ok
+        end
+
+        def get(pid) do
+          ref = make_ref()
+          send(pid, {:get, self(), ref})
+
+          receive do
+            {:value, ^ref, v} -> v
+          end
+        end
+
+        defp loop(n) do
+          receive do
+            {:add, k} -> loop(n + k)
+            {:get, from, ref} ->
+              send(from, {:value, ref, n})
+              loop(n)
+          end
+        end
+      end
+    explanation: |
+      Because the mailbox is FIFO and a single process handles one message at a time, `inc`,
+      `inc`, `add 10` and then `get` are guaranteed to be applied in that order even though the
+      first three are asynchronous. The `get` request is a synchronous round-trip tagged with a
+      `ref`; the pin `^ref` makes the `receive` selective so an unrelated `{:value, ...}` already
+      in the caller's mailbox is skipped.
+    tags: [spawn, receive, state]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-link-vs-monitor
+    kind: open
+    difficulty: middle
+    title: "Link vs monitor: what is the difference and when do you use each?"
+    body: |
+      Explain the difference between linking to a process and monitoring it. Give one concrete
+      situation where you would choose each.
+    answer: |
+      - A **link** is bidirectional: if either process exits abnormally, an exit signal is sent to
+        the other and, unless it traps exits, it dies too with the same reason. Links are about
+        **shared fate**: supervisors and their children, `Task.async` and its caller.
+      - A **monitor** is unidirectional and non-fatal: the watcher just gets a message
+        `{:DOWN, ref, :process, pid, reason}` when the target dies. Nothing happens to the target
+        if the watcher dies. Monitors are **stackable** (each `Process.monitor` call yields its own
+        ref and message) and can be removed with `Process.demonitor`.
+      - Monitoring an already-dead pid delivers `:DOWN` with reason `:noproc` immediately, so there
+        is no race.
+      - A link to a normally-exiting process is a no-op (reason `:normal` is dropped unless trapping).
+      - Use a link when the other process is useless without you (worker owned by a supervisor,
+        a task whose result you need). Use a monitor when you merely want to **observe** a process
+        you do not own: `GenServer.call` monitors the server during the call, a registry monitors
+        registered pids, a cache monitors the owner of a lease.
+      - Trapping exits turns link signals into `{:EXIT, pid, reason}` messages, which is how
+        supervisors survive child crashes.
+    explanation: |
+      Common follow-up: "can you emulate a link with two monitors?" Not quite: monitors only inform,
+      they never kill. The killing semantics of links are the point. Another follow-up is why
+      `GenServer.call` uses a monitor rather than a link: the caller must not die just because the
+      server crashed mid-call; it should get a clean exit it can rescue.
+    tags: [links, monitors, exit-signals]
+    source: https://elixirforum.com/t/link-vs-two-monitors-are-they-interchangeable-or-are-there-clearly-distinct-use-cases-for-one-over-the-other/8110
+
+  - slug: elixir-proc-spawn-link-crash-propagation
+    kind: mcq
+    difficulty: middle
+    title: "What happens to the parent when a `spawn_link`ed child crashes?"
+    body: |
+      ```elixir
+      defmodule Boom do
+        def run do
+          spawn_link(fn -> raise "boom" end)
+          Process.sleep(100)
+          :survived
+        end
+      end
+      ```
+
+      `Boom.run()` is called from a plain process that does not trap exits. What happens?
+    choices:
+      - "`:survived` is returned; the child's crash is only logged"
+      - "The caller exits with the same reason as the child (a `RuntimeError`)"
+      - "The caller receives `{:EXIT, pid, reason}` in its mailbox and continues"
+      - "The caller receives `{:DOWN, ref, :process, pid, reason}` and continues"
+    answer: 1
+    explanation: |
+      `spawn_link` creates a bidirectional link. When the child exits with a non-`:normal` reason,
+      an exit signal with that reason is delivered to the caller; since it is **not** trapping exits
+      it terminates with the same reason (in IEx you would see the shell restart). The `{:EXIT, ...}`
+      message only appears if `Process.flag(:trap_exit, true)` was set, and `{:DOWN, ...}` is what
+      a **monitor** produces, not a link. With plain `spawn` the caller would indeed survive and
+      just see a logged error.
+    tags: [spawn_link, exit-signals]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-trap-exit-message-shape
+    kind: mcq
+    difficulty: middle
+    title: "What does a process that traps exits receive when a linked process dies?"
+    body: |
+      ```elixir
+      Process.flag(:trap_exit, true)
+      pid = spawn_link(fn -> exit(:oops) end)
+      receive do
+        msg -> msg
+      end
+      ```
+    choices:
+      - "`{:DOWN, ref, :process, pid, :oops}`"
+      - "`{:EXIT, pid, :oops}`"
+      - "`{:exit, pid, :oops}`"
+      - "Nothing: the trapping process is still killed because `:oops` is not `:normal`"
+    answer: 1
+    explanation: |
+      Trapping exits converts incoming exit signals from links into ordinary messages of the form
+      `{:EXIT, from_pid, reason}` (an atom `:EXIT` in upper case). `{:DOWN, ...}` is the monitor
+      message and has a ref as its second element. The only signal that cannot be trapped is
+      `:kill` sent directly with `Process.exit(pid, :kill)`, which terminates the target with
+      reason `:killed` no matter what. Note that the trapping process would also receive
+      `{:EXIT, pid, :normal}` if the child had finished normally; without trapping, `:normal`
+      signals are silently dropped.
+    tags: [trap_exit, links]
+    source: https://hexdocs.pm/elixir/Process.html
+
+  - slug: elixir-proc-demonitor-flush
+    kind: mcq
+    difficulty: middle
+    title: "Why pass `:flush` to `Process.demonitor/2`?"
+    body: |
+      ```elixir
+      ref = Process.monitor(pid)
+      # ... decide we no longer care about pid ...
+      Process.demonitor(ref, [:flush])
+      ```
+
+      What does the `:flush` option add compared to `Process.demonitor(ref)`?
+    choices:
+      - "It forces the monitored process to flush its own mailbox before the monitor is removed"
+      - "It removes a `{:DOWN, ref, ...}` message for that ref that may already be sitting in the caller's mailbox"
+      - "It makes `demonitor` synchronous, waiting until the monitored process acknowledges"
+      - "It also unlinks the process if it was linked"
+    answer: 1
+    explanation: |
+      There is a race: the monitored process may die **between** your decision to stop watching
+      and the `demonitor` call, in which case a `:DOWN` message is already queued. `demonitor/1`
+      alone guarantees no *future* `:DOWN` for that ref, but the queued one stays and would later
+      confuse a `receive` or `handle_info`. `[:flush]` removes it atomically. `Task.Supervisor`
+      docs recommend exactly this (`Process.demonitor(ref, [:flush])`) when a GenServer gets the
+      `{ref, result}` reply from `async_nolink` and no longer needs the `:DOWN`.
+    tags: [monitors, demonitor, races]
+    source: https://hexdocs.pm/elixir/Task.Supervisor.html
+
+  - slug: elixir-proc-exit-kill-reason
+    kind: mcq
+    difficulty: middle
+    title: "What exit reason does a process killed with `:kill` report?"
+    body: |
+      ```elixir
+      Process.flag(:trap_exit, true)
+      pid = spawn_link(fn -> Process.sleep(:infinity) end)
+      Process.exit(pid, :kill)
+      receive do
+        {:EXIT, ^pid, reason} -> reason
+      end
+      ```
+
+      What is `reason`?
+    choices:
+      - "`:kill`"
+      - "`:killed`"
+      - "`:normal`"
+      - "The `receive` never matches because `:kill` cannot be trapped"
+    answer: 1
+    explanation: |
+      `Process.exit(pid, :kill)` is the one untrappable signal: `pid` dies unconditionally, and its
+      recorded exit reason becomes `:killed`. That reason then propagates over **links** as a
+      normal exit signal, which *is* trappable, so the parent gets `{:EXIT, pid, :killed}`.
+      The distinction matters: `:kill` is untrappable only for the direct target; linked processes
+      see `:killed` and can handle it. Supervisors rely on this when they `:brutal_kill` a child.
+    tags: [exit, kill, trap_exit]
+    source: https://www.erlang.org/doc/system/ref_man_processes.html
+
+  - slug: elixir-proc-exit-normal-from-other
+    kind: mcq
+    difficulty: middle
+    title: "Does `Process.exit(pid, :normal)` stop another process?"
+    body: |
+      ```elixir
+      pid = spawn(fn -> Process.sleep(:infinity) end)
+      Process.exit(pid, :normal)
+      Process.sleep(10)
+      Process.alive?(pid)
+      ```
+    choices:
+      - "`false`: any `Process.exit/2` terminates the target"
+      - "`true`: a `:normal` exit signal from another process is ignored unless the target traps exits"
+      - "`false`, but only because the target is not trapping exits"
+      - "It raises `ArgumentError` because `:normal` is reserved"
+    answer: 1
+    explanation: |
+      Exit reason `:normal` is special: when it arrives from *another* process it is dropped (or,
+      if the target traps exits, delivered as `{:EXIT, from, :normal}` and left for the target to
+      decide). Only `Process.exit(self(), :normal)` actually terminates. To stop another process
+      from outside use a different reason such as `:shutdown` (the conventional "please stop"
+      reason that supervisors use and that does not produce an error log) or `:kill`.
+    tags: [exit, normal]
+    source: https://hexdocs.pm/elixir/Process.html
+
+  - slug: elixir-proc-named-processes
+    kind: open
+    difficulty: middle
+    title: "What are the ways to name a process, and when do you pick which?"
+    body: |
+      A process started with `GenServer.start_link(Mod, arg, name: ...)` can be named in several
+      ways. Compare them and explain the risk of naming processes with atoms built at runtime.
+    answer: |
+      - **Local atom** (`name: MyApp.Cache` or `Process.register(pid, :cache)`): node-local, fastest,
+        stored in the VM's name table; one process per name; name is freed when the process dies.
+      - **`{:global, term}`**: cluster-wide registration through the `:global` module. Any term can
+        be the name. Registration takes a cluster-wide lock, so it is slow and can be inconsistent
+        during net splits; fine for a handful of singleton processes.
+      - **`{:via, module, term}`**: delegates to any module implementing the registry API, most often
+        `{:via, Registry, {MyRegistry, key}}` with a `keys: :unique` Registry. Keys can be any term
+        (ids, tuples), entries are cleaned up when the process dies, and lookups are ETS-fast.
+      - Atoms are never garbage collected and the atom table has a hard limit (about 1M by default),
+        so `String.to_atom("user_#{id}")` as a name is a memory leak and a DoS vector. Use a
+        `Registry` (or `:global` for cluster-wide needs) for dynamic names.
+      - `Process.register/2` raises `ArgumentError` if the name is taken or the pid already has a
+        name; `GenServer.start_link` returns `{:error, {:already_started, pid}}` instead.
+    explanation: |
+      Follow-ups: "how do you address a named process on another node?" (`{name, node}` or
+      `{:global, name}`), and "why is a via-tuple better than storing pids in a map?" (the registry
+      keeps itself consistent with process death, a map of pids goes stale).
+    tags: [registration, registry, global]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-proc-message-queue-len
+    kind: mcq
+    difficulty: middle
+    title: "How do you check how many messages are waiting in a process mailbox?"
+    body: |
+      You suspect a process is falling behind. Which call tells you its mailbox length?
+    choices:
+      - "`Process.info(pid, :message_queue_len)` returning `{:message_queue_len, n}`"
+      - "`Process.mailbox_size(pid)`"
+      - "`:erlang.length(pid)`"
+      - "`Process.info(pid)[:messages]` is the only way, and it copies every message"
+    answer: 0
+    explanation: |
+      `Process.info/2` (a thin wrapper over `:erlang.process_info/2`) with the `:message_queue_len`
+      key returns `{:message_queue_len, n}` without copying the messages, so it is cheap enough to
+      poll in a health check or expose as a metric. `Process.info(pid)` with no key returns a
+      keyword list including `:messages`, which **does** copy the whole mailbox and should only be
+      used while debugging. A steadily growing `message_queue_len` is the classic symptom of a
+      process that receives `cast`s faster than it can process them.
+    tags: [process_info, mailbox, observability]
+    source: https://hexdocs.pm/elixir/Process.html
+
+  - slug: elixir-proc-receive-clause-order
+    kind: mcq
+    difficulty: middle
+    title: "Does clause order in `receive` give priority to messages?"
+    body: |
+      The mailbox contains, oldest first: `{:low, 1}`, `{:high, 2}`.
+
+      ```elixir
+      receive do
+        {:high, x} -> {:high, x}
+        {:low, x} -> {:low, x}
+      end
+      ```
+
+      What is returned?
+    choices:
+      - "`{:high, 2}` because the first clause is tried against the whole mailbox first"
+      - "`{:low, 1}` because the mailbox is scanned oldest-first and each message is tried against all clauses"
+      - "Either, depending on scheduler timing"
+      - "It raises because two messages match"
+    answer: 1
+    explanation: |
+      `receive` walks the mailbox from the oldest message, and for **each message** tries the
+      clauses top to bottom; the first message that matches *any* clause wins. `{:low, 1}` is
+      older and matches the second clause, so it is taken. Clause order therefore does not create
+      priorities. If you need priority handling you must do two passes: first
+      `receive do {:high, x} -> ... after 0 -> ... end`, then a general receive. This is also
+      what the `gen_statem` `postpone` action and OTP 28's priority messages are about.
+    tags: [receive, mailbox, ordering]
+    source: https://www.erlang.org/doc/system/ref_man_processes.html
+
+  - slug: elixir-proc-selective-receive-cost
+    kind: theory
+    difficulty: senior
+    title: "Selective receive and the cost of a long mailbox"
+    body: |
+      `receive` with a pattern is a **selective receive**: the VM scans the mailbox until a message
+      matches. Each unmatched message stays and is re-examined on the next `receive`. With a
+      mailbox of N unmatched messages, every selective receive costs O(N), and a process that both
+      accumulates junk and does request/reply with selective receives degrades to O(N²).
+
+      ```elixir
+      # caller
+      ref = make_ref()
+      send(server, {:req, self(), ref, work})
+      receive do
+        {^ref, reply} -> reply
+      end
+      ```
+
+      The compiler recognises this exact shape: when a freshly created reference (`make_ref/0`,
+      `Process.monitor/1`, `:erlang.alias/0`) is matched in the `receive`, it marks the mailbox
+      position at creation time and only scans messages that arrived **after** the ref was created.
+      Older junk is skipped. `GenServer.call` is written to trigger this optimisation (compile with
+      `recv_opt_info` to see which receives qualify).
+
+      Rules of thumb:
+      - Keep mailboxes short; monitor `message_queue_len`.
+      - Never leave a catch-all-less `receive` in a process that gets arbitrary traffic; add a
+        clause that drops unknown messages (GenServer's `handle_info` default does this with a log).
+      - Use refs for request/reply so the optimisation applies.
+    answer: |
+      **Q:** Why is `receive do {^ref, reply} -> reply end` fast even when the mailbox holds 100k
+      stale messages, while `receive do {:reply, r} -> r end` is not?
+      **A:** The ref was created just before the receive, so the compiler/VM only scans messages
+      that arrived after the ref existed; a plain atom pattern has no such anchor and must scan
+      every message from the oldest one.
+    explanation: |
+      Senior interviews often continue with "how would you diagnose a process whose latency grows
+      over time?" (`:observer`, `Process.info(pid, :message_queue_len)`, `:recon`) and "what is
+      the fix?" (handle or drop every message shape, add backpressure, shard the process).
+    tags: [receive, performance, make_ref]
+    source: https://www.erlang.org/doc/system/eff_guide_processes.html
+
+  - slug: elixir-proc-await-down-code
+    kind: code
+    difficulty: middle
+    title: "Wait for a process to die using a monitor"
+    body: |
+      Implement `Waiter.await_down/2`: `await_down(pid, timeout_ms)` monitors `pid` and blocks until
+      it exits, returning `{:ok, reason}` with the exit reason. If the process is still alive after
+      `timeout_ms` it returns `:timeout` and must **remove the monitor** (including any `:DOWN`
+      message that may already be queued) so nothing leaks into the caller's mailbox.
+
+      ```elixir
+      pid = spawn(fn -> receive do :stop -> exit(:bye) end end)
+      send(pid, :stop)
+      Waiter.await_down(pid, 1000)   # => {:ok, :bye}
+      Waiter.await_down(pid, 1000)   # => {:ok, :noproc}   (already dead)
+      ```
+    starter_code: |
+      defmodule Waiter do
+        def await_down(pid, timeout_ms) do
+          # Process.monitor, receive {:DOWN, ...}, after timeout -> demonitor
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule WaiterTest do
+        use ExUnit.Case
+
+        test "returns the exit reason of a process that stops" do
+          pid = spawn(fn -> receive do :stop -> exit(:bye) end end)
+          send(pid, :stop)
+          assert Waiter.await_down(pid, 1000) == {:ok, :bye}
+        end
+
+        test "normal exit is reported as :normal" do
+          pid = spawn(fn -> receive do :stop -> :ok end end)
+          send(pid, :stop)
+          assert Waiter.await_down(pid, 1000) == {:ok, :normal}
+        end
+
+        test "already dead process reports :noproc immediately" do
+          pid = spawn(fn -> :ok end)
+          assert {:ok, _} = Waiter.await_down(pid, 1000)
+          assert Waiter.await_down(pid, 1000) == {:ok, :noproc}
+        end
+
+        test "times out for a live process and leaves no :DOWN in the mailbox" do
+          pid = spawn(fn -> Process.sleep(:infinity) end)
+          assert Waiter.await_down(pid, 10) == :timeout
+          Process.exit(pid, :kill)
+          refute_receive {:DOWN, _, :process, ^pid, _}, 50
+        end
+      end
+    solution: |
+      defmodule Waiter do
+        def await_down(pid, timeout_ms) do
+          ref = Process.monitor(pid)
+
+          receive do
+            {:DOWN, ^ref, :process, ^pid, reason} -> {:ok, reason}
+          after
+            timeout_ms ->
+              Process.demonitor(ref, [:flush])
+              :timeout
+          end
+        end
+      end
+    explanation: |
+      Three things interviewers look for: monitoring instead of linking (we do not want to die with
+      the target), handling the already-dead case (the VM sends `:DOWN` with `:noproc` right away,
+      so there is no race to check `alive?` first), and cleaning up on timeout with
+      `Process.demonitor(ref, [:flush])`. Without `:flush`, a `:DOWN` that arrived just after the
+      `after` clause fired would stay in the mailbox forever.
+    tags: [monitors, demonitor, receive]
+    source: https://hexdocs.pm/elixir/Process.html
+
+  - slug: elixir-proc-exit-catcher-code
+    kind: code
+    difficulty: middle
+    title: "Run a function in a linked process and capture its exit reason"
+    body: |
+      Implement `ExitCatcher.run/1`: `run(fun)` executes `fun` in a **new linked process** and
+      returns the exit reason the link reports, without the caller dying. You will need a helper
+      process that traps exits, `spawn_link`s the function, waits for the `{:EXIT, pid, reason}`
+      message and reports `reason` back to the caller.
+
+      ```elixir
+      ExitCatcher.run(fn -> :ok end)          # => :normal
+      ExitCatcher.run(fn -> exit(:boom) end)  # => :boom
+      ExitCatcher.run(fn -> raise "x" end)    # => {%RuntimeError{message: "x"}, stacktrace}
+      ```
+
+      The caller process itself must not change its `trap_exit` flag.
+    starter_code: |
+      defmodule ExitCatcher do
+        def run(fun) do
+          # spawn a trapping helper that spawn_links fun and reports {:EXIT, _, reason}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ExitCatcherTest do
+        use ExUnit.Case
+
+        test "normal completion" do
+          assert ExitCatcher.run(fn -> :ok end) == :normal
+        end
+
+        test "explicit exit reason" do
+          assert ExitCatcher.run(fn -> exit(:boom) end) == :boom
+          assert ExitCatcher.run(fn -> exit({:shutdown, 3}) end) == {:shutdown, 3}
+        end
+
+        test "raised exception is reported with a stacktrace" do
+          assert {%RuntimeError{message: "x"}, [_ | _]} = ExitCatcher.run(fn -> raise "x" end)
+        end
+
+        test "the caller survives and keeps its trap_exit flag" do
+          assert Process.info(self(), :trap_exit) == {:trap_exit, false}
+          ExitCatcher.run(fn -> exit(:kaboom) end)
+          assert Process.info(self(), :trap_exit) == {:trap_exit, false}
+          assert Process.alive?(self())
+        end
+      end
+    solution: |
+      defmodule ExitCatcher do
+        def run(fun) do
+          caller = self()
+          ref = make_ref()
+
+          spawn(fn ->
+            Process.flag(:trap_exit, true)
+            pid = spawn_link(fun)
+
+            receive do
+              {:EXIT, ^pid, reason} -> send(caller, {ref, reason})
+            end
+          end)
+
+          receive do
+            {^ref, reason} -> reason
+          end
+        end
+      end
+    explanation: |
+      The helper is a miniature supervisor: it traps exits so the link delivers
+      `{:EXIT, pid, reason}` as a message instead of killing it. A `raise` inside a process becomes
+      an exit with reason `{exception, stacktrace}`, which is why the third example matches a
+      tuple. Note the helper is started with plain `spawn`, not `spawn_link`: if it were linked
+      to the caller and the caller did not trap exits, a crash of the helper itself would take
+      the caller down.
+    tags: [trap_exit, spawn_link, exit-signals]
+    source: https://hexdocs.pm/elixir/Process.html
+
+  - slug: elixir-proc-unbounded-mailbox-backpressure
+    kind: open
+    difficulty: senior
+    title: "A GenServer's mailbox keeps growing in production. Diagnose and fix."
+    body: |
+      Metrics show one process's `message_queue_len` climbing steadily until the node runs out of
+      memory. Producers send it work with `GenServer.cast`. What is going on and what are your
+      options?
+    answer: |
+      - Mailboxes are **unbounded**: nothing in the VM refuses or drops messages, so a consumer that
+        is slower than its producers accumulates memory until the node dies. `cast` makes this
+        invisible because the sender never waits.
+      - First confirm it: `Process.info(pid, [:message_queue_len, :memory, :current_function])`,
+        `:observer`, or `:recon.proc_count(:message_queue_len, 5)`.
+      - **Backpressure via `call`**: switch producers to `GenServer.call`. The producer now blocks
+        until the consumer has handled its request, so at most one message per producer is in
+        flight. This is the simplest fix and usually the right one.
+      - **Demand-driven**: use `GenStage`/`Broadway`, where consumers *ask* for N events and
+        producers may not send more than requested.
+      - **Bounded queue / load shedding**: have the server check its own queue length and drop or
+        reject work above a threshold; or put a bounded buffer in front of it.
+      - **Scale the consumer**: shard across N processes keyed by hash (via `Registry` or
+        `PartitionSupervisor`), or offload each unit of work to a `Task` so the GenServer only
+        coordinates.
+      - Also check for a `receive` inside the server that scans a long mailbox selectively, which
+        makes each message slower as the queue grows (quadratic collapse).
+    explanation: |
+      A strong candidate mentions that `cast` should be reserved for cases where losing a message
+      is acceptable or where the sender provably cannot outrun the receiver, and that `call` with a
+      timeout is "free" backpressure. Follow-up: "what if the producers are external (HTTP)?" Then
+      the backpressure must turn into 429s/queue limits at the edge.
+    tags: [backpressure, mailbox, cast, genstage]
+    source: https://elixirforum.com/t/genserver-docs-handle-cast-should-be-used-sparingly-why/4908
+
+  - slug: elixir-proc-task-await-timeout
+    kind: mcq
+    difficulty: middle
+    title: "What happens when `Task.await/2` times out?"
+    body: |
+      ```elixir
+      task = Task.async(fn -> Process.sleep(10_000); :done end)
+      Task.await(task, 100)
+      ```
+
+      The caller is a normal process (not trapping exits). What happens after 100 ms?
+    choices:
+      - "`Task.await` returns `{:error, :timeout}` and the task keeps running"
+      - "`Task.await` returns `nil` and the task keeps running"
+      - "The caller exits with a timeout reason, and because the task is linked to it the task is killed too"
+      - "The task is killed and `Task.await` returns `:timeout`"
+    answer: 2
+    explanation: |
+      `Task.await` is strict: on timeout it **exits the caller** with
+      `{:timeout, {Task, :await, ...}}`. Since `Task.async` links the task to the caller, the
+      caller's exit propagates and the task dies as well. If you want a soft timeout, use
+      `Task.yield(task, 100)` which returns `nil` on timeout, and then decide whether to
+      `Task.shutdown(task)` or keep waiting. Also remember `await` may only be called once per task
+      and only from the process that started it.
+    tags: [task, await, timeout]
+    source: https://hexdocs.pm/elixir/Task.html
+
+  - slug: elixir-proc-task-async-vs-start
+    kind: open
+    difficulty: middle
+    title: "Compare `Task.async/await`, `Task.start`, and `Task.Supervisor.start_child`"
+    body: |
+      When would you use each of these to run some work in another process? What do they do
+      differently with respect to links, results and supervision?
+    answer: |
+      - `Task.async/1` + `Task.await/2`: for work whose **result you need**. The task is linked
+        **and** monitored by the caller; the result is always sent back, so you must `await` (or
+        `yield` then `shutdown`) or you leak a message. A crash on either side kills the other.
+      - `Task.start/1` (and `start_link/1`): fire-and-forget. No result, `start/1` is not linked, so
+        a crash is only logged. Mostly a convenience over `spawn` with better crash reports.
+      - `Task.Supervisor.start_child/2`: fire-and-forget **under a supervisor** in your tree. You get
+        controlled shutdown when the app stops, `:restart` options, and the task shows up in
+        observability tools. This is the recommended way to run side effects.
+      - `Task.Supervisor.async_nolink/2`: result-returning but **not linked** to the caller;
+        used from a GenServer so a failing task cannot crash the server. Results and `:DOWN`
+        messages are handled in `handle_info`.
+      - Tasks also propagate `$callers` in the process dictionary, which lets libraries (Ecto
+        sandbox, Mox) find the originating test process.
+    explanation: |
+      A good follow-up: "what happens to a `Task.async` task if the caller is a GenServer that
+      crashes before awaiting?" (the link kills the task, which is usually what you want). Also
+      "why not just `spawn`?" (no crash metadata, no `$callers`, no supervision, no shutdown).
+    tags: [task, task-supervisor]
+    source: https://hexdocs.pm/elixir/Task.html
+
+  - slug: elixir-proc-parallel-map-code
+    kind: code
+    difficulty: middle
+    title: "Ordered parallel map with `Task.async_stream`"
+    body: |
+      Implement `ParMap.map/3`: `map(enumerable, fun, max_concurrency)` applies `fun` to every
+      element **concurrently** (at most `max_concurrency` at a time) using `Task.async_stream/3`
+      and returns a plain list of results **in the original order**. Each element must be
+      processed in its own process. A function that takes longer must not reorder results.
+
+      ```elixir
+      ParMap.map([3, 1, 2], &(&1 * 2), 2)   # => [6, 2, 4]
+      ```
+    starter_code: |
+      defmodule ParMap do
+        def map(enumerable, fun, max_concurrency) do
+          # Task.async_stream + collect results
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ParMapTest do
+        use ExUnit.Case
+
+        test "maps and keeps order" do
+          assert ParMap.map([3, 1, 2], &(&1 * 2), 2) == [6, 2, 4]
+          assert ParMap.map([], &(&1 * 2), 4) == []
+        end
+
+        test "keeps order even when earlier elements finish later" do
+          sleep_then = fn ms -> Process.sleep(ms); ms end
+          assert ParMap.map([30, 1, 15], sleep_then, 3) == [30, 1, 15]
+        end
+
+        test "runs each element in a separate process" do
+          me = self()
+          pids = ParMap.map(1..4, fn _ -> self() end, 4)
+          assert Enum.all?(pids, &(&1 != me))
+          assert length(Enum.uniq(pids)) == 4
+        end
+
+        test "respects max_concurrency" do
+          {:ok, agent} = Agent.start_link(fn -> {0, 0} end)
+          work = fn _ ->
+            Agent.update(agent, fn {cur, max} -> {cur + 1, max(max, cur + 1)} end)
+            Process.sleep(20)
+            Agent.update(agent, fn {cur, max} -> {cur - 1, max} end)
+          end
+          ParMap.map(1..6, work, 2)
+          {_, peak} = Agent.get(agent, & &1)
+          assert peak <= 2
+        end
+      end
+    solution: |
+      defmodule ParMap do
+        def map(enumerable, fun, max_concurrency) do
+          enumerable
+          |> Task.async_stream(fun, max_concurrency: max_concurrency, ordered: true)
+          |> Enum.map(fn {:ok, result} -> result end)
+        end
+      end
+    explanation: |
+      `Task.async_stream/3` is lazy and bounded: it starts at most `max_concurrency` tasks
+      (default `System.schedulers_online()`), linked to the caller, and emits `{:ok, result}` or
+      `{:exit, reason}` tuples. With `ordered: true` (the default) results are buffered so they
+      come out in input order; `ordered: false` emits them as they finish, which is better when
+      you only care about side effects. Each task has its own `timeout` (5000 ms by default) and
+      `on_timeout: :exit` kills the caller, so for untrusted work set `on_timeout: :kill_task`.
+    tags: [task, async_stream, concurrency]
+    source: https://hexdocs.pm/elixir/Task.html
+
+  - slug: elixir-proc-task-yield-shutdown
+    kind: mcq
+    difficulty: senior
+    title: "What is the correct way to give a task a soft deadline?"
+    body: |
+      You want to wait up to 200 ms for a task, use the result if it arrived, and otherwise make
+      sure the task is stopped and nothing is left in your mailbox. Which snippet is right?
+    choices:
+      - "`Task.await(task, 200)` wrapped in `try/catch :exit`"
+      - "`Task.yield(task, 200) || Task.shutdown(task, :brutal_kill)` and pattern match `{:ok, v}` / `nil`"
+      - "`Task.yield(task, 200)` alone; the task is garbage collected automatically"
+      - "`Process.exit(task.pid, :kill)` after `Process.sleep(200)`"
+    answer: 1
+    explanation: |
+      `Task.yield/2` returns `{:ok, result}`, `{:exit, reason}` or `nil` on timeout and leaves the
+      task running, so it must be paired with `Task.shutdown/2`, which unlinks, terminates the task
+      and **also returns `{:ok, result}` if the reply arrived in the meantime**. This is the
+      pattern the docs recommend. Catching the exit from `Task.await` leaves the task alive and, on
+      older OTP, risks a stray reply in your mailbox; `yield` alone leaks a running process; a bare
+      `Process.exit` skips the reply check and leaves the monitor and link dangling. For many tasks
+      use `Task.yield_many/2` with `on_timeout: :kill_task`.
+    tags: [task, yield, shutdown]
+    source: https://hexdocs.pm/elixir/Task.html
+
+  - slug: elixir-proc-async-stream-design
+    kind: open
+    difficulty: senior
+    title: "Design: fetch 50,000 URLs concurrently without melting the node"
+    body: |
+      You have a list of 50,000 URLs to fetch and process. A colleague wrote
+      `Enum.map(urls, &Task.async(fn -> fetch(&1) end)) |> Enum.map(&Task.await/1)`.
+      What is wrong with it and how would you do it?
+    answer: |
+      - The snippet spawns 50,000 tasks **at once**: unbounded concurrency, 50k sockets, and 50k
+        linked processes, so a single crash takes down the caller and every other task.
+      - `Task.await/1` defaults to 5 s **per await, sequentially**, so later tasks get a longer
+        effective deadline than earlier ones, and a single slow URL exits the caller.
+      - Use `Task.async_stream(urls, &fetch/1, max_concurrency: 50, timeout: 10_000,
+        on_timeout: :kill_task, ordered: false)` and consume it lazily with `Stream`/`Enum.reduce`.
+        `max_concurrency` bounds the in-flight work; `ordered: false` avoids buffering results when
+        order does not matter; `:kill_task` turns a slow fetch into `{:exit, :timeout}` instead of
+        crashing the caller.
+      - If the caller is a GenServer that must not die, use
+        `Task.Supervisor.async_stream_nolink/4` under a `Task.Supervisor` in your tree.
+      - Pair it with an HTTP pool whose size matches `max_concurrency` (Finch pool size), or the
+        tasks just queue on the pool.
+      - For a long-running or restartable pipeline (retries, acks, batching), reach for
+        `Broadway`/`GenStage`, which give demand-based backpressure instead of a fixed window.
+    explanation: |
+      Follow-ups: "how do you pick `max_concurrency`?" (the bottleneck resource: pool size, remote
+      rate limit, CPU; measure), and "what if one URL hangs forever?" (per-task `timeout` with
+      `:kill_task`). Mention that `async_stream` is linked to the caller, so results you do not
+      consume (`Enum.take`) still shut the remaining tasks down when the stream halts.
+    tags: [task, async_stream, concurrency, design]
+    source: https://elixirforum.com/t/how-to-make-task-async-stream-return-results-as-they-are-ready/69776
+
+  - slug: elixir-proc-agent-basics
+    kind: theory
+    difficulty: middle
+    title: "Agent: state in a process without writing callbacks"
+    body: |
+      `Agent` wraps a GenServer whose only job is to hold a value. You interact with it by sending
+      **functions** that run inside the agent process:
+
+      ```elixir
+      {:ok, pid} = Agent.start_link(fn -> %{} end, name: :cache)
+
+      Agent.update(:cache, &Map.put(&1, :a, 1))           # :ok, replaces the state
+      Agent.get(:cache, &Map.get(&1, :a))                  # 1, state unchanged
+      Agent.get_and_update(:cache, fn s ->                 # read + write atomically
+        {Map.get(s, :a), Map.update(s, :a, 0, &(&1 + 1))}
+      end)
+      ```
+
+      Because the function executes in the agent, `get_and_update` is atomic with respect to other
+      callers: no interleaving between the read and the write. The flip side is that **expensive
+      work inside the function blocks every other caller**, so compute on the client and send only
+      the small update.
+
+      Choose an Agent when the process is *just* state with trivial transformations. Choose a
+      `GenServer` as soon as you need: custom messages (`handle_info` for timers, monitors),
+      `handle_continue`, control over replies, or logic that belongs with the state so callers
+      cannot corrupt it. Choose **ETS** when many processes read the same data concurrently and the
+      serialisation of a single process would be the bottleneck.
+    answer: |
+      **Q:** Two clients run `v = Agent.get(a, & &1); Agent.update(a, fn _ -> v + 1 end)` at the
+      same time. Why can an increment be lost, and what is the fix?
+      **A:** The read and write are two separate messages, so both clients can read the same `v`
+      before either writes. Use `Agent.get_and_update/2` (or `update/2` with `&(&1 + 1)`) so the
+      read-modify-write happens inside the agent in one message.
+    explanation: |
+      Also worth knowing: `Agent.cast/2` exists but has the same unbounded-mailbox caveat as
+      `GenServer.cast`; `use Agent` gives you a `child_spec/1`; and `Agent` calls have the same
+      5-second default timeout as `GenServer.call`.
+    tags: [agent, state, genserver]
+    source: https://hexdocs.pm/elixir/Agent.html
+
+  - slug: elixir-proc-process-dictionary
+    kind: open
+    difficulty: middle
+    title: "What is the process dictionary and why is it discouraged?"
+    body: |
+      Explain `Process.put/2` and `Process.get/1`. Why do style guides tell you to avoid them, and
+      where does Elixir itself use them legitimately?
+    answer: |
+      - Every process has a private key/value store, the **process dictionary**, accessed with
+        `Process.put/2`, `Process.get/1,2`, `Process.delete/1`, `Process.get/0`.
+      - It is mutable, process-local, invisible to callers and lost when the process dies.
+      - It is discouraged because it breaks referential transparency: a function's behaviour now
+        depends on hidden state that does not appear in its arguments or return value, which makes
+        code harder to test, refactor and reason about, and tempts people to smuggle state across
+        function boundaries instead of passing it explicitly (GenServer state, function args).
+      - Legitimate uses are **cross-cutting metadata** set once and read by infrastructure:
+        `Logger.metadata/1` (stored in the dictionary), `$callers` and `$ancestors` written by
+        `Task`/`GenServer` (used by Ecto sandbox and Mox to find the owner process), random seeds
+        for `:rand`, and ad-hoc debugging.
+      - `Process.info(pid, :dictionary)` and crash reports expose it, so never store secrets there.
+    explanation: |
+      Follow-up: "is it faster than passing state around?" Not meaningfully; lookups are O(1) but
+      so is a map in your state, and the dictionary is copied on garbage collection like any other
+      heap data. Another follow-up: "how does Mox know which test process a spawned task belongs
+      to?" (`$callers`).
+    tags: [process-dictionary, callers, logger]
+    source: https://hexdocs.pm/elixir/Task.html
+
+  - slug: elixir-proc-message-copying-binaries
+    kind: theory
+    difficulty: senior
+    title: "Message passing copies data, except large binaries"
+    body: |
+      Because each process has its own heap, `send/2` must **copy** the message term into the
+      receiver's heap (or its mailbox buffer). A 10 MB map sent to 100 processes is copied 100
+      times. Copy cost is linear in the size of the term, and both the sender's CPU time and the
+      receiver's memory are affected.
+
+      The exceptions:
+      - **Refc binaries**: binaries larger than 64 bytes live off-heap in a shared, reference-counted
+        area. Sending one only copies a small `ProcBin` handle and bumps the refcount; the bytes are
+        shared. Binaries of 64 bytes or less (heap binaries) are copied like any term.
+      - **Literals** (compile-time constants) are stored in a shared literal area and not copied.
+      - Nothing is shared across nodes: distributed sends serialise with `:erlang.term_to_binary`.
+
+      Practical consequences:
+      - Keep messages small: send ids, refs or binaries, not big nested maps. Store large shared
+        data in ETS (`read_concurrency: true`) or `:persistent_term` and let readers fetch it.
+      - Sub-binaries (`binary_part`, pattern-matched slices) keep the whole refc binary alive; use
+        `:binary.copy/1` before storing a small slice long-term.
+      - A refc binary is freed only when every holding process has run GC, so a process holding
+        many references with a quiet heap can keep gigabytes alive (the classic "binary leak",
+        fixed with `:erlang.garbage_collect/1` or `hibernate`).
+    answer: |
+      **Q:** You broadcast a 2 MB JSON string to 1,000 subscriber processes. Is it copied 1,000
+      times?
+      **A:** No, as long as it is a single binary larger than 64 bytes: it is a refc binary, so only
+      the handle is copied and the data is shared on the node. If you first decoded it into a map,
+      the map **would** be copied 1,000 times.
+    explanation: |
+      Senior follow-ups: `message_queue_data: :off_heap` (keeps mailbox messages off the heap so
+      GC of a process with a huge mailbox stays cheap), and why `:persistent_term` is better than
+      ETS for rarely-updated large read-mostly data (no copy on read at all).
+    tags: [binaries, memory, message-passing]
+    source: https://www.erlang.org/doc/system/binaryhandling.html
+
+  - slug: elixir-proc-send-after-vs-send-interval
+    kind: open
+    difficulty: senior
+    title: "Scheduling periodic work: `Process.send_after` loop vs `:timer.send_interval`"
+    body: |
+      A GenServer must poll an API every 10 seconds. Compare implementing it with a
+      `Process.send_after/3` loop in `handle_info` versus `:timer.send_interval/2`. Which do you
+      prefer and why? What about `:timer.apply_after`?
+    answer: |
+      - `Process.send_after(self(), :tick, 10_000)` re-armed at the **end** of each `handle_info(:tick, _)`
+        guarantees at least 10 s between the end of one run and the start of the next; if the work
+        takes 4 s the period drifts to 14 s. Ticks never pile up, which is what you want for
+        polling. It returns a timer ref you can `Process.cancel_timer/1`, and a timer whose target
+        pid dies is cleaned up automatically.
+      - `:timer.send_interval(10_000, :tick)` fires on a fixed schedule regardless of how long the
+        work takes, so slow runs cause ticks to **accumulate** in the mailbox (no backpressure).
+        It is linked to the calling process and lives in the `timer` server process; a message
+        queue in `:timer` was a known bottleneck before OTP 25.
+      - `:erlang.send_after/3` (what `Process.send_after` wraps) is a VM-level timer and more
+        efficient than the `:timer` module, which is implemented as a gen_server on top of it.
+      - `:timer.apply_after/4` runs the function in a **new process**, so `self()` inside it is not
+        your GenServer; use it only for side effects that do not need the server's state.
+      - To keep a fixed cadence without pile-up, compute the next deadline from the previous one
+        (`next = last + 10_000; send_after(self(), :tick, max(next - now, 0))`).
+      - Prefer `send_after` in `init/1` or `handle_continue` to arm the first tick, and store the
+        ref in state if you ever need to cancel it on reconfiguration.
+    explanation: |
+      Interviewers look for the pile-up argument and for knowing that `:timer` is a separate
+      process. Bonus: mention `:erlang.start_timer/3`, which wraps the message as
+      `{:timeout, ref, msg}` so you can distinguish stale timers after a cancel.
+    tags: [timers, send_after, handle_info]
+    source: https://www.erlang.org/doc/apps/stdlib/timer.html
+
+  - slug: elixir-proc-rpc-with-timeout-code
+    kind: code
+    difficulty: middle
+    title: "Request/reply with a reference and a timeout"
+    body: |
+      Implement `Rpc.call/3`: `call(server_pid, request, timeout_ms)` sends
+      `{:request, {self(), ref}, request}` to the server with a fresh `ref`, then waits for a reply
+      of the form `{ref, reply}` and returns `{:ok, reply}`. If no matching reply arrives within
+      `timeout_ms`, it returns `{:error, :timeout}` **without crashing the caller**. Replies to
+      other requests (different refs) must not be consumed.
+
+      A server that supports this protocol replies with `send(from, {ref, reply})`.
+
+      ```elixir
+      {:ok, 3} = Rpc.call(server, {:add, 1, 2}, 1000)
+      {:error, :timeout} = Rpc.call(silent_server, :anything, 20)
+      ```
+    starter_code: |
+      defmodule Rpc do
+        def call(server, request, timeout_ms) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RpcTest do
+        use ExUnit.Case
+
+        defp adder do
+          spawn(fn -> adder_loop() end)
+        end
+
+        defp adder_loop do
+          receive do
+            {:request, {from, ref}, {:add, a, b}} ->
+              send(from, {ref, a + b})
+              adder_loop()
+            {:request, _from, :ignore_me} ->
+              adder_loop()
+          end
+        end
+
+        test "gets a reply" do
+          server = adder()
+          assert Rpc.call(server, {:add, 1, 2}, 1000) == {:ok, 3}
+          assert Rpc.call(server, {:add, 10, -4}, 1000) == {:ok, 6}
+        end
+
+        test "times out without crashing when the server never replies" do
+          server = adder()
+          assert Rpc.call(server, :ignore_me, 20) == {:error, :timeout}
+          assert Process.alive?(self())
+        end
+
+        test "does not consume replies meant for other requests" do
+          server = adder()
+          other_ref = make_ref()
+          send(self(), {other_ref, :not_for_you})
+          assert Rpc.call(server, {:add, 2, 2}, 1000) == {:ok, 4}
+          assert_received {^other_ref, :not_for_you}
+        end
+
+        test "uses a unique ref per call" do
+          me = self()
+          spy = spawn(fn ->
+            receive do
+              {:request, {_, ref1}, _} ->
+                receive do
+                  {:request, {_, ref2}, _} -> send(me, {:refs, ref1, ref2})
+                end
+            end
+          end)
+          Rpc.call(spy, :a, 10)
+          Rpc.call(spy, :b, 10)
+          assert_receive {:refs, r1, r2}
+          assert r1 != r2
+        end
+      end
+    solution: |
+      defmodule Rpc do
+        def call(server, request, timeout_ms) do
+          ref = make_ref()
+          send(server, {:request, {self(), ref}, request})
+
+          receive do
+            {^ref, reply} -> {:ok, reply}
+          after
+            timeout_ms -> {:error, :timeout}
+          end
+        end
+      end
+    explanation: |
+      This is the skeleton of `GenServer.call/3`: a unique reference ties reply to request, the
+      pinned `^ref` makes the receive selective, and `after` bounds the wait. The real
+      implementation additionally monitors the server (so a dead server yields an immediate exit
+      instead of a timeout) and, since OTP 24, uses a process **alias** as the ref so a late reply
+      after the timeout is dropped by the VM rather than landing in the mailbox.
+    tags: [receive, make_ref, timeout]
+    source: https://www.erlang.org/doc/apps/stdlib/gen_server.html
+
+  - slug: elixir-proc-make-ref-purpose
+    kind: mcq
+    difficulty: junior
+    title: "What is `make_ref/0` for?"
+    body: |
+      What does `make_ref()` return and what is it typically used for in message passing?
+    choices:
+      - "A monotonically increasing integer used to order messages in the mailbox"
+      - "A unique reference term, used to tag a request so the matching reply can be picked out of the mailbox"
+      - "A pointer to the current process's mailbox"
+      - "A pid for a new process that is created lazily on first `send`"
+    answer: 1
+    explanation: |
+      A reference is an opaque term guaranteed to be unique on the running node (and practically
+      unique across a cluster). The pattern is: `ref = make_ref()`, send `{self(), ref, request}`,
+      then `receive do {^ref, reply} -> reply end`. Without the ref, two concurrent requests to the
+      same server could get their replies crossed, and old replies lingering in the mailbox would
+      be mistaken for new ones. Monitors and timers also return references so their messages can
+      be matched the same way.
+    tags: [make_ref, request-reply]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-race-conditions
+    kind: open
+    difficulty: senior
+    title: "Where do race conditions hide in Elixir if there is no shared memory?"
+    body: |
+      People say Elixir "has no race conditions because there is no shared state". Push back on
+      that: give concrete examples of races between processes and how you avoid them.
+    answer: |
+      - **Check-then-act across messages**: `if Agent.get(a, &Map.has_key?(&1, k)), do:
+        Agent.update(...)` interleaves with other clients. Fix: do the read-modify-write in one
+        message (`get_and_update`, a single `handle_call`).
+      - **Spawn is asynchronous**: `pid = spawn(fn -> Process.register(self(), :srv) ... end);
+        send(:srv, msg)` can run `send` before the child registered, raising `ArgumentError`.
+        Fix: synchronous starts (`GenServer.start_link` returns only after `init/1`, `:proc_lib`),
+        or register from the parent, or pass `name:` to `start_link`.
+      - **Lookup-then-send**: `Registry.lookup` returns a pid that may die before you `send`.
+        Harmless for `send` (dropped) but not for `GenServer.call` (exits with `:noproc`).
+        Fix: monitor, or treat `:noproc` as a normal outcome and retry via the registry.
+      - **Duplicate start**: two requests both see "no process for user 42" and both call
+        `DynamicSupervisor.start_child`. Fix: via-tuple name on the child so the second start
+        returns `{:error, {:already_started, pid}}` and you use that pid.
+      - **Message ordering across senders**: A sends to C, then A tells B, B sends to C; C may see
+        B's message first. Fix: do not assume global ordering; include sequence numbers or route
+        both through one process.
+      - **Tests**: asserting on state right after a `cast` races with the server. Fix: use a
+        `call` as a barrier or `assert_receive`.
+      - Rule: anything that spans two messages is not atomic; make the critical section live
+        inside **one** process callback.
+    explanation: |
+      Candidates who only say "GenServer serialises everything" miss that serialisation is per
+      process and per message. A strong answer names the start-register race and the duplicate
+      DynamicSupervisor child, both of which show up in real codebases.
+    tags: [races, concurrency, registry]
+    source: https://elixirforum.com/t/stale-deadlock-process/17855
+
+  - slug: elixir-proc-let-it-crash
+    kind: theory
+    difficulty: middle
+    title: "\"Let it crash\": what it means and what it does not"
+    body: |
+      "Let it crash" is the OTP approach to **unexpected** errors. Instead of defensive code that
+      tries to handle every possible bad state, you let the process holding the bad state die and
+      have a supervisor restart it from a known-good initial state.
+
+      ```elixir
+      # defensive
+      def handle_call({:withdraw, amt}, _from, %{balance: b} = s) when is_integer(amt) do
+        if amt <= b, do: {:reply, :ok, %{s | balance: b - amt}}, else: {:reply, {:error, :insufficient}, s}
+      end
+
+      # "let it crash" for the *unexpected*: a non-integer amount is a programming error,
+      # so no clause matches, the GenServer crashes with FunctionClauseError and is restarted.
+      ```
+
+      It works because of three properties of the BEAM:
+      - **Isolation**: a crash cannot corrupt another process's heap; only the faulty process dies.
+      - **Links and supervisors**: the crash is detected by the supervisor via the link and the
+        child is restarted according to its strategy and intensity limits.
+      - **Immutable state passing**: a restart goes back to `init/1`, discarding the corrupt state.
+
+      What it does **not** mean:
+      - Ignoring *expected* errors. Validation failures, not-found, timeouts from external
+        services are domain outcomes and should be returned as `{:error, reason}`.
+      - Crashing processes that hold valuable in-memory state without persisting it. The design
+        question is "what state is safe to lose on restart?"; if the answer is "none", keep that
+        state in ETS owned by another process, in a database, or in a separate process.
+      - Crashing in a loop: restart intensity limits (`max_restarts`/`max_seconds`) turn a
+        persistent fault into the supervisor itself giving up and escalating.
+    answer: |
+      **Q:** A GenServer crashes on a malformed message once a day. Is "let it crash" the right
+      response, and what is the cost?
+      **A:** Yes for the process (it restarts clean, the bug is logged with a crash report), but
+      any in-memory state and any messages in its mailbox are lost, and callers mid-`call` exit;
+      if that is unacceptable, move the state to ETS/DB and keep the server small.
+    explanation: |
+      Follow-up: "what happens to the other children when one crashes?" depends on the supervisor
+      strategy (`:one_for_one` leaves them alone, `:one_for_all` restarts all, `:rest_for_one`
+      restarts those started after it).
+    tags: [let-it-crash, supervision, errors]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-sleep-in-tests
+    kind: open
+    difficulty: senior
+    title: "Why is `Process.sleep` in a test a smell, and what do you use instead?"
+    body: |
+      A test does `GenServer.cast(pid, :increment); Process.sleep(50); assert get(pid) == 1`.
+      Why is this bad, and how do you write deterministic tests for concurrent code?
+    answer: |
+      - A sleep is a **guess** about timing: too short and the test flakes under load (CI), too
+        long and the suite is slow. It also hides the real synchronisation point.
+      - Use a **synchronous call as a barrier**: a GenServer handles messages in order, so
+        `GenServer.cast(pid, :inc); assert GenServer.call(pid, :get) == 1` is deterministic: the
+        call cannot be processed before the earlier cast.
+      - For asynchronous outcomes, make the code under test **send a message** to the test process
+        (pass `self()` in or use a Registry/PubSub) and use `assert_receive pattern, timeout`
+        (default 100 ms); it returns as soon as the message arrives, so it is both fast and robust.
+      - To wait for a process to die, **monitor** it and `assert_receive {:DOWN, ^ref, _, _, _}`.
+      - `:sys.get_state/1` lets you inspect state synchronously (debug-only, but acceptable in tests
+        when there is no public API). Calling it is also a barrier like any call.
+      - Start processes with `start_supervised!/1` so they are stopped in reverse order at test end,
+        avoiding "already started" errors in the next test.
+      - For timers, inject the interval (short in tests) or make the tick message public so the
+        test can `send(pid, :tick)` directly instead of waiting for it.
+      - If you truly must poll (e.g. an ETS table written by another process), loop with a short
+        interval and a deadline instead of a fixed sleep.
+    explanation: |
+      Interviewers listen for "call as a barrier" and `assert_receive`. A follow-up might be
+      "what if the server casts to a *third* process?" (have that process be the test process, or
+      monitor/trace it with `:erlang.trace`), or "how do you test a `handle_info(:timeout)`?"
+      (send the message yourself).
+    tags: [testing, exunit, determinism]
+    source: https://hexdocs.pm/ex_unit/ExUnit.Assertions.html
+
+  - slug: elixir-proc-iex-flush
+    kind: mcq
+    difficulty: junior
+    title: "What does `flush()` do in IEx?"
+    body: |
+      ```elixir
+      iex> send(self(), :a)
+      iex> send(self(), :b)
+      iex> flush()
+      ```
+    choices:
+      - "Prints `:a` and `:b` and removes them from the shell process's mailbox"
+      - "Discards the mailbox silently and returns the number of messages dropped"
+      - "Forces delivery of messages that are still buffered in the sender"
+      - "Blocks until the mailbox is empty for 1 second"
+    answer: 0
+    explanation: |
+      `flush/0` is an IEx helper that repeatedly does `receive do msg -> IO.inspect(msg) after 0 -> :ok end`
+      until nothing is left, printing each message and returning `:ok`. It is the quickest way to
+      see what a process you are experimenting with sent to the shell. It is not a general-purpose
+      function (it only exists in IEx), and there is no "buffered sender" concept: `send` delivers
+      straight into the mailbox.
+    tags: [iex, mailbox]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-hibernation-and-gc
+    kind: open
+    difficulty: senior
+    title: "When would you hibernate a process, and what does it cost?"
+    body: |
+      Explain what process hibernation does on the BEAM, how you trigger it from a GenServer, and
+      the trade-offs. How does this relate to per-process garbage collection?
+    answer: |
+      - Each process has its own heap and is garbage collected **independently**; GC is triggered
+        by that process's own allocation, so an idle process with a large heap left over from a
+        burst of work keeps that memory (and any refc binaries it references) indefinitely.
+      - **Hibernation** (`Process.hibernate/3`, `:erlang.hibernate/3`, or returning `:hibernate` as
+        the last element from a GenServer callback / `{:ok, state, :hibernate}`) runs a full GC,
+        discards the call stack, shrinks the heap to the minimum and suspends the process until the
+        next message. Memory drops to a few hundred words plus the compacted state.
+      - Cost: at least two GCs (one on entering, one when the heap grows again) and the stack
+        rebuild on wake-up; hibernating a busy process makes it slower. OTP docs warn against
+        frequent use.
+      - Use it for many **mostly-idle** processes: connection handlers, per-user sessions,
+        channels (Phoenix Channels and GenServers accept `hibernate_after: ms` to hibernate
+        automatically after inactivity).
+      - Related knobs: `:erlang.garbage_collect/1` to force a GC without hibernating,
+        `fullsweep_after` to limit how long old-generation data survives, and keeping state
+        small (store bulk data in ETS) so GC pauses stay short.
+      - Symptom that calls for it: node memory dominated by processes with large `heap_size` but
+        low `message_queue_len` and activity, or refc binaries not being released.
+    explanation: |
+      Follow-up: "why does GC on the BEAM not stop the world?" Because each process's heap is
+      collected separately while the other schedulers keep running; only very large heaps pause
+      their own process noticeably.
+    tags: [hibernate, gc, memory]
+    source: https://www.erlang.org/doc/apps/stdlib/gen_server.html
+
+  - slug: elixir-proc-accumulator-flush-code
+    kind: code
+    difficulty: middle
+    title: "A process that accumulates messages and replies to `{:flush, from}`"
+    body: |
+      Implement `Accumulator`:
+
+      - `start/0` — spawns and returns a process that collects every `{:push, item}` message.
+      - `push/2` — `push(pid, item)` sends `{:push, item}` and returns `:ok`.
+      - `flush/1` — `flush(pid)` sends `{:flush, self()}`; the process must reply
+        `{:flushed, items}` with the items **in the order they were pushed** and reset its buffer.
+        `flush/1` returns the list.
+
+      ```elixir
+      acc = Accumulator.start()
+      Accumulator.push(acc, :a)
+      Accumulator.push(acc, :b)
+      Accumulator.flush(acc)   # => [:a, :b]
+      Accumulator.flush(acc)   # => []
+      ```
+    starter_code: |
+      defmodule Accumulator do
+        def start do
+          # your code here
+        end
+
+        def push(pid, item), do: :ok
+
+        def flush(pid) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AccumulatorTest do
+        use ExUnit.Case
+
+        test "returns pushed items in order and resets" do
+          acc = Accumulator.start()
+          Accumulator.push(acc, :a)
+          Accumulator.push(acc, :b)
+          Accumulator.push(acc, :c)
+          assert Accumulator.flush(acc) == [:a, :b, :c]
+          assert Accumulator.flush(acc) == []
+        end
+
+        test "keeps collecting after a flush" do
+          acc = Accumulator.start()
+          Accumulator.push(acc, 1)
+          assert Accumulator.flush(acc) == [1]
+          Accumulator.push(acc, 2)
+          Accumulator.push(acc, 3)
+          assert Accumulator.flush(acc) == [2, 3]
+        end
+
+        test "replies with the {:flushed, items} protocol" do
+          acc = Accumulator.start()
+          Accumulator.push(acc, :x)
+          send(acc, {:flush, self()})
+          assert_receive {:flushed, [:x]}
+        end
+
+        test "items pushed from several processes are all collected" do
+          acc = Accumulator.start()
+          tasks = for i <- 1..5, do: Task.async(fn -> Accumulator.push(acc, i) end)
+          Enum.each(tasks, &Task.await/1)
+          assert Enum.sort(Accumulator.flush(acc)) == [1, 2, 3, 4, 5]
+        end
+      end
+    solution: |
+      defmodule Accumulator do
+        def start, do: spawn(fn -> loop([]) end)
+
+        def push(pid, item) do
+          send(pid, {:push, item})
+          :ok
+        end
+
+        def flush(pid) do
+          send(pid, {:flush, self()})
+
+          receive do
+            {:flushed, items} -> items
+          end
+        end
+
+        defp loop(acc) do
+          receive do
+            {:push, item} ->
+              loop([item | acc])
+
+            {:flush, from} ->
+              send(from, {:flushed, Enum.reverse(acc)})
+              loop([])
+          end
+        end
+      end
+    explanation: |
+      Prepending to the list and reversing on flush is O(1) per push and O(n) per flush, which is
+      the idiomatic way to build a list in arrival order. Because a single mailbox serialises the
+      pushes and the flush, a `push` that was sent before the `flush` by the **same** process is
+      guaranteed to be included (per-pair ordering); pushes from other processes race with the
+      flush, which is why the last test sorts and awaits the tasks first.
+    tags: [receive, state, ordering]
+    source: https://hexdocs.pm/elixir/processes.html
+
+  - slug: elixir-proc-registry-rooms-code
+    kind: code
+    difficulty: middle
+    title: "Registry-backed process lookup"
+    body: |
+      Implement `Rooms`, a tiny chat-room lookup on top of `Registry`:
+
+      - `start_registry/0` — starts a `Registry` named `Rooms.Registry` with unique keys
+        (`Registry.start_link(keys: :unique, name: Rooms.Registry)`).
+      - `start_room/1` — `start_room(name)` spawns a process that registers itself under `name`
+        and then loops, replying `{:hi_from, name}` to the sender of every `{:hello, from}` message.
+        It must return the pid only **after** the registration has happened.
+      - `whereis/1` — `whereis(name)` returns the room pid or `nil`.
+      - `say_hello/1` — `say_hello(name)` sends `{:hello, self()}` to the room (if it exists) and
+        returns `:ok`, or returns `{:error, :not_found}`.
+
+      ```elixir
+      Rooms.start_registry()
+      Rooms.start_room("lobby")
+      Rooms.say_hello("lobby")   # => :ok, and later the caller receives {:hi_from, "lobby"}
+      Rooms.whereis("nope")      # => nil
+      ```
+    starter_code: |
+      defmodule Rooms do
+        def start_registry do
+          # your code here
+        end
+
+        def start_room(name) do
+          # spawn, Registry.register(Rooms.Registry, name, nil), wait for confirmation
+        end
+
+        def whereis(name) do
+          # Registry.lookup
+        end
+
+        def say_hello(name) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RoomsTest do
+        use ExUnit.Case
+
+        setup_all do
+          Rooms.start_registry()
+          :ok
+        end
+
+        test "whereis finds a started room and returns nil otherwise" do
+          pid = Rooms.start_room("alpha")
+          assert Rooms.whereis("alpha") == pid
+          assert Process.alive?(pid)
+          assert Rooms.whereis("missing") == nil
+        end
+
+        test "say_hello delivers to the room, which replies" do
+          Rooms.start_room("beta")
+          assert Rooms.say_hello("beta") == :ok
+          assert_receive {:hi_from, "beta"}
+        end
+
+        test "say_hello to an unknown room returns an error" do
+          assert Rooms.say_hello("ghost") == {:error, :not_found}
+        end
+
+        test "registration is removed when the room dies" do
+          pid = Rooms.start_room("gamma")
+          ref = Process.monitor(pid)
+          Process.exit(pid, :kill)
+          assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+          Process.sleep(20)
+          assert Rooms.whereis("gamma") == nil
+        end
+      end
+    solution: |
+      defmodule Rooms do
+        def start_registry do
+          Registry.start_link(keys: :unique, name: Rooms.Registry)
+        end
+
+        def start_room(name) do
+          parent = self()
+
+          pid =
+            spawn(fn ->
+              {:ok, _} = Registry.register(Rooms.Registry, name, nil)
+              send(parent, {:registered, self()})
+              loop(name)
+            end)
+
+          receive do
+            {:registered, ^pid} -> pid
+          end
+        end
+
+        defp loop(name) do
+          receive do
+            {:hello, from} ->
+              send(from, {:hi_from, name})
+              loop(name)
+          end
+        end
+
+        def whereis(name) do
+          case Registry.lookup(Rooms.Registry, name) do
+            [{pid, _}] -> pid
+            [] -> nil
+          end
+        end
+
+        def say_hello(name) do
+          case whereis(name) do
+            nil -> {:error, :not_found}
+            pid -> send(pid, {:hello, self()}); :ok
+          end
+        end
+      end
+    explanation: |
+      `Registry.register/3` must be called **by the process being registered** (the registry links
+      a partition to the caller to track its death), so the room registers itself and then tells
+      the parent; waiting for `{:registered, pid}` closes the spawn/register race. A unique-key
+      registry maps each key to at most one pid, `lookup/2` returns `[{pid, value}]` or `[]`, and
+      entries disappear when the process dies (asynchronously, hence the tiny sleep in the last
+      test). In real code you would start the room as a GenServer with
+      `name: {:via, Registry, {Rooms.Registry, name}}` and let `start_link` do all of this.
+    tags: [registry, lookup, spawn]
+    source: https://hexdocs.pm/elixir/Registry.html
+
+  - slug: elixir-proc-distributed-send-group-leader
+    kind: open
+    difficulty: senior
+    title: "How do you send a message to a process on another node, and what is a group leader?"
+    body: |
+      Two nodes are connected with `Node.connect/1`. How can a process on node A message a process
+      on node B? While answering, explain why `IO.puts` executed on node B via `Node.spawn/2` prints
+      on node A.
+    answer: |
+      - Pids are **location transparent**: a pid obtained from node B (e.g. returned by a remote
+        call) can be used with `send/2` and `GenServer.call/2` from node A; the VM routes the
+        message over the distribution channel and serialises the term.
+      - To address a **named** process remotely use `send({name, :"b@host"}, msg)` or
+        `GenServer.call({name, :"b@host"}, req)`; this works for locally registered atoms on
+        node B. `{:global, name}` and `{:via, ...}` names registered with a cluster-aware registry
+        also resolve across nodes.
+      - `Node.spawn/2` and `:erpc.call/4` run code on the remote node;
+        `Task.Supervisor.async({MySup, node}, M, f, a)` starts a supervised task there (use
+        MFA, not anonymous functions, across code versions).
+      - Guarantees are weaker across nodes: messages can be lost on net splits, per-pair ordering
+        still holds, and exit signals/monitors deliver `:noconnection` when the link drops.
+        Monitors (`Process.monitor`, `Node.monitor`) are how you detect that.
+      - **Group leader**: every process has a group leader process that owns its standard IO.
+        `Node.spawn/2` sets the new process's group leader to the **caller's** group leader, so
+        `IO.puts` inside it is sent as an IO request to node A's leader and prints on A. The same
+        mechanism lets `ExUnit.CaptureIO` capture output: it swaps the group leader with
+        `Process.group_leader/2` for the duration of the test.
+    explanation: |
+      Follow-up: "can `send` to a remote pid raise?" No; like local sends it is silent, which is
+      exactly why monitors matter in distributed code. Another: "what does
+      `:rpc.call` do differently from `:erpc.call`?" (`:erpc` is newer, faster and does not
+      serialise through a single `rex` server).
+    tags: [distribution, group_leader, node]
+    source: https://hexdocs.pm/elixir/Process.html

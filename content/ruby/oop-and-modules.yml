@@ -1,0 +1,1832 @@
+language: ruby
+topic: oop-and-modules
+items:
+  - slug: ruby-oop-setter-self-required
+    kind: mcq
+    difficulty: middle
+    title: "Why does this setter not work?"
+    body: |
+      ```ruby
+      class User
+        attr_accessor :name
+
+        def rename(new_name)
+          name = new_name.strip
+        end
+      end
+
+      u = User.new
+      u.name = "ann"
+      u.rename("  bob  ")
+      p u.name
+      ```
+    choices:
+      - "\"bob\""
+      - "\"ann\""
+      - "\"  bob  \""
+      - "NoMethodError: undefined method 'rename'"
+    answer: 1
+    explanation: |
+      Inside `rename`, `name = ...` creates a **local variable** called `name`; it never calls the `name=` writer.
+      Ruby cannot tell an assignment to a local from a setter call, so writers always need an explicit receiver:
+      `self.name = new_name.strip`. Reading is different: a bare `name` resolves to the method when no local of
+      that name exists. This is one of the most common Ruby bugs and a favourite "what does this print".
+    tags: [attr_accessor, self, setters]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/assignment_rdoc.html
+
+  - slug: ruby-oop-include-vs-extend-print
+    kind: mcq
+    difficulty: junior
+    title: "include vs extend: which calls work?"
+    body: |
+      ```ruby
+      module Greeting
+        def hi = "hi"
+      end
+
+      class A; include Greeting; end
+      class B; extend Greeting; end
+
+      p A.new.hi
+      p B.hi
+      p A.hi
+      ```
+    choices:
+      - "\"hi\", \"hi\", \"hi\""
+      - "\"hi\", NoMethodError on `B.hi`"
+      - "\"hi\", \"hi\", NoMethodError on `A.hi`"
+      - "NoMethodError on `A.new.hi`, \"hi\", \"hi\""
+    answer: 2
+    explanation: |
+      `include` adds the module to the class's ancestor chain, so **instances** of `A` get `hi`. `extend` adds
+      the module to the singleton class of the receiver, so the **object `B` itself** (the class) gets `hi`.
+      Nothing gives `A` the class method, so `A.hi` raises `NoMethodError`. To get both at once you use the
+      `self.included(base) ... base.extend(ClassMethods)` idiom or `ActiveSupport::Concern`.
+    tags: [include, extend, mixins]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-prepend-ancestors
+    kind: mcq
+    difficulty: middle
+    title: "What is the ancestor chain with include and prepend?"
+    body: |
+      ```ruby
+      module Logging; end
+      module Caching; end
+
+      class Repo
+        include Logging
+        prepend Caching
+      end
+
+      p Repo.ancestors.first(4)
+      ```
+    choices:
+      - "[Repo, Caching, Logging, Object]"
+      - "[Caching, Repo, Logging, Object]"
+      - "[Repo, Logging, Caching, Object]"
+      - "[Logging, Caching, Repo, Object]"
+    answer: 1
+    explanation: |
+      `include` inserts the module **after** the class (the class's own methods win), `prepend` inserts it
+      **before** the class, so a prepended module's method runs first and can call `super` into the class.
+      `ancestors` is literally the method lookup order. This is why `prepend` is the modern replacement for
+      alias-method-chain: wrap a method without renaming it. Multiple includes stack: the most recently
+      included module sits closest to the class.
+    tags: [prepend, include, ancestors]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-class-var-leak
+    kind: mcq
+    difficulty: middle
+    title: "Class variables and subclasses: what does this print?"
+    body: |
+      ```ruby
+      class Vehicle
+        @@wheels = 4
+        def self.wheels = @@wheels
+        def self.wheels=(n)
+          @@wheels = n
+        end
+      end
+
+      class Bike < Vehicle; end
+
+      Bike.wheels = 2
+      p Vehicle.wheels
+      ```
+    choices:
+      - "4"
+      - "2"
+      - "nil"
+      - "NameError: uninitialized class variable"
+    answer: 1
+    explanation: |
+      A `@@class_variable` is a **single slot shared by the class, every subclass and all their instances**.
+      Assigning through `Bike` overwrites the same variable `Vehicle` reads, so `Vehicle.wheels` is now `2`.
+      This "leak upward" is why style guides discourage `@@vars`; per-class state should use class instance
+      variables (`@wheels` in the class body, with `class << self; attr_accessor :wheels; end`) or
+      `class_attribute` in Rails.
+    tags: [class-variables, inheritance]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/assignment_rdoc.html
+
+  - slug: ruby-oop-class-ivar-inheritance
+    kind: mcq
+    difficulty: middle
+    title: "Class instance variables: what does this print?"
+    body: |
+      ```ruby
+      class Base
+        @registry = []
+
+        class << self
+          attr_accessor :registry
+        end
+      end
+
+      class Child < Base; end
+
+      p Child.registry
+      p Base.registry
+      ```
+    choices:
+      - "[], []"
+      - "nil, []"
+      - "[], nil"
+      - "NameError: uninitialized instance variable @registry"
+    answer: 1
+    explanation: |
+      `@registry` in the class body is an instance variable of the **object `Base`** (a class instance
+      variable). `Child` is a different object with its own, empty set of instance variables, so
+      `Child.registry` is `nil` (uninitialized ivars read as `nil`). Unlike `@@vars`, nothing is shared, which is
+      usually what you want, but you must initialise per subclass, typically in an `inherited` hook
+      (`def self.inherited(sub) = sub.registry = []`).
+    tags: [class-instance-variables, inheritance]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-private-explicit-receiver
+    kind: mcq
+    difficulty: junior
+    title: "Private methods and explicit receivers: what happens?"
+    body: |
+      ```ruby
+      class Account
+        def initialize(secret) = @secret = secret
+
+        def mine = self.secret
+        def theirs(other) = other.secret
+
+        private
+
+        def secret = @secret
+      end
+
+      a, b = Account.new(1), Account.new(2)
+      p a.mine
+      p a.theirs(b)
+      ```
+    choices:
+      - "1, then NoMethodError: private method 'secret' called"
+      - "NoMethodError on `a.mine` because of the explicit `self.`"
+      - "1, 2"
+      - "1, then NameError: undefined local variable 'secret'"
+    answer: 0
+    explanation: |
+      A private method can only be called without an explicit receiver, with the single exception of `self.`
+      (allowed since Ruby 2.7; before that only setters like `self.x = 1` were allowed). `other.secret` is a call
+      with an explicit receiver on **another** object, so it raises `NoMethodError (private method 'secret'
+      called for an instance of Account)`. If `secret` were `protected`, `other.secret` would work inside
+      `Account` instance methods but still fail from outside.
+    tags: [visibility, private]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-protected-compare
+    kind: mcq
+    difficulty: middle
+    title: "What is `protected` actually for?"
+    body: |
+      ```ruby
+      class Money
+        def initialize(cents) = @cents = cents
+        def >(other) = cents > other.cents
+
+        protected
+
+        def cents = @cents
+      end
+
+      p Money.new(200) > Money.new(100)
+      p Money.new(200).cents
+      ```
+    choices:
+      - "true, 200"
+      - "NoMethodError on `other.cents`, because protected methods need `self.`"
+      - "true, then NoMethodError: protected method 'cents' called"
+      - "false, 200"
+    answer: 2
+    explanation: |
+      `protected` methods can be called with an explicit receiver **as long as the caller is an instance of the
+      same class (or a subclass)**, so `other.cents` inside `>` works. From the outside `Money.new(200).cents`
+      raises `NoMethodError (protected method 'cents' called ...)`. That is exactly the use case: comparing
+      or combining two objects of the same class without exposing internals publicly. `private` would break
+      `other.cents`; `public` would leak the accessor.
+    tags: [visibility, protected]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-super-implicit-args-modified
+    kind: mcq
+    difficulty: middle
+    title: "Bare `super` and reassigned parameters: what prints?"
+    body: |
+      ```ruby
+      class Base
+        def greet(name) = "hello #{name}"
+      end
+
+      class Shouter < Base
+        def greet(name)
+          name = name.upcase
+          super
+        end
+      end
+
+      p Shouter.new.greet("bob")
+      ```
+    choices:
+      - "\"hello bob\""
+      - "\"hello BOB\""
+      - "ArgumentError: wrong number of arguments (given 0, expected 1)"
+      - "\"HELLO BOB\""
+    answer: 1
+    explanation: |
+      Bare `super` (no parentheses) re-sends the method's parameters **by their current values**, so the
+      reassigned `name` (`"BOB"`) is forwarded and the result is `"hello BOB"`. `super()` with empty parentheses
+      passes no arguments (that would raise `ArgumentError` here), and `super(x)` passes exactly what you list.
+      The same zsuper also forwards the block implicitly. Knowing that reassignment leaks into `super` is a
+      frequent "spot the bug" question.
+    tags: [super, inheritance]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-hash-key-eql
+    kind: mcq
+    difficulty: middle
+    title: "Overriding `==` only: why is the Hash lookup nil?"
+    body: |
+      ```ruby
+      class Point
+        attr_reader :x, :y
+        def initialize(x, y) = (@x, @y = x, y)
+        def ==(other) = other.is_a?(Point) && x == other.x && y == other.y
+      end
+
+      index = {Point.new(1, 2) => "A"}
+      p Point.new(1, 2) == Point.new(1, 2)
+      p index[Point.new(1, 2)]
+      ```
+    choices:
+      - "true, \"A\""
+      - "true, nil"
+      - "false, nil"
+      - "true, then KeyError"
+    answer: 1
+    explanation: |
+      `Hash` never calls `==`. It calls `hash` to find the bucket and then `eql?` to confirm the key. Both still
+      come from `Object` and compare identity, so the second `Point.new(1, 2)` is a different key and the lookup
+      returns `nil`. To make a value object usable as a key (and in `uniq`, `Set`, `Array#-`), define
+      `eql?` (usually `alias eql? ==`) **and** `hash` (e.g. `[self.class, x, y].hash`). The contract: objects
+      that are `eql?` must have equal `hash`. `Struct` and `Data` do this for you.
+    tags: [equality, hash, eql]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-oop-instance-of-vs-is-a
+    kind: mcq
+    difficulty: junior
+    title: "`instance_of?` vs `is_a?` vs `kind_of?`"
+    body: |
+      ```ruby
+      p 1.instance_of?(Numeric)
+      p 1.is_a?(Numeric)
+      p 1.is_a?(Comparable)
+      p 1.kind_of?(Integer)
+      ```
+    choices:
+      - "true, true, true, true"
+      - "false, true, false, true"
+      - "false, true, true, true"
+      - "false, false, true, true"
+    answer: 2
+    explanation: |
+      `instance_of?` is true only for the object's **exact** class (`1.class` is `Integer`, not `Numeric`).
+      `is_a?` and its alias `kind_of?` walk the whole ancestor chain, which includes superclasses **and included
+      modules**, so `Integer < Numeric` and `Integer includes Comparable` both hold. In practice `is_a?` is what
+      you want for type checks, `instance_of?` is rare, and duck typing (`respond_to?`) is often better than either.
+    tags: [is_a, instance_of, types]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-oop-data-immutable
+    kind: mcq
+    difficulty: junior
+    title: "`Data.define`: what does this print?"
+    body: |
+      ```ruby
+      Point = Data.define(:x, :y)
+      pt = Point.new(1, 2)
+      p pt.frozen?
+      moved = pt.with(x: 5)
+      p moved
+      pt.x = 9
+      ```
+    choices:
+      - "true, #<data Point x=5, y=2>, then NoMethodError: undefined method 'x='"
+      - "false, #<data Point x=5, y=2>, then pt becomes x=9"
+      - "true, #<data Point x=5, y=2>, then FrozenError"
+      - "true, ArgumentError because `with` requires all members"
+    answer: 0
+    explanation: |
+      `Data` (Ruby 3.2+) builds immutable value objects: instances are frozen on construction, there are **no
+      writer methods at all**, so `pt.x = 9` is a `NoMethodError` rather than a `FrozenError`. `with(**changes)`
+      returns a new instance with the given members replaced; the rest are copied. All members are mandatory
+      (`Point.new(1)` raises `ArgumentError`), keyword and positional construction both work, and `==`,
+      `eql?`, `hash`, `to_h`, `deconstruct_keys` are defined for you.
+    tags: [Data, immutability, value-objects]
+    source: https://docs.ruby-lang.org/en/3.3/Data.html
+
+  - slug: ruby-oop-respond-to-missing
+    kind: mcq
+    difficulty: senior
+    title: "method_missing without respond_to_missing?: what prints?"
+    body: |
+      ```ruby
+      class Ghost
+        def method_missing(name, *args)
+          name.start_with?("get_") ? "got #{name}" : super
+        end
+      end
+
+      g = Ghost.new
+      p g.get_thing
+      p g.respond_to?(:get_thing)
+      p g.method(:get_thing).call
+      ```
+    choices:
+      - "\"got get_thing\", true, \"got get_thing\""
+      - "\"got get_thing\", false, then NameError: undefined method 'get_thing'"
+      - "\"got get_thing\", false, \"got get_thing\""
+      - "NoMethodError on the first line because method_missing must call super first"
+    answer: 1
+    explanation: |
+      `method_missing` only intercepts the **dispatch**; introspection (`respond_to?`, `method`,
+      `public_method`, `Method` objects) does not know about it. The fix is to override
+      `respond_to_missing?(name, include_private = false)` with the same predicate and call `super` otherwise:
+      then `respond_to?` returns `true` and `method(:get_thing)` returns a callable `Method`. Interviewers treat
+      `respond_to_missing?` as the signal that a candidate has actually shipped `method_missing` code; the other
+      half is always calling `super` for names you do not handle so real `NoMethodError`s still surface.
+    tags: [method_missing, respond_to_missing, metaprogramming]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-oop-self-contexts-print
+    kind: mcq
+    difficulty: senior
+    title: "What is `self` in each context?"
+    body: |
+      ```ruby
+      class Widget
+        p self              # 1
+        class << self
+          p self            # 2
+          def build = self  # 3
+        end
+        def owner = self    # 4
+      end
+
+      p Widget.build
+      p Widget.new.owner.class
+      ```
+      What do lines 1, 2 and the two final `p` calls print?
+    choices:
+      - "Widget, Widget, Widget, Widget"
+      - "Widget, #<Class:Widget>, Widget, Widget"
+      - "main, #<Class:Widget>, #<Class:Widget>, Widget"
+      - "Widget, #<Class:Widget>, #<Class:Widget>, Widget"
+    answer: 1
+    explanation: |
+      In a class body `self` is the class object (`Widget`). Inside `class << self` we are in the body of the
+      **singleton class**, so `self` is `#<Class:Widget>`. A method defined there is a singleton (class) method;
+      when *called* as `Widget.build`, `self` is the receiver, `Widget`, not the singleton class. In an instance
+      method `self` is the instance. The rule that resolves every case: `self` is whatever object received the
+      current message, and in a class/module body it is the class/module itself.
+    tags: [self, singleton-class]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-to-s-vs-inspect
+    kind: mcq
+    difficulty: junior
+    title: "`to_s` vs `inspect`: which one is used where?"
+    body: |
+      ```ruby
+      class Temp
+        def to_s = "20C"
+        def inspect = "#<Temp 20>"
+      end
+
+      t = Temp.new
+      puts t
+      p t
+      puts "now: #{t}"
+      puts [t].to_s
+      ```
+    choices:
+      - "20C / #<Temp 20> / now: 20C / [#<Temp 20>]"
+      - "20C / 20C / now: 20C / [20C]"
+      - "#<Temp 20> / #<Temp 20> / now: 20C / [#<Temp 20>]"
+      - "20C / #<Temp 20> / now: #<Temp 20> / [20C]"
+    answer: 0
+    explanation: |
+      `puts` and string interpolation call `to_s` (human-readable). `p`, the REPL, and `Array#inspect`/`to_s`
+      (which prints elements with `inspect`) call `inspect` (developer-readable, should be unambiguous).
+      `Object#to_s` defaults to `#<Temp>` with an encoded id and `Object#inspect` adds the instance variables;
+      overriding `inspect` is what makes your objects pleasant in error messages and debuggers. Note that
+      `Array#to_s` is an alias of `inspect`, which is why the last line shows `[#<Temp 20>]`.
+    tags: [to_s, inspect]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-oop-include-extend-prepend
+    kind: open
+    difficulty: junior
+    title: "Explain `include`, `extend` and `prepend`"
+    body: |
+      What does each keyword do to the receiver, where does the module end up in the lookup chain, and
+      give a realistic use case for each one.
+    answer: |
+      - `include M`: inserts `M` into the ancestors **after** the class. Instances gain `M`'s instance methods;
+        the class's own methods override the module's. Use for shared behaviour (`Comparable`, `Enumerable`,
+        your own `Auditable`).
+      - `extend M`: includes `M` into the **singleton class** of the receiver, so the module's instance methods
+        become singleton methods of that one object. On a class that means class methods; on a plain object it
+        adds behaviour to just that instance (`obj.extend(Debuggable)`).
+      - `prepend M`: inserts `M` **before** the class, so `M`'s methods run first and reach the original via
+        `super`. Use for decorators/around-advice: logging, caching, instrumentation, without alias chaining.
+      - All three can be called multiple times; a module already in the chain is not inserted twice, and each
+        triggers a hook (`included`, `extended`, `prepended`) on the module.
+      - `Class#ancestors` shows the final order and is the first thing to check when a method resolves unexpectedly.
+    explanation: |
+      Follow-ups: "How do you add both instance and class methods with one `include`?" (`self.included(base)`
+      + `base.extend(ClassMethods)`), "What happens if you `include` a module that also `prepend`s something?",
+      "Why does `extend self` inside a module make its methods callable as `Mod.foo`?".
+    tags: [include, extend, prepend, mixins]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-method-lookup
+    kind: open
+    difficulty: middle
+    title: "Walk through Ruby's method lookup for `obj.foo`"
+    body: |
+      When you call `obj.foo`, in what order does Ruby search for `foo`? Include singleton methods, prepended
+      and included modules, superclasses, `Kernel`, `BasicObject` and what happens when nothing is found.
+    answer: |
+      - Ruby starts at the receiver's **singleton class** (if one exists: `def obj.foo`, `extend`), then follows
+        `obj.singleton_class.ancestors`.
+      - For each class on the way: its **prepended modules** (last prepended first), the class itself, then its
+        **included modules** (last included first), then the superclass, repeating.
+      - For a normal object that ends with `Object`, `Kernel` (included in Object, home of `puts`, `raise`,
+        `require`) and `BasicObject`.
+      - The first definition found wins and `super` continues the search from that point in the same chain.
+      - If nothing is found Ruby calls `method_missing(:foo, *args)` with the same lookup; `BasicObject`'s
+        default raises `NoMethodError` (or `NameError` for a bare name that could be a local variable).
+      - Lookup is cached per call site (inline method caches) and invalidated when the hierarchy changes, which is
+        why monkey patching at runtime has a performance cost.
+    explanation: |
+      Follow-ups: "Where do class methods live in this picture?" (on the singleton class of the class, whose
+      ancestors include the singleton classes of the superclasses, then `Class`, `Module`, `Object`),
+      "What does `Method#owner` return?", "Why does `include` of the same module twice not change anything?"
+    tags: [method-lookup, ancestors]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-included-hook
+    kind: open
+    difficulty: middle
+    title: "What is `self.included(base)` for, and what does `ActiveSupport::Concern` add?"
+    body: |
+      ```ruby
+      module Searchable
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+
+        module ClassMethods
+          def search(q) = where("name LIKE ?", "%#{q}%")
+        end
+
+        def highlight = "..."
+      end
+      ```
+      Explain this idiom and the problem `ActiveSupport::Concern` solves on top of it.
+    answer: |
+      - `Module#included` is a hook Ruby calls after a module is mixed in, passing the including class. The idiom
+        uses it to `extend` the class with a nested `ClassMethods` module, so one `include` adds both instance
+        methods and class methods.
+      - Sibling hooks: `extended`, `prepended`, `inherited` (on Class), `method_added`; all are private and all
+        run **after** the structural change.
+      - Plain Ruby limitation: if `Searchable` itself includes another module written the same way, `base` for the
+        inner module is `Searchable` (a Module), not the final class, so its `ClassMethods` land on the wrong
+        object, and `included` blocks that call class macros (`has_many`, `scope`) fail for the same reason.
+      - `ActiveSupport::Concern` fixes dependency resolution: `included do ... end` blocks are evaluated in the
+        context of the final class, `class_methods do` (or a `ClassMethods` constant) is extended automatically,
+        and concerns that depend on other concerns are included in the right order.
+      - Cost: a bit of magic; for a standalone module without nested dependencies the manual hook is perfectly fine.
+    explanation: |
+      Follow-up: "Can `included` be called more than once for the same module?" (once per including class),
+      "What is `Module#append_features`?" (the lower-level hook that performs the inclusion; `included` is the
+      user-facing callback), "How would you test a concern in isolation?" (include it in an anonymous
+      `Class.new`).
+    tags: [hooks, included, concern]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-three-variable-kinds
+    kind: open
+    difficulty: junior
+    title: "Instance variables, class variables and class instance variables"
+    body: |
+      ```ruby
+      class Config
+        @@shared = 1
+        @per_class = 2
+        def initialize = @per_object = 3
+      end
+      ```
+      Explain where each of the three variables lives, who can see it, how subclasses are affected,
+      and which one you would use to count instances of a class.
+    answer: |
+      - `@per_object` lives in each instance; only that object's instance methods see it; subclass instances get
+        their own when `initialize` runs. Reads of unset ivars return `nil`.
+      - `@per_class` is an instance variable of the Class object `Config` (a *class instance variable*). Visible
+        in class methods and the class body, **not** in instance methods and **not** inherited: `Sub.instance_variable_get(:@per_class)`
+        is `nil`.
+      - `@@shared` is a class variable: one slot shared by `Config`, all subclasses and all their instances
+        (readable from instance methods too). A subclass that assigns it changes it for everyone. Reading an
+        unset `@@var` raises `NameError`.
+      - For an instance counter prefer a class instance variable plus a class-level reader
+        (`class << self; attr_accessor :count; end`), initialised per subclass in `inherited` if needed.
+        Use `@@` only when a truly hierarchy-wide value is wanted, and most style guides say never.
+    explanation: |
+      Follow-ups: "Why does Rails provide `class_attribute`?" (inheritable *and* overridable per subclass,
+      unlike both alternatives), "Can a module have `@@vars`?" (yes, and they are shared with every includer,
+      a known footgun), "What does `Config.instance_variables` return?" (`[:@per_class]`).
+    tags: [class-variables, instance-variables]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/assignment_rdoc.html
+
+  - slug: ruby-oop-struct-data-openstruct
+    kind: open
+    difficulty: middle
+    title: "Struct vs Data vs OpenStruct: when do you use which?"
+    body: |
+      Compare `Struct.new`, `Data.define` and `OpenStruct`. Cover mutability, equality, keyword arguments,
+      performance and the reasons OpenStruct is discouraged.
+    answer: |
+      - `Struct.new(:a, :b)` creates a class with readers **and writers**, positional or keyword construction
+        (`keyword_init: true` to force keywords), `==`/`eql?`/`hash` by value, `to_a`, `to_h`, `deconstruct`,
+        and `Enumerable` over members. Missing args become `nil`. Use for small mutable records and quick tuples.
+      - `Data.define(:a, :b)` (3.2+) is the immutable sibling: frozen instances, no writers, **all members
+        required**, `with(**changes)` for updates, value equality, pattern matching support. Use for value
+        objects (Money, Point, Coordinates), configuration snapshots, event payloads.
+      - `OpenStruct` (`require "ostruct"`) accepts arbitrary attributes at runtime by defining singleton methods;
+        it is roughly 50-200x slower to build, defeats method caches, can shadow built-in methods (`o.class`, `o.method`),
+        and building it from untrusted keys is a symbol/DoS risk. The docs themselves say to consider not using it.
+      - Both Struct and Data accept a block to add methods, and both can be subclassed
+        (`class Point < Struct.new(:x, :y)`), though `Point = Struct.new(...) do ... end` avoids an anonymous
+        superclass.
+      - If you need `?` keys, defaults or nested access, a plain Hash or a real class is usually the honest answer.
+    explanation: |
+      Follow-ups: "Why is `Struct#==` true for two different structs with the same values?" (value semantics),
+      "Does `Data` deep-freeze its members?" (no, only the instance), "What breaks when you add a member to a
+      Struct used in Marshal/JSON?" (positional construction and serialized data get out of sync).
+    tags: [Struct, Data, OpenStruct, value-objects]
+    source: https://docs.ruby-lang.org/en/3.3/OpenStruct.html
+
+  - slug: ruby-oop-send-public-send
+    kind: open
+    difficulty: middle
+    title: "`send` vs `public_send` vs `__send__`: when is each appropriate?"
+    body: |
+      A controller does `record.send(params[:attribute])` to read a column dynamically. What is wrong with it,
+      what should it use, and when is `send` the right tool?
+    answer: |
+      - `send` invokes **any** method including private and protected ones, so a user supplying
+        `attribute=destroy`, `instance_variable_set` or `exit` can reach things the public API never exposed.
+      - `public_send` respects visibility: it raises `NoMethodError` for private/protected methods, so it is the
+        minimum for any method name that comes from outside. Combine it with an allow-list
+        (`ALLOWED.include?(name) && record.public_send(name)`) because many public methods are still dangerous.
+      - `__send__` is the alias to use when the object might define its own `send` (e.g. a Socket or a message
+        bus), the same way `__id__` exists next to `object_id`.
+      - Legitimate `send` uses: tests that poke private state, calling a private hook on purpose inside a
+        library, or metaprogramming over your own class where visibility is a deliberate design choice.
+      - `respond_to?(name)` and `respond_to?(name, true)` mirror the same split: the second argument includes
+        private methods.
+    explanation: |
+      Follow-ups: "Does `public_send` honour refinements?" (in Ruby 3.3 yes, as do `send`, `respond_to?` and `method`),
+      "How is `send` with a String different from a Symbol?" (the String is interned; fine), "What does
+      `send(:define_method, ...)` let you do?" (call private class-level macros from outside, a smell).
+    tags: [send, public_send, security]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-oop-duck-typing
+    kind: open
+    difficulty: middle
+    title: "What is duck typing and how does it change the way you design Ruby code?"
+    body: |
+      A colleague writes `raise ArgumentError unless io.is_a?(File)` at the top of a method that only calls
+      `io.read`. Critique this in terms of duck typing. When is `respond_to?` appropriate, and when is even
+      that too much?
+    answer: |
+      - Duck typing: an object's suitability is defined by the messages it responds to, not by its class.
+        `io.read` works for `File`, `StringIO`, a socket, a `Tempfile` or a test double; the `is_a?(File)` guard
+        rejects all of them for no benefit and makes tests need real files.
+      - Prefer just calling the method: if it is missing you get a `NoMethodError` at the exact point of use,
+        which is a clear failure. Add `respond_to?(:read)` only when you need to **branch** (accept a String or
+        an IO), or to fail early with a better message at a system boundary.
+      - Ruby's core follows this: `Array#flatten` asks `to_ary`, `puts` asks `to_s`, `Hash#[]` asks `hash`/`eql?`,
+        `case/in` asks `deconstruct`. Implementing those conversion protocols makes your objects plug in.
+      - `is_a?` is legitimate when behaviour genuinely depends on the type hierarchy (e.g. `Comparable` vs not),
+        or in a `case/when` dispatch, but a chain of `is_a?` checks usually means polymorphism was skipped.
+      - Trade-off: duck typing moves errors from "wrong type" to "wrong message" at runtime; good naming, tests
+        and (optionally) RBS/Sorbet signatures bring back the safety where it matters.
+    explanation: |
+      Follow-ups: "What does `respond_to?` return for a `method_missing`-based object?" (false unless
+      `respond_to_missing?` is implemented), "How do you duck-type a block argument?" (`callable.call`, accept
+      anything with `to_proc`), "When is a Null Object better than `nil` checks?" (when the absent case still
+      needs to respond to the same interface).
+    tags: [duck-typing, design, respond_to]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-oop-monkey-patching-refinements
+    kind: open
+    difficulty: senior
+    title: "Open classes: when is monkey patching acceptable and what do refinements change?"
+    body: |
+      Your team wants to add `String#to_slug` for URL generation. Discuss the risks of reopening `String`,
+      safer alternatives, and how a refinement would scope the change. What limitations do refinements have?
+    answer: |
+      - Any class can be reopened at any time; the last definition wins **globally**, including inside gems you
+        depend on. Risks: two libraries defining the same method with different semantics, silent override of a
+        future core method (Ruby 3.x added `String#bytesplice`, `Array#intersect?`...), hard-to-trace behaviour
+        because `method(:to_slug).source_location` is the only clue, and invalidated inline caches.
+      - Safer: a module function (`Slug.from(str)`), a small value object, or at least a namespaced module
+        `prepend`ed with a clear name so `ancestors` shows the origin, and a guard `raise if method_defined?`.
+      - Refinements (`refine String do ... end` inside a module, activated with `using Mod`) are **lexically
+        scoped**: active only from the `using` line to the end of that file or class body, invisible to other
+        files, so the patch cannot leak into dependencies.
+      - Limitations: `using` is not allowed inside a method; refinements are not visible via `methods`/
+        `instance_methods` reflection; metaprogramming (`define_method`, `Module#===`), string-`eval`ed code and
+        code in blocks defined outside the scope do not see them; `send`/`respond_to?`/`method` do (3.x).
+        They also add cognitive load, which is why they stayed rare despite being in the language since 2.0.
+      - Rails-style core extensions (`ActiveSupport`) are the accepted exception: they are widely known,
+        documented, and loaded once; the same latitude does not extend to application code.
+    explanation: |
+      Follow-ups: "What happens if a gem later defines `String#to_slug` with the same name?" (whoever loads last
+      wins, silently), "How would you detect that a method has been monkey patched?" (`Method#source_location`,
+      `Method#owner`), "Why is `prepend` preferable to reopening and `alias_method_chain`?" (reversible, visible
+      in `ancestors`, composable).
+    tags: [monkey-patching, refinements, open-classes]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/refinements_rdoc.html
+
+  - slug: ruby-oop-composition-vs-inheritance
+    kind: open
+    difficulty: senior
+    title: "Composition vs inheritance vs mixins: how do you choose in Ruby?"
+    body: |
+      You are modelling a `Report` that can be rendered as PDF, CSV and HTML, and later also needs to be
+      emailed and cached. Which mechanism do you pick for which part, and why? Mention the tools Ruby gives
+      you for delegation.
+    answer: |
+      - Inheritance expresses **is-a** and should be used when a subclass is a true specialisation that is
+        substitutable for its parent (Liskov): `PdfReport < Report` is dubious if the only difference is the
+        output format. Ruby has single inheritance, so the slot is precious.
+      - Composition expresses **has-a / uses-a**: `Report.new(renderer: PdfRenderer.new)`. Formats become
+        swappable objects with one interface (`render(report)`), testable in isolation, and new formats need no
+        change to `Report` (open/closed). Prefer this for the rendering strategy.
+      - Mixins (`include`/`prepend`) are for **cross-cutting, stateless-ish behaviour** shared by unrelated classes:
+        `Cacheable`, `Emailable`, `Comparable`. They are multiple inheritance in disguise, so keep them small, avoid
+        instance-variable coupling, and document the methods they expect the host to provide.
+      - Delegation tools: `Forwardable` (`def_delegators :@renderer, :render`), `SimpleDelegator`/`DelegateClass`
+        for full wrappers, Rails `delegate :x, to: :y`, or plain methods.
+      - Heuristics: start with composition; reach for inheritance only for a stable, shallow hierarchy
+        (template method pattern); use a mixin when more than two unrelated classes need the same behaviour.
+        Deep hierarchies plus many mixins give the famous "where does this method come from" `ancestors` hunt.
+    explanation: |
+      Follow-ups: "How does `super` behave when the method comes from a mixin and a superclass?" (mixin is found
+      first if included in the subclass), "What is the fragile base class problem?", "When would you use
+      `SimpleDelegator` instead of `Forwardable`?" (wrap everything by default, override a few).
+    tags: [composition, inheritance, mixins, design]
+    source: https://docs.ruby-lang.org/en/3.3/Forwardable.html
+
+  - slug: ruby-oop-freeze-immutability
+    kind: open
+    difficulty: middle
+    title: "What does `freeze` guarantee, and how do you build truly immutable objects?"
+    body: |
+      ```ruby
+      CONFIG = {hosts: ["a", "b"]}.freeze
+      CONFIG[:hosts] << "c"
+      ```
+      Does the second line raise? Explain the semantics of `freeze` and the options for real immutability.
+    answer: |
+      - No. `freeze` is **shallow**: it marks only the receiver; the Array stored under `:hosts` is still mutable,
+        so `<< "c"` succeeds. Only `CONFIG[:x] = 1` or `CONFIG.delete(:hosts)` would raise `FrozenError`.
+      - `frozen?` reports the flag; there is no unfreeze (`dup` returns an unfrozen shallow copy, `clone` keeps
+        the flag). Symbols, Integers, Floats, `nil`, `true`, `false` and Ranges are always frozen.
+      - For deep immutability freeze recursively (`each_value(&:freeze)` for one level, or a small recursive
+        helper), use `Ractor.make_shareable(obj)` which deep-freezes, or build with `Data.define`, whose
+        instances are frozen but whose members you must still freeze yourself.
+      - Constants are not frozen automatically; reassigning a constant only warns. Freezing constant collections
+        and using `# frozen_string_literal: true` is the standard defence.
+      - Immutable objects are safe to share across threads and Ractors, usable as Hash keys without surprises
+        (a mutated key corrupts a Hash; `rehash` is the repair), and make `==`/`hash` stable.
+    explanation: |
+      Follow-ups: "What does `freeze` do inside `initialize`?" (common pattern for value objects: set ivars then
+      `freeze`; later `@x = ...` raises), "Can a frozen object still have instance variables lazily assigned?"
+      (no, memoisation with `@cache ||=` breaks; compute eagerly or use an external cache), "Does `freeze`
+      prevent `instance_variable_set`?" (yes, it raises `FrozenError`).
+    tags: [freeze, immutability, FrozenError]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-oop-alias-vs-alias-method
+    kind: open
+    difficulty: junior
+    title: "`alias` vs `alias_method`, and what happens when the original is redefined?"
+    body: |
+      ```ruby
+      class Greeter
+        def hello = "hello"
+        alias hi hello
+        alias_method :hey, :hello
+        def hello = "HELLO"
+      end
+      ```
+      What do `hi`, `hey` and `hello` return, and when would you choose one aliasing form over the other?
+    answer: |
+      - Both create a copy of the **current** method body under a new name. Redefining `hello` afterwards does
+        not touch the copies, so `hi` and `hey` still return `"hello"` while `hello` returns `"HELLO"`.
+      - `alias` is a keyword: takes bare names or symbols without a comma (`alias hi hello`), can alias
+        global variables too (`alias $out $stdout`), and resolves `self` lexically, which can surprise inside
+        `class_eval`/metaprogramming.
+      - `alias_method` is a private method of `Module`: takes symbols or strings, so names can be computed
+        (`alias_method :"#{name}_without_log", name`), can be invoked via `send`, and refers to the receiver at
+        runtime. It is what libraries use and what RuboCop prefers.
+      - Classic use: `alias_method_chain` style wrapping (copy the original, redefine the name to call the copy).
+        Today `prepend` with `super` does the same without renaming and shows up in `ancestors`.
+      - Other uses: providing both `size` and `length`, keeping a deprecated name, exposing `eql?` as `==`.
+    explanation: |
+      Follow-up: "What does `Method#original_name` return for `hi`?" (`:hello`, while `name` is `:hi`),
+      "Does aliasing a method defined in a superclass and then overriding it in the subclass affect the alias?"
+      (no; the alias points at the implementation found at alias time).
+    tags: [alias, alias_method]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/miscellaneous_rdoc.html
+
+  - slug: ruby-oop-object-model
+    kind: open
+    difficulty: senior
+    title: "Describe Ruby's object model: classes, Class, Module, BasicObject and singleton classes"
+    body: |
+      ```ruby
+      p 5.class, Integer.class, Class.class
+      p Class.superclass, Module.superclass, Object.superclass, BasicObject.superclass
+      p Integer.singleton_class, Integer.singleton_class.superclass
+      ```
+      Explain the output and the model behind it. Why is `BasicObject` useful?
+    answer: |
+      - Everything is an object and every object has a class: `5.class` is `Integer`, `Integer` is an instance
+        of `Class`, and `Class.class` is `Class` (it closes the loop on itself).
+      - Classes are objects of a class hierarchy of their own: `Class < Module < Object < BasicObject`, and
+        `BasicObject.superclass` is `nil`. A Class is a Module that additionally can be instantiated and has a
+        superclass; `Module` holds the method-table machinery (`define_method`, `include`, `ancestors`).
+      - Each object can have a hidden **singleton class** holding methods for that object alone; for classes the
+        singleton class is where "class methods" live, and singleton classes mirror the inheritance chain:
+        `Integer.singleton_class.superclass` is `Numeric.singleton_class`, which is why class methods are
+        inherited.
+      - `Object` includes `Kernel`, giving every object `puts`, `inspect`, `is_a?`, `send`, `respond_to?`...
+        `BasicObject` has only a handful (`__send__`, `instance_eval`, `==`, `equal?`, `!`, `method_missing`),
+        which makes it the right base for proxies and DSL contexts (`SimpleDelegator`, builders) where you want
+        every message to reach `method_missing`.
+      - The model is uniform: `class Foo; end` is `Foo = Class.new`, `def` adds an entry to a method table,
+        and `Foo.new` is just a method on `Class` that calls `allocate` then `initialize`.
+    explanation: |
+      Follow-ups: "Is `Class.new(Class)` allowed?" (no, `TypeError: can't make subclass of Class`),
+      "Why can `Module` not be instantiated with `new` and then used as a superclass?" (modules have no
+      superclass slot), "What is `Object.new.singleton_class.ancestors.first`?" (the singleton class itself).
+    tags: [object-model, Class, Module, BasicObject]
+    source: https://docs.ruby-lang.org/en/3.3/Class.html
+
+  - slug: ruby-oop-enumerable-stack
+    kind: code
+    difficulty: junior
+    title: "Make a Stack Enumerable"
+    body: |
+      Implement a class `Stack` with `push(item)` (returns self), `pop` (returns the item or `nil`), `peek`
+      and `size`. Include `Enumerable` and define `each` so that it yields items from the **top** of the stack
+      down. Tests use `to_a`, `map`, `include?`, `first` and `min`, which must come from `Enumerable`, not
+      from methods you define yourself.
+
+      ```ruby
+      s = Stack.new.push(1).push(2).push(3)
+      s.to_a        # => [3, 2, 1]
+      s.first       # => 3
+      s.pop         # => 3
+      s.map { _1 * 10 }  # => [20, 10]
+      ```
+    starter_code: |
+      class Stack
+        include Enumerable
+
+        def initialize
+          @items = []
+        end
+
+        # push, pop, peek, size and each: your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class StackTest < Minitest::Test
+        def setup
+          @s = Stack.new.push(1).push(2).push(3)
+        end
+
+        def test_push_returns_self_and_size
+          assert_equal 3, @s.size
+          assert_same @s, @s.push(4)
+        end
+
+        def test_each_yields_top_down
+          assert_equal [3, 2, 1], @s.to_a
+          assert_equal 3, @s.first
+        end
+
+        def test_pop_and_peek
+          assert_equal 3, @s.pop
+          assert_equal 2, @s.peek
+          assert_equal 2, @s.size
+          assert_nil Stack.new.pop
+        end
+
+        def test_enumerable_methods
+          assert_equal [30, 20, 10], @s.map { |x| x * 10 }
+          assert @s.include?(2)
+          assert_equal 1, @s.min
+          assert_equal [3], @s.select(&:odd?).first(1)
+        end
+
+        def test_each_without_block_returns_enumerator
+          assert_kind_of Enumerator, @s.each
+        end
+
+        def test_enumerable_is_included
+          assert Stack.include?(Enumerable)
+          assert_equal Enumerable, Stack.instance_method(:map).owner
+        end
+      end
+    solution: |
+      class Stack
+        include Enumerable
+
+        def initialize
+          @items = []
+        end
+
+        def push(item)
+          @items.push(item)
+          self
+        end
+
+        def pop = @items.pop
+        def peek = @items.last
+        def size = @items.size
+
+        def each(&block)
+          return enum_for(:each) unless block
+
+          @items.reverse_each(&block)
+          self
+        end
+      end
+    explanation: |
+      `Enumerable` needs exactly one thing from the host: an `each` that yields every element. In return it
+      provides ~50 methods (`map`, `select`, `min`, `include?`, `first`, `sort_by`, `each_slice`, `lazy`...).
+      Two conventions interviewers look for: return an `Enumerator` when no block is given (`enum_for`/`to_enum`),
+      and return `self` from `each` like the core classes do. `size` is defined explicitly because
+      `Enumerable#count` would otherwise iterate every element.
+    tags: [Enumerable, each, mixins]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-oop-point-hash-key
+    kind: code
+    difficulty: middle
+    title: "Value equality for a Hash key"
+    body: |
+      Implement a class `Point` with readers `x` and `y` and `initialize(x, y)` so that two points with the
+      same coordinates are interchangeable: `==` returns true, they work as the same Hash key, `uniq` removes
+      duplicates and `Set` treats them as one element. A `Point` must not equal a plain `[x, y]` array.
+
+      ```ruby
+      Point.new(1, 2) == Point.new(1, 2)              # => true
+      {Point.new(1, 2) => :a}[Point.new(1, 2)]        # => :a
+      [Point.new(1, 2), Point.new(1, 2)].uniq.size    # => 1
+      ```
+    starter_code: |
+      class Point
+        attr_reader :x, :y
+
+        def initialize(x, y)
+          @x = x
+          @y = y
+        end
+
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+      require "set"
+
+      class PointTest < Minitest::Test
+        def test_equality
+          assert_equal Point.new(1, 2), Point.new(1, 2)
+          refute_equal Point.new(1, 2), Point.new(2, 1)
+          refute_equal Point.new(1, 2), [1, 2]
+          refute_equal Point.new(1, 2), nil
+        end
+
+        def test_hash_key
+          h = {Point.new(1, 2) => :a}
+          assert_equal :a, h[Point.new(1, 2)]
+          assert_nil h[Point.new(0, 0)]
+        end
+
+        def test_uniq_and_set
+          assert_equal 1, [Point.new(1, 2), Point.new(1, 2)].uniq.size
+          assert_equal 2, Set[Point.new(1, 2), Point.new(1, 2), Point.new(3, 4)].size
+        end
+
+        def test_eql_and_hash_contract
+          a, b = Point.new(5, 5), Point.new(5, 5)
+          assert a.eql?(b)
+          assert_equal a.hash, b.hash
+          refute a.equal?(b)
+        end
+      end
+    solution: |
+      class Point
+        attr_reader :x, :y
+
+        def initialize(x, y)
+          @x = x
+          @y = y
+        end
+
+        def ==(other)
+          other.is_a?(Point) && x == other.x && y == other.y
+        end
+        alias eql? ==
+
+        def hash
+          [self.class, x, y].hash
+        end
+      end
+    explanation: |
+      Three methods make a value object: `==` for everyday comparison, `eql?` for Hash/Set/`uniq` (usually just
+      an alias), and `hash`, which must agree with `eql?`. Delegating to `Array#hash` over `[class, x, y]` is the
+      idiomatic way to combine fields and keeps `Point.new(1, 2)` distinct from any other class with the same
+      fields. Forgetting `hash` is the classic bug: `eql?` says equal but the keys land in different buckets.
+      `Struct.new(:x, :y)` or `Data.define(:x, :y)` would give you all of this for free.
+    tags: [equality, hash, eql, value-objects]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-oop-included-hook-code
+    kind: code
+    difficulty: middle
+    title: "Write an `included` hook that adds class methods"
+    body: |
+      Implement a module `Trackable` such that `include Trackable` in a class gives it:
+
+      - a class method `tracked` that returns the number of instances created so far (per class, not shared
+        between classes), and
+      - an instance method `track!` that increments that counter and returns the new count.
+
+      Use `self.included(base)` and a nested `ClassMethods` module; do not use `@@` class variables.
+
+      ```ruby
+      class Order; include Trackable; end
+      class Invoice; include Trackable; end
+      Order.new.track!    # => 1
+      Order.new.track!    # => 2
+      Order.tracked       # => 2
+      Invoice.tracked     # => 0
+      ```
+    starter_code: |
+      module Trackable
+        def self.included(base)
+          # your code here
+        end
+
+        module ClassMethods
+          # tracked: your code here
+        end
+
+        def track!
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class IncludedHookTest < Minitest::Test
+        def test_counts_per_class
+          order = Class.new { include Trackable }
+          invoice = Class.new { include Trackable }
+          assert_equal 1, order.new.track!
+          assert_equal 2, order.new.track!
+          assert_equal 2, order.tracked
+          assert_equal 0, invoice.tracked
+        end
+
+        def test_class_methods_come_from_the_nested_module
+          klass = Class.new { include Trackable }
+          assert klass.singleton_class.include?(Trackable::ClassMethods)
+          assert_equal Trackable::ClassMethods, klass.method(:tracked).owner
+        end
+
+        def test_instances_do_not_get_class_methods
+          klass = Class.new { include Trackable }
+          refute klass.new.respond_to?(:tracked)
+        end
+      end
+    solution: |
+      module Trackable
+        def self.included(base)
+          base.extend(ClassMethods)
+        end
+
+        module ClassMethods
+          def tracked
+            @tracked ||= 0
+          end
+
+          def track_one!
+            @tracked = tracked + 1
+          end
+        end
+
+        def track!
+          self.class.track_one!
+        end
+      end
+    explanation: |
+      `included(base)` runs right after the module is mixed in and receives the including class, so
+      `base.extend(ClassMethods)` adds the class-level API. The counter is a **class instance variable**
+      (`@tracked` with `self` being the class), which gives each including class its own count; a `@@tracked`
+      in the module would be one shared slot for every class that includes it. The tests check
+      `Method#owner` to make sure the class methods really come from the nested module rather than from a
+      `define_singleton_method` shortcut.
+    tags: [hooks, included, extend, class-instance-variables]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-prepend-wrapper
+    kind: code
+    difficulty: middle
+    title: "Wrap a method with `prepend` and `super`"
+    body: |
+      Given this class:
+
+      ```ruby
+      class Greeter
+        def greet(name) = "hello, #{name}"
+      end
+      ```
+
+      Write a module `Loud` that, when **prepended** to `Greeter`, makes `greet` return the original result
+      upcased with `"!"` appended, by calling `super`. Then write a module `Counted` that, when prepended,
+      counts calls in an instance method `calls` (starting at 0) and still delegates with `super`. Prepend
+      both (`Loud` first, then `Counted`) so `Greeter.new.greet("bob")` returns `"HELLO, BOB!"` and
+      `calls` is `1`. Do not reopen `Greeter#greet` or use `alias_method`.
+    starter_code: |
+      class Greeter
+        def greet(name) = "hello, #{name}"
+      end
+
+      module Loud
+        # your code here
+      end
+
+      module Counted
+        # your code here
+      end
+
+      # prepend both modules to Greeter here
+    tests: |
+      require "minitest/autorun"
+
+      class PrependWrapperTest < Minitest::Test
+        def test_wrapped_result
+          assert_equal "HELLO, BOB!", Greeter.new.greet("bob")
+        end
+
+        def test_call_count_per_instance
+          g = Greeter.new
+          assert_equal 0, g.calls
+          g.greet("a")
+          g.greet("b")
+          assert_equal 2, g.calls
+          assert_equal 0, Greeter.new.calls
+        end
+
+        def test_ancestor_order
+          assert_equal [Counted, Loud, Greeter], Greeter.ancestors.first(3)
+        end
+
+        def test_original_method_untouched
+          assert_equal Greeter, Greeter.instance_method(:greet).super_method.super_method.owner
+          assert_equal "hello, x", Greeter.instance_method(:greet).super_method.super_method.bind(Greeter.new).call("x")
+        end
+      end
+    solution: |
+      class Greeter
+        def greet(name) = "hello, #{name}"
+      end
+
+      module Loud
+        def greet(name)
+          super.upcase + "!"
+        end
+      end
+
+      module Counted
+        def calls = @calls || 0
+
+        def greet(...)
+          @calls = calls + 1
+          super
+        end
+      end
+
+      Greeter.prepend(Loud)
+      Greeter.prepend(Counted)
+    explanation: |
+      A prepended module sits **before** the class in `ancestors`, so its `greet` is found first and `super`
+      continues to the next entry: `Counted#greet -> Loud#greet -> Greeter#greet`. The last `prepend` wins the
+      front position, hence `[Counted, Loud, Greeter]`. Bare `super` forwards the original arguments (`...` in
+      `Counted` forwards everything without naming it). This is the modern replacement for
+      `alias_method_chain`: the original method is untouched (the test reaches it through `super_method`),
+      the wrapper is visible in `ancestors`, and wrappers compose.
+    tags: [prepend, super, decorators]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-define-method-attr
+    kind: code
+    difficulty: middle
+    title: "Write a class macro with `define_method`"
+    body: |
+      Implement a module `AttrWithDefault` meant to be `extend`ed into a class. It provides a class macro
+      `attr_with_default(name, default)` that defines a reader `name` and a writer `name=` for `@name`.
+      The reader returns `default` while the instance variable has never been assigned (even if the
+      assigned value is `nil` or `false`, it must then return that value, not the default). Use
+      `define_method`; do not use `attr_accessor` or `method_missing`.
+
+      ```ruby
+      class Job
+        extend AttrWithDefault
+        attr_with_default :retries, 3
+        attr_with_default :queue, "default"
+      end
+
+      j = Job.new
+      j.retries            # => 3
+      j.retries = 0
+      j.retries            # => 0
+      j.queue = nil
+      j.queue              # => nil
+      ```
+    starter_code: |
+      module AttrWithDefault
+        def attr_with_default(name, default)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class AttrWithDefaultTest < Minitest::Test
+        Job = Class.new do
+          extend AttrWithDefault
+          attr_with_default :retries, 3
+          attr_with_default :queue, "default"
+        end
+
+        def test_default_until_assigned
+          j = Job.new
+          assert_equal 3, j.retries
+          assert_equal "default", j.queue
+        end
+
+        def test_assigned_values_win_even_if_falsy
+          j = Job.new
+          j.retries = 0
+          j.queue = nil
+          assert_equal 0, j.retries
+          assert_nil j.queue
+          j.queue = false
+          assert_equal false, j.queue
+        end
+
+        def test_uses_instance_variable_and_real_methods
+          j = Job.new
+          j.retries = 7
+          assert_equal 7, j.instance_variable_get(:@retries)
+          assert Job.method_defined?(:retries)
+          assert Job.method_defined?(:retries=)
+          refute Job.new.respond_to?(:attr_with_default)
+        end
+
+        def test_independent_per_instance
+          a, b = Job.new, Job.new
+          a.retries = 1
+          assert_equal 3, b.retries
+        end
+      end
+    solution: |
+      module AttrWithDefault
+        def attr_with_default(name, default)
+          ivar = :"@#{name}"
+
+          define_method(name) do
+            instance_variable_defined?(ivar) ? instance_variable_get(ivar) : default
+          end
+
+          define_method(:"#{name}=") do |value|
+            instance_variable_set(ivar, value)
+          end
+        end
+      end
+    explanation: |
+      `extend`ing the module makes `attr_with_default` a class-level method, exactly how `attr_accessor` is a
+      (private) method on `Module`. `define_method` takes a block that becomes the method body; the block is a
+      closure, so `default` and `ivar` are captured per call of the macro. The subtle requirement is
+      `instance_variable_defined?` instead of `@x || default`, because `||` would hide legitimately assigned
+      `nil`/`false` values, the same flaw as `||=` memoisation. Reading `@x` for an unset ivar silently returns `nil`,
+      which is why the explicit check is needed.
+    tags: [define_method, metaprogramming, extend]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-method-missing-settings
+    kind: code
+    difficulty: senior
+    title: "A Hash-backed settings object with method_missing"
+    body: |
+      Implement `Settings` that wraps a Hash with Symbol keys and exposes each key as a reader via
+      `method_missing`: `Settings.new(timeout: 5).timeout` is `5`. Requirements:
+
+      - unknown names raise `NoMethodError` (delegate to `super`),
+      - `respond_to?(:timeout)` is `true` and `respond_to?(:nope)` is `false` (implement `respond_to_missing?`),
+      - `method(:timeout)` returns a callable `Method`,
+      - calling a known key **with arguments** raises `ArgumentError`,
+      - a predicate `key?` form is **not** required.
+
+      ```ruby
+      s = Settings.new(timeout: 5, host: "db")
+      s.host               # => "db"
+      s.respond_to?(:host) # => true
+      s.port               # raises NoMethodError
+      ```
+    starter_code: |
+      class Settings
+        def initialize(data)
+          @data = data
+        end
+
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SettingsTest < Minitest::Test
+        def setup
+          @s = Settings.new(timeout: 5, host: "db", debug: false)
+        end
+
+        def test_reads_keys
+          assert_equal 5, @s.timeout
+          assert_equal "db", @s.host
+          assert_equal false, @s.debug
+        end
+
+        def test_unknown_raises_no_method_error
+          err = assert_raises(NoMethodError) { @s.port }
+          assert_match(/port/, err.message)
+        end
+
+        def test_respond_to
+          assert @s.respond_to?(:timeout)
+          refute @s.respond_to?(:port)
+        end
+
+        def test_method_object
+          m = @s.method(:host)
+          assert_kind_of Method, m
+          assert_equal "db", m.call
+        end
+
+        def test_arguments_rejected
+          assert_raises(ArgumentError) { @s.timeout(1) }
+        end
+
+        def test_real_methods_still_work
+          assert_kind_of String, @s.inspect
+          assert_equal Settings, @s.class
+        end
+      end
+    solution: |
+      class Settings
+        def initialize(data)
+          @data = data
+        end
+
+        def method_missing(name, *args)
+          return super unless @data.key?(name)
+          raise ArgumentError, "#{name} takes no arguments" unless args.empty?
+
+          @data[name]
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          @data.key?(name) || super
+        end
+      end
+    explanation: |
+      The two halves of a correct ghost-method implementation: `method_missing` handles only the names it
+      owns and otherwise calls `super`, so typos still raise a real `NoMethodError` naming the method;
+      `respond_to_missing?` mirrors the same predicate so `respond_to?`, `method` and `public_method` agree
+      with dispatch. Raising `ArgumentError` on stray arguments mimics a real zero-arity method. Interviewers
+      may follow with "why not just define the methods in `initialize` with `define_singleton_method`?"
+      (faster dispatch, visible in `methods`; but one singleton class per object and keys fixed at creation).
+    tags: [method_missing, respond_to_missing, metaprogramming]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-oop-private-constructor
+    kind: code
+    difficulty: junior
+    title: "Factory methods with a private constructor"
+    body: |
+      Implement `Temperature` so it can only be built through the class methods `Temperature.celsius(deg)`
+      and `Temperature.fahrenheit(deg)`; `Temperature.new` must raise `NoMethodError` from outside
+      (use `private_class_method :new`). Store the value in Celsius and expose `to_c` and `to_f`
+      (Fahrenheit, rounded to 1 decimal). Instances must be frozen.
+
+      ```ruby
+      t = Temperature.fahrenheit(212)
+      t.to_c    # => 100.0
+      t.to_f    # => 212.0
+      Temperature.new(1)   # raises NoMethodError
+      ```
+    starter_code: |
+      class Temperature
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class TemperatureTest < Minitest::Test
+        def test_factories
+          assert_equal 100.0, Temperature.fahrenheit(212).to_c
+          assert_equal 212.0, Temperature.celsius(100).to_f
+          assert_equal 37.0, Temperature.fahrenheit(98.6).to_c
+          assert_equal -40.0, Temperature.celsius(-40).to_f
+        end
+
+        def test_new_is_private
+          assert_raises(NoMethodError) { Temperature.new(1) }
+          assert Temperature.private_methods.include?(:new)
+        end
+
+        def test_frozen_instance
+          assert Temperature.celsius(1).frozen?
+        end
+
+        def test_instance_of
+          assert_instance_of Temperature, Temperature.celsius(0)
+        end
+      end
+    solution: |
+      class Temperature
+        private_class_method :new
+
+        def self.celsius(deg) = new(deg.to_f)
+        def self.fahrenheit(deg) = new((deg - 32) * 5.0 / 9)
+
+        def initialize(celsius)
+          @celsius = celsius
+          freeze
+        end
+
+        def to_c = @celsius.round(1)
+        def to_f = (@celsius * 9.0 / 5 + 32).round(1)
+      end
+    explanation: |
+      `new` is an ordinary public class method inherited from `Class`; `private_class_method :new` makes it
+      private on this class's singleton class, so only code running with `self == Temperature` (the factory
+      class methods) can call it without a receiver. This is the standard way to force named constructors or a
+      singleton. Calling `freeze` at the end of `initialize` is the cheap way to make a value object
+      immutable; any later `@celsius = ...` raises `FrozenError`.
+    tags: [class-methods, private_class_method, factories]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-data-money
+    kind: code
+    difficulty: middle
+    title: "An immutable Money value with Data.define"
+    body: |
+      Define `Money = Data.define(:cents, :currency)` and extend it (via the block form) with:
+
+      - `+(other)` returning a new `Money`; raise `ArgumentError` if the currencies differ,
+      - `Comparable` support so two amounts of the same currency can be compared with `<`, `>`, `between?`;
+        comparing different currencies raises `ArgumentError`,
+      - `to_s` formatted like `"12.34 EUR"`.
+
+      Instances must stay immutable (no setters, frozen). Do not use `Struct`.
+
+      ```ruby
+      a = Money.new(cents: 1000, currency: "EUR")
+      b = Money.new(250, "EUR")
+      (a + b).to_s         # => "12.50 EUR"
+      a > b                # => true
+      a.with(cents: 1)     # => #<data Money cents=1, currency="EUR">
+      ```
+    starter_code: |
+      Money = Data.define(:cents, :currency) do
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class MoneyTest < Minitest::Test
+        def eur(c) = Money.new(cents: c, currency: "EUR")
+        def usd(c) = Money.new(cents: c, currency: "USD")
+
+        def test_addition_and_to_s
+          assert_equal eur(1250), eur(1000) + eur(250)
+          assert_equal "12.50 EUR", (eur(1000) + eur(250)).to_s
+          assert_equal "0.05 USD", usd(5).to_s
+        end
+
+        def test_currency_mismatch
+          assert_raises(ArgumentError) { eur(1) + usd(1) }
+          assert_raises(ArgumentError) { eur(1) < usd(1) }
+        end
+
+        def test_comparable
+          assert eur(1000) > eur(250)
+          assert eur(500).between?(eur(1), eur(1000))
+          assert_equal eur(1), [eur(3), eur(1), eur(2)].min
+          assert_equal eur(1), eur(1)
+        end
+
+        def test_immutable
+          m = eur(1)
+          assert m.frozen?
+          refute m.respond_to?(:cents=)
+          assert_equal eur(9), m.with(cents: 9)
+          assert_equal 1, m.cents
+        end
+
+        def test_value_semantics_as_hash_key
+          assert_equal :x, {eur(1) => :x}[eur(1)]
+        end
+      end
+    solution: |
+      Money = Data.define(:cents, :currency) do
+        include Comparable
+
+        def +(other)
+          same_currency!(other)
+          with(cents: cents + other.cents)
+        end
+
+        def <=>(other)
+          same_currency!(other)
+          cents <=> other.cents
+        end
+
+        def to_s = format("%d.%02d %s", *cents.divmod(100), currency)
+
+        private
+
+        def same_currency!(other)
+          raise ArgumentError, "currency mismatch" unless other.is_a?(Money) && other.currency == currency
+        end
+      end
+    explanation: |
+      `Data.define` with a block lets you add behaviour while keeping the generated goodies: frozen instances,
+      keyword or positional construction, `with`, value-based `==`/`eql?`/`hash` (so the Hash-key test passes
+      with no extra code), and `inspect`. `with` is the idiomatic way to "modify" an immutable value: it returns
+      a new instance. `Comparable` adds the operators from `<=>`; raising inside `<=>` on currency mismatch is a
+      deliberate choice here (returning `nil` would make `<` raise anyway, but `==` would return `false`).
+      Integer cents plus `divmod` avoids Float formatting issues.
+    tags: [Data, Comparable, value-objects, immutability]
+    source: https://docs.ruby-lang.org/en/3.3/Data.html
+
+  - slug: ruby-oop-singleton-class-lesson
+    kind: theory
+    difficulty: middle
+    title: "Singleton classes: where class methods really live"
+    body: |
+      Every object can have its own anonymous class, the **singleton class** (also called eigenclass or
+      metaclass), inserted between the object and its real class. Methods defined there belong to that one
+      object only.
+
+      ```ruby
+      str = "hi"
+      def str.shout = upcase + "!"           # singleton method on one String
+      str.singleton_methods                  # => [:shout]
+      str.singleton_class                    # => #<Class:#<String:0x...>>
+      "other".shout                          # NoMethodError
+
+      class Repo
+        def self.find(id) = new             # 1. def self.x
+        class << self                       # 2. open the singleton class
+          def all = []
+          attr_accessor :table              # class-level accessor
+          private                           # applies to class methods below
+          def connection = :db
+        end
+      end
+      Repo.singleton_class.instance_methods(false)  # => [:find, :all, :table, :table=]
+      ```
+
+      Rules: `def obj.m`, `class << obj`, `define_singleton_method` and `extend` all write to the singleton
+      class (`extend M` is literally `singleton_class.include(M)`). For a class `C`, "class methods" are
+      instance methods of `C.singleton_class`, and singleton classes form a parallel hierarchy
+      (`Sub.singleton_class.superclass == Base.singleton_class`), which is why class methods are inherited
+      while `@ivars` on the class are not. Immediates (`1`, `:sym`, `nil`) cannot have singleton methods
+      (`TypeError`), and `dup` drops the singleton class while `clone` keeps it.
+    answer: |
+      **Q:** Why does `class << self; attr_accessor :config; end` create a class-level accessor, while
+      `attr_accessor :config` in the class body creates an instance-level one?
+      **A:** `attr_accessor` defines methods on `self`. In the class body `self` is the class, so the methods go
+      into the class's instance method table and work on instances. Inside `class << self`, `self` is the
+      singleton class of the class, so the methods become singleton (class) methods reading `@config` on the
+      class object.
+    explanation: |
+      Follow-ups: "What is `singleton_class.ancestors.first`?" (the singleton class itself), "How does
+      `private` interact with `def self.x`?" (it does not; use `private_class_method` or `private` inside
+      `class << self`), "What does `extend` on an instance do to `is_a?`?" (`obj.is_a?(M)` becomes true).
+    tags: [singleton-class, eigenclass, class-methods]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-visibility-lesson
+    kind: theory
+    difficulty: middle
+    title: "Method visibility: public, private, protected and the receiver rule"
+    body: |
+      Ruby visibility is about the **receiver**, not about where the code lives:
+
+      - `public` (default): callable from anywhere.
+      - `private`: callable only without an explicit receiver, or with `self.` (allowed since 2.7). There is no
+        "private to the class" concept: a subclass can call and override its parent's private methods.
+      - `protected`: callable with an explicit receiver as long as the caller's `self` is an instance of the
+        same class (or subclass). Used for comparisons between peers (`other.balance`).
+
+      ```ruby
+      class Account
+        def initialize(b) = @balance = b
+        def >(other) = balance > other.balance    # protected call OK
+        def reset = self.balance = 0             # private setter via self.
+
+        protected
+
+        def balance = @balance
+
+        private
+
+        def balance=(v)
+          @balance = v
+        end
+      end
+      ```
+
+      Ways to set visibility: a bare `private` switches the default for everything below it; `private :a, :b`
+      changes existing methods; `private def foo ... end` works because `def` returns the Symbol;
+      `private_class_method :new` for class methods (`private` in the class body does **not** affect
+      `def self.x`); `private_constant :Internal` hides constants; `public_send` vs `send` respect or bypass
+      the rules; `respond_to?(:m)` is `false` for private methods unless you pass `true`.
+      `initialize` and `initialize_copy` are automatically private, and `method_missing` on `BasicObject` is private.
+    answer: |
+      **Q:** Why does `private` placed above `def self.helper` in a class body not make `helper` private, and
+      what should you write instead?
+      **A:** `private` without arguments changes the default visibility for subsequent *instance* methods of
+      the current class; `def self.helper` defines a method on the singleton class, which has its own visibility
+      state. Use `private_class_method :helper`, or define the method inside `class << self` after a `private`
+      line there.
+    explanation: |
+      Follow-ups: "Can you call a private method with `send`?" (yes; `public_send` cannot), "What does
+      `protected` do when called from a class method?" (fails; `self` is the class, not an instance), "Is a
+      private method inherited?" (yes, and `super` works through it).
+    tags: [visibility, private, protected]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html
+
+  - slug: ruby-oop-new-initialize-lesson
+    kind: theory
+    difficulty: junior
+    title: "What `new` does: allocate, initialize, attr_* and self"
+    body: |
+      `Class#new` is an ordinary method: it calls `allocate` to get an empty instance, then sends
+      `initialize` to it with the arguments and block you passed, and returns the instance (whatever
+      `initialize` returns is ignored). `initialize` is automatically **private**, which is why
+      `obj.initialize` raises and why you always go through `new`.
+
+      ```ruby
+      class User
+        attr_reader :name          # def name = @name
+        attr_writer :email         # def email=(v); @email = v; end
+        attr_accessor :role        # both
+
+        def initialize(name, role: :member)
+          @name = name             # instance variables spring into existence on assignment
+          self.role = role         # writer needs self.; bare `role = x` would be a local variable
+        end
+
+        def admin? = role == :admin
+        def to_s = "#{name} (#{role})"
+      end
+
+      u = User.new("ann", role: :admin)
+      u.name            # => "ann"
+      u.email = "a@x"   # writer
+      u.instance_variables  # => [:@name, :@role, :@email]
+      ```
+
+      `attr_*` are plain methods on `Module` that define the reader/writer for you, so `attr_reader :name`
+      is just `def name = @name` and you can override either side (e.g. a custom writer that validates while
+      keeping `attr_reader`). Unset instance variables read as `nil`, no declaration is needed, and each
+      object has its own set. You can bypass `initialize` with `User.allocate` (rarely useful outside
+      deserialisation) and override `self.new` for factories or caching.
+    answer: |
+      **Q:** `attr_accessor :count` is defined, and inside a method you write `count = count + 1`. What happens
+      and why?
+      **A:** `count = ...` declares a new local variable named `count`, so the right-hand `count` reads that
+      uninitialised local (`nil`) and `nil + 1` raises `NoMethodError`; the writer is never called. Write
+      `self.count = count + 1` (or `self.count += 1`).
+    explanation: |
+      Follow-ups: "What does `initialize` return?" (ignored by `new`), "How do you make `new` private?"
+      (`private_class_method :new`), "What is `attr_accessor` returning?" (an Array of the defined method
+      names since 3.0, which lets you write `private attr_accessor :x`).
+    tags: [initialize, new, attr_accessor]
+    source: https://docs.ruby-lang.org/en/3.3/Class.html
+
+  - slug: ruby-oop-module-hooks-lesson
+    kind: theory
+    difficulty: senior
+    title: "Module hooks: included, extended, prepended, inherited, method_added"
+    body: |
+      Ruby calls private callbacks on a module or class when the structure around it changes. They are the
+      backbone of DSLs (`ActiveSupport::Concern`, `Comparable`-style mixins, plugin registries).
+
+      ```ruby
+      module Plugin
+        def self.included(base)   = puts "included into #{base}"
+        def self.extended(base)   = puts "extended onto #{base}"
+        def self.prepended(base)  = puts "prepended to #{base}"
+      end
+
+      class Base
+        def self.inherited(sub)
+          super                     # keep parent hooks working
+          (@subclasses ||= []) << sub
+        end
+        def self.method_added(name) = puts "defined #{name}"
+      end
+
+      class Child < Base            # => inherited Child (fires at `class Child < Base`, before the body runs)
+        include Plugin              # => included into Child
+        extend Plugin               # => extended onto Child
+        prepend Plugin              # => prepended to Child
+        def go; end                 # => defined go
+      end
+      ```
+
+      Facts worth knowing: every hook runs **after** the change (the module is already in `ancestors`);
+      `inherited` runs before the subclass body, so the subclass has no methods yet; `included` receives the
+      including module/class, which is a Module (not the final class) when modules include modules, the
+      problem `ActiveSupport::Concern` solves; `append_features`/`extend_object`/`prepend_features` are the
+      lower-level hooks that perform the inclusion and can veto it; `singleton_method_added`,
+      `method_removed`, `const_missing` and `method_missing` complete the family. Always call `super` in
+      hooks so a chain of mixins all get notified, and keep hooks idempotent: a module included twice fires
+      `included` only once, but `extend` on many instances fires `extended` for each.
+    answer: |
+      **Q:** Your `Base.inherited` registers subclasses, but `Child.instance_methods(false)` inside the hook
+      is empty even though `Child` defines methods. Why, and how do you run code after the body?
+      **A:** `inherited` fires when `class Child < Base` is evaluated, before the class body. To act after the
+      definitions, use `TracePoint.new(:end)`, a `method_added` hook, a `Class#finalize`-style explicit call
+      (`register!` at the end of the body), or Zeitwerk/Rails `on_load` style lazy callbacks.
+    explanation: |
+      Follow-ups: "Does `included` fire for `Class.new { include M }`?" (yes), "What is the `base` argument
+      when a module includes another module?" (the outer module), "What happens if `self.included` is defined
+      but you forget `self.`?" (it becomes an instance method and never fires).
+    tags: [hooks, included, inherited, metaprogramming]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-module-function-lesson
+    kind: theory
+    difficulty: middle
+    title: "Modules as namespaces and `module_function`"
+    body: |
+      A module is a bag of methods and constants that cannot be instantiated. Two distinct uses:
+
+      **Namespace**: group constants and classes to avoid collisions.
+
+      ```ruby
+      module Billing
+        TAX = 0.2
+        class Invoice; end
+        def self.total(net) = net * (1 + TAX)   # "module method", like Math.sqrt
+      end
+      Billing::Invoice.new
+      Billing.total(100)
+      ```
+
+      **Function library** with `module_function`:
+
+      ```ruby
+      module Text
+        module_function              # like `private` for what follows, but also copies to the singleton
+
+        def slugify(s) = s.downcase.gsub(/\W+/, "-")
+      end
+      Text.slugify("Hello World")    # => "hello-world"  (public singleton copy)
+      class Doc; include Text; def slug = slugify(title); end   # works: private instance copy
+      Doc.new.slugify("x")           # NoMethodError: private method
+      ```
+
+      `module_function` makes **two** methods: a public singleton method on the module and a **private**
+      instance method for includers. Because they are copies, overriding one later does not affect the other,
+      and instance state (`@ivars`) is not shared. `Math`, `FileUtils` and `Kernel` are built this way.
+      The alternative `extend self` adds the module's instance methods to its own singleton class, so one
+      method is both callable as `Mod.m` and public for includers, and overrides stay in sync.
+      Neither works with `attr_*` or state; if you need state, you want a class (or a `Singleton`).
+    answer: |
+      **Q:** You `include Text` in a class and call `obj.slugify("x")` from outside; it raises
+      `NoMethodError: private method`. Why, and which alternative keeps the method public for includers?
+      **A:** `module_function` makes the instance copies private by design (helpers, not an API). Use
+      `extend self` instead, which leaves the instance methods public and also exposes them as `Text.slugify`.
+    explanation: |
+      Follow-ups: "Why does `Kernel#puts` work without a receiver but `obj.puts` fails?" (`module_function` on
+      Kernel), "What is `Module.nesting` inside `module A; module B` versus `module A::B`?" (`[A::B, A]` vs
+      `[A::B]`, affects constant lookup), "Can you `module_function` a method that uses `@state`?" (yes, but
+      each copy has a different `self`, so the state is per-module vs per-includer).
+    tags: [modules, module_function, namespaces]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-oop-super-lesson
+    kind: theory
+    difficulty: senior
+    title: "`super` in all its forms: zsuper, `super()`, modules and define_method"
+    body: |
+      `super` continues the **current method lookup** from the point where the running method was found,
+      following `ancestors`, so it reaches superclasses *and* included modules in order.
+
+      ```ruby
+      class Base
+        def go(a, b = 2) = [a, b]
+      end
+
+      class Sub < Base
+        def go(a, b = 5)
+          super          # zsuper: forwards a and b as they are NOW (and the block)  => [1, 5]
+          super(a)       # explicit: only a                                       => [1, 2]
+          super()        # explicit empty: no arguments; here ArgumentError
+        end
+      end
+      ```
+
+      - Bare `super` forwards every parameter by its current value, including defaults, splats, keywords and
+        the block; `super(...)` with `...` forwards everything explicitly (3.1+).
+      - `defined?(super)` tells you whether there is a next method; `method(:go).super_method` gives it to you
+        as a `Method`, useful for debugging "which `super` am I calling".
+      - In a module method, `super` goes to whatever is next after the module in the includer's `ancestors`,
+        which is how `prepend` wrappers, `Comparable` extensions and `ActiveRecord` callbacks compose.
+        A module that calls `super` without an implementation underneath raises `NoMethodError`; guard with
+        `super if defined?(super)`.
+      - Inside `define_method`, bare `super` raises `RuntimeError: implicit argument passing of super from
+        method defined by define_method() is not supported`; pass arguments explicitly.
+      - `super` inside `initialize` is the normal way to extend a parent constructor; forgetting it leaves the
+        parent's ivars unset. `super` inside hooks (`inherited`, `included`, `method_added`) keeps other
+        mixins' hooks working.
+    answer: |
+      **Q:** A method defined with `define_method(:go) { |a| super }` raises at runtime. What is the error and
+      the fix?
+      **A:** `RuntimeError: implicit argument passing of super from method defined by define_method() is not
+      supported`, because the block does not have a method signature to replay. Write `super(a)` (or
+      `super(*args, **kw, &blk)` if the block takes them).
+    explanation: |
+      Follow-ups: "If a class and an included module both define `go`, which does `super` from the subclass
+      reach first?" (the module if it is included in the subclass; otherwise the class), "What does `super`
+      do in a singleton method?" (walks the singleton class's ancestors, i.e. the superclass's class methods),
+      "Why does reassigning a parameter before bare `super` change what the parent receives?" (zsuper reads
+      the current local values).
+    tags: [super, inheritance, define_method]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/modules_and_classes_rdoc.html

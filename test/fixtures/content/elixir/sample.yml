@@ -1,0 +1,11 @@
+language: elixir
+topic: sample
+items:
+  - slug: elixir-sample-open
+    kind: open
+    difficulty: middle
+    title: "Sample open"
+    body: "Explain immutability."
+    answer: Data never changes; rebinding creates new values.
+    explanation: Core idea.
+    source: fixture

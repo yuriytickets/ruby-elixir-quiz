@@ -1,0 +1,4133 @@
+language: elixir
+topic: coding-tasks
+items:
+  - slug: elixir-task-palindrome-ignoring-punctuation
+    kind: code
+    difficulty: junior
+    title: "Palindrome check ignoring case and punctuation"
+    body: |
+      Implement `Palindrome.palindrome?/1`. It returns `true` when the string reads the same
+      forwards and backwards once you ignore case and every character that is not a letter
+      or digit.
+
+      ```elixir
+      Palindrome.palindrome?("A man, a plan, a canal: Panama") #=> true
+      Palindrome.palindrome?("race a car")                      #=> false
+      Palindrome.palindrome?("")                                #=> true
+      ```
+    starter_code: |
+      defmodule Palindrome do
+        def palindrome?(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PalindromeTest do
+        use ExUnit.Case
+
+        test "classic sentence" do
+          assert Palindrome.palindrome?("A man, a plan, a canal: Panama")
+        end
+
+        test "not a palindrome" do
+          refute Palindrome.palindrome?("race a car")
+        end
+
+        test "empty and single char" do
+          assert Palindrome.palindrome?("")
+          assert Palindrome.palindrome?("x")
+        end
+
+        test "digits count, punctuation does not" do
+          assert Palindrome.palindrome?("1a2, a1")
+          refute Palindrome.palindrome?("12a")
+        end
+      end
+    solution: |
+      defmodule Palindrome do
+        def palindrome?(string) do
+          cleaned =
+            string
+            |> String.downcase()
+            |> String.replace(~r/[^a-z0-9]/u, "")
+
+          cleaned == String.reverse(cleaned)
+        end
+      end
+    explanation: |
+      Normalise first, compare second: downcase, strip everything that is not `[a-z0-9]`,
+      then compare with `String.reverse/1`. That is O(n) time and O(n) extra memory for the
+      cleaned copy, which is what interviewers expect in Elixir (a two-pointer scan is not
+      idiomatic on immutable binaries).
+
+      Pitfalls: forgetting `String.downcase/1`, using `String.reverse/1` on the *raw* string
+      (so punctuation breaks symmetry), and remembering that the empty string is a palindrome.
+      Mention `String.graphemes/1` if the interviewer asks about combining characters.
+    tags: [strings, regex]
+    source: https://elixir.hexdocs.pm/String.html
+
+  - slug: elixir-task-anagram-groups
+    kind: code
+    difficulty: middle
+    title: "Group words that are anagrams of each other"
+    body: |
+      Implement `Anagrams.group/1`. Given a list of words, return a list of groups, where every
+      group is a list of words that are anagrams of each other (case-insensitive). The order of
+      groups and of words inside a group is not important; the tests sort before comparing.
+
+      ```elixir
+      Anagrams.group(["listen", "silent", "enlist", "google", "gooegl"])
+      #=> [["listen", "silent", "enlist"], ["google", "gooegl"]]
+      ```
+    starter_code: |
+      defmodule Anagrams do
+        def group(words) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AnagramsTest do
+        use ExUnit.Case
+
+        defp normalize(groups), do: groups |> Enum.map(&Enum.sort/1) |> Enum.sort()
+
+        test "groups anagrams" do
+          result = Anagrams.group(["listen", "silent", "enlist", "google", "gooegl"])
+          assert normalize(result) == [["enlist", "listen", "silent"], ["gooegl", "google"]]
+        end
+
+        test "case insensitive" do
+          assert normalize(Anagrams.group(["Tea", "eat", "ATE"])) == [["ATE", "Tea", "eat"]]
+        end
+
+        test "singletons stay alone" do
+          assert normalize(Anagrams.group(["a", "b"])) == [["a"], ["b"]]
+        end
+
+        test "empty input" do
+          assert Anagrams.group([]) == []
+        end
+      end
+    solution: |
+      defmodule Anagrams do
+        def group(words) do
+          words
+          |> Enum.group_by(&key/1)
+          |> Map.values()
+        end
+
+        defp key(word) do
+          word
+          |> String.downcase()
+          |> String.graphemes()
+          |> Enum.sort()
+        end
+      end
+    explanation: |
+      The whole trick is picking a canonical key: the sorted, downcased letters of the word.
+      Two words are anagrams exactly when they share that key, so `Enum.group_by/2` does the
+      rest and `Map.values/1` drops the keys.
+
+      Complexity is O(n * k log k) for n words of length k. For a follow-up, a
+      frequency-map key (`Enum.frequencies/1`) gives O(n * k) and is what you would mention
+      if the interviewer pushes on the sort. Pitfall: forgetting `String.downcase/1`, or using
+      `String.to_charlist/1` and sorting integers (works, but graphemes handle Unicode).
+    tags: [strings, enum, group_by]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (anagram)"
+
+  - slug: elixir-task-run-length-encode-decode
+    kind: code
+    difficulty: junior
+    title: "Run-length encoding and decoding"
+    body: |
+      Implement `RunLength.encode/1` and `RunLength.decode/1`. Encoding replaces runs of the
+      same character by `<count><char>`; a run of length 1 is written without a count. Decoding
+      reverses it. Input contains only letters and spaces (never digits).
+
+      ```elixir
+      RunLength.encode("AABCCCDEEEE") #=> "2AB3CD4E"
+      RunLength.decode("2AB3CD4E")    #=> "AABCCCDEEEE"
+      RunLength.encode("")            #=> ""
+      ```
+    starter_code: |
+      defmodule RunLength do
+        def encode(string) do
+          # your code here
+        end
+
+        def decode(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RunLengthTest do
+        use ExUnit.Case
+
+        test "encode runs" do
+          assert RunLength.encode("AABCCCDEEEE") == "2AB3CD4E"
+        end
+
+        test "single characters are not counted" do
+          assert RunLength.encode("ABC") == "ABC"
+        end
+
+        test "spaces are encoded too" do
+          assert RunLength.encode("  hsqq qww  ") == "2 hs2q q2w2 "
+        end
+
+        test "decode" do
+          assert RunLength.decode("2AB3CD4E") == "AABCCCDEEEE"
+          assert RunLength.decode("12WB") == "WWWWWWWWWWWWB"
+        end
+
+        test "empty round trip" do
+          assert RunLength.encode("") == ""
+          assert RunLength.decode("") == ""
+        end
+
+        test "round trip" do
+          s = "zzz ZZ  zZ"
+          assert s |> RunLength.encode() |> RunLength.decode() == s
+        end
+      end
+    solution: |
+      defmodule RunLength do
+        def encode(string) do
+          string
+          |> String.graphemes()
+          |> Enum.chunk_by(& &1)
+          |> Enum.map_join(fn
+            [char] -> char
+            [char | _] = run -> "#{length(run)}#{char}"
+          end)
+        end
+
+        def decode(string) do
+          ~r/(\d*)(\D)/
+          |> Regex.scan(string)
+          |> Enum.map_join(fn
+            [_, "", char] -> char
+            [_, count, char] -> String.duplicate(char, String.to_integer(count))
+          end)
+        end
+      end
+    explanation: |
+      `Enum.chunk_by/2` with the identity function turns `"AABC"` into `[["A","A"],["B"],["C"]]`,
+      and `Enum.map_join/2` renders each run. Pattern matching on `[char]` versus `[char | _]`
+      handles the "no count for singles" rule without an `if`. Decoding is a regex scan for
+      `(\d*)(\D)`: an empty count means one repetition.
+
+      Both are O(n). Pitfalls: `String.split("", "")` style tricks that leave empty strings,
+      forgetting that spaces are valid run characters, and building strings with `<>` in a
+      reduce (fine here, but `IO.iodata_to_binary/1` scales better for huge inputs).
+    tags: [strings, regex, chunk_by]
+    source: https://exercism.org/tracks/elixir/exercises/run-length-encoding
+
+  - slug: elixir-task-word-frequency-top-k
+    kind: code
+    difficulty: junior
+    title: "Top-k most frequent words"
+    body: |
+      Implement `WordFreq.top/2`. Given a text and `k`, return the `k` most frequent words as
+      `{word, count}` tuples, most frequent first. Words are compared case-insensitively and
+      split on anything that is not a letter, digit or apostrophe. Ties are broken alphabetically.
+
+      ```elixir
+      WordFreq.top("the cat and the hat. The END, and...", 2)
+      #=> [{"the", 3}, {"and", 2}]
+      ```
+    starter_code: |
+      defmodule WordFreq do
+        def top(text, k) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule WordFreqTest do
+        use ExUnit.Case
+
+        test "top two" do
+          assert WordFreq.top("the cat and the hat. The END, and...", 2) == [{"the", 3}, {"and", 2}]
+        end
+
+        test "ties broken alphabetically" do
+          assert WordFreq.top("b a c b a c", 3) == [{"a", 2}, {"b", 2}, {"c", 2}]
+        end
+
+        test "k larger than vocabulary" do
+          assert WordFreq.top("one one two", 10) == [{"one", 2}, {"two", 1}]
+        end
+
+        test "apostrophes stay inside words" do
+          assert WordFreq.top("don't stop, don't", 1) == [{"don't", 2}]
+        end
+
+        test "empty text" do
+          assert WordFreq.top("", 3) == []
+        end
+      end
+    solution: |
+      defmodule WordFreq do
+        def top(text, k) do
+          text
+          |> String.downcase()
+          |> String.split(~r/[^\p{L}\p{N}']+/u, trim: true)
+          |> Enum.frequencies()
+          |> Enum.sort_by(fn {word, count} -> {-count, word} end)
+          |> Enum.take(k)
+        end
+      end
+    explanation: |
+      A textbook pipeline: normalise, tokenise, `Enum.frequencies/1`, sort, take. The sort key
+      `{-count, word}` sorts by count descending *and* word ascending in a single pass; tuples
+      compare element by element, which is a trick worth saying out loud in an interview.
+
+      Complexity: O(n) to count, O(u log u) to sort the `u` unique words. If `k` is tiny and
+      `u` is huge you could keep a bounded heap, but in Elixir you would normally just sort.
+      Pitfalls: splitting on `" "` only (punctuation sticks to words), and sorting with
+      `Enum.sort_by(..., :desc)` which reverses the tie-break order too.
+    tags: [strings, enum, frequencies, sort_by]
+    source: https://exercism.org/tracks/elixir/exercises/word-count
+
+  - slug: elixir-task-caesar-rotational-cipher
+    kind: code
+    difficulty: junior
+    title: "Caesar / rotational cipher"
+    body: |
+      Implement `Caesar.rotate/2`. Shift every ASCII letter by `shift` positions (0..26),
+      wrapping around the alphabet and preserving case. Everything else (digits, spaces,
+      punctuation) is left untouched.
+
+      ```elixir
+      Caesar.rotate("Hello, World!", 13) #=> "Uryyb, Jbeyq!"
+      Caesar.rotate("abc xyz", 3)        #=> "def abc"
+      ```
+    starter_code: |
+      defmodule Caesar do
+        def rotate(text, shift) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CaesarTest do
+        use ExUnit.Case
+
+        test "rot13" do
+          assert Caesar.rotate("Hello, World!", 13) == "Uryyb, Jbeyq!"
+        end
+
+        test "wraps around" do
+          assert Caesar.rotate("abc xyz", 3) == "def abc"
+          assert Caesar.rotate("XYZ", 1) == "YZA"
+        end
+
+        test "shift 0 and 26 are identity" do
+          assert Caesar.rotate("Keep it", 0) == "Keep it"
+          assert Caesar.rotate("Keep it", 26) == "Keep it"
+        end
+
+        test "non letters untouched" do
+          assert Caesar.rotate("1 + 2 = 3?", 5) == "1 + 2 = 3?"
+        end
+
+        test "rot13 twice is identity" do
+          assert "Gur dhvpx" |> Caesar.rotate(13) |> Caesar.rotate(13) == "Gur dhvpx"
+        end
+      end
+    solution: |
+      defmodule Caesar do
+        def rotate(text, shift) do
+          for <<c <- text>>, into: "", do: <<rotate_char(c, shift)>>
+        end
+
+        defp rotate_char(c, shift) when c in ?a..?z, do: ?a + rem(c - ?a + shift, 26)
+        defp rotate_char(c, shift) when c in ?A..?Z, do: ?A + rem(c - ?A + shift, 26)
+        defp rotate_char(c, _shift), do: c
+      end
+    explanation: |
+      A binary comprehension `for <<c <- text>>, into: ""` walks the bytes and rebuilds a
+      string; the guard clauses `when c in ?a..?z` do the case handling with no `cond`. The
+      arithmetic `base + rem(c - base + shift, 26)` wraps the alphabet.
+
+      O(n), no allocations beyond the result. Pitfalls: forgetting the wrap (`"z" + 1`),
+      shifting uppercase with the lowercase base, and assuming the input is ASCII, which is the
+      stated contract here but worth saying; for Unicode you would use `String.graphemes/1`.
+    tags: [strings, binaries, comprehensions, guards]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (rotational-cipher)"
+
+  - slug: elixir-task-camel-snake-case-conversion
+    kind: code
+    difficulty: middle
+    title: "Convert between camelCase and snake_case"
+    body: |
+      Implement `CaseConv.to_snake/1` and `CaseConv.to_camel/1`.
+
+      - `to_snake("helloWorldFoo")` returns `"hello_world_foo"`; an already snake_case string
+        is returned unchanged. Treat `"HTTPServer"` as `"http_server"` (a run of capitals
+        followed by a word boundary).
+      - `to_camel("hello_world_foo")` returns `"helloWorldFoo"` (lower camel case).
+
+      ```elixir
+      CaseConv.to_snake("userId")      #=> "user_id"
+      CaseConv.to_camel("user_id")     #=> "userId"
+      ```
+    starter_code: |
+      defmodule CaseConv do
+        def to_snake(string) do
+          # your code here
+        end
+
+        def to_camel(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CaseConvTest do
+        use ExUnit.Case
+
+        test "camel to snake" do
+          assert CaseConv.to_snake("helloWorldFoo") == "hello_world_foo"
+          assert CaseConv.to_snake("userId") == "user_id"
+        end
+
+        test "acronym runs" do
+          assert CaseConv.to_snake("HTTPServer") == "http_server"
+          assert CaseConv.to_snake("parseJSONData") == "parse_json_data"
+        end
+
+        test "snake stays snake" do
+          assert CaseConv.to_snake("already_snake") == "already_snake"
+          assert CaseConv.to_snake("x") == "x"
+        end
+
+        test "snake to camel" do
+          assert CaseConv.to_camel("hello_world_foo") == "helloWorldFoo"
+          assert CaseConv.to_camel("user_id") == "userId"
+          assert CaseConv.to_camel("single") == "single"
+        end
+
+        test "round trip" do
+          assert "order_line_item" |> CaseConv.to_camel() |> CaseConv.to_snake() == "order_line_item"
+        end
+      end
+    solution: |
+      defmodule CaseConv do
+        def to_snake(string) do
+          string
+          |> String.replace(~r/([A-Z]+)([A-Z][a-z])/, "\\1_\\2")
+          |> String.replace(~r/([a-z\d])([A-Z])/, "\\1_\\2")
+          |> String.downcase()
+        end
+
+        def to_camel(string) do
+          [head | tail] = String.split(string, "_")
+          head <> Enum.map_join(tail, &String.capitalize/1)
+        end
+      end
+    explanation: |
+      Two regex passes are the standard answer (the same ones Rails' `underscore` uses): first
+      split `HTTPServer` into `HTTP_Server`, then split every lower-to-upper boundary, then
+      downcase. For the reverse direction, split on `_`, keep the first chunk and capitalise
+      the rest; `Enum.map_join/2` avoids an intermediate list.
+
+      Pitfalls: a single `([a-z])([A-Z])` regex turns `HTTPServer` into `httpserver`;
+      `String.capitalize/1` also *downcases* the tail of each chunk, which is what you want
+      here but surprises people. Mention `Macro.underscore/1` and `Macro.camelize/1`, which
+      exist in the stdlib and are the pragmatic answer outside an interview.
+    tags: [strings, regex]
+    source: https://elixir.hexdocs.pm/Regex.html
+
+  - slug: elixir-task-balanced-brackets-stack
+    kind: code
+    difficulty: junior
+    title: "Balanced brackets with a list used as a stack"
+    body: |
+      Implement `Brackets.balanced?/1`. Return `true` when every `(`, `[` and `{` in the string
+      is closed by the matching bracket in the right order. Other characters are ignored.
+      Use a list as the stack: push with `[x | stack]`, pop by pattern matching the head.
+
+      ```elixir
+      Brackets.balanced?("{[()]}")     #=> true
+      Brackets.balanced?("{[(])}")     #=> false
+      Brackets.balanced?("let x = (a[0] + b)") #=> true
+      ```
+    starter_code: |
+      defmodule Brackets do
+        def balanced?(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule BracketsTest do
+        use ExUnit.Case
+
+        test "balanced" do
+          assert Brackets.balanced?("{[()]}")
+          assert Brackets.balanced?("let x = (a[0] + b)")
+        end
+
+        test "wrong order" do
+          refute Brackets.balanced?("{[(])}")
+        end
+
+        test "unclosed and unopened" do
+          refute Brackets.balanced?("((")
+          refute Brackets.balanced?("]")
+        end
+
+        test "empty string" do
+          assert Brackets.balanced?("")
+        end
+      end
+    solution: |
+      defmodule Brackets do
+        @pairs %{?) => ?(, ?] => ?[, ?} => ?{}
+
+        def balanced?(string), do: check(string, [])
+
+        defp check(<<>>, stack), do: stack == []
+
+        defp check(<<c, rest::binary>>, stack) when c in ~c"([{", do: check(rest, [c | stack])
+
+        defp check(<<c, rest::binary>>, [top | stack]) when c in ~c")]}" and :erlang.map_get(c, @pairs) == top,
+          do: check(rest, stack)
+
+        defp check(<<c, _::binary>>, _stack) when c in ~c")]}", do: false
+
+        defp check(<<_, rest::binary>>, stack), do: check(rest, stack)
+      end
+    explanation: |
+      Recursion over the binary with an explicit stack list. Opening brackets are pushed,
+      a closing bracket must match the head of the stack (`[top | stack]`), and at the end the
+      stack must be empty. The three clause types (push / pop-if-matching / ignore) read like
+      the spec.
+
+      The interesting detail is the guard: guards cannot call arbitrary functions, but
+      `:erlang.map_get/2` (what `map.key` compiles to) is allowed, so the mapping can live in
+      a module attribute. The alternative is `Enum.reduce_while/3` with `{:halt, false}` on the
+      first mismatch. O(n) time, O(depth) stack. Pitfall: returning `true` when the string ends
+      with brackets still open.
+    tags: [strings, recursion, stack, guards]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (matching-brackets)"
+
+  - slug: elixir-task-roman-numerals-both-ways
+    kind: code
+    difficulty: middle
+    title: "Roman numerals: integer to roman and back"
+    body: |
+      Implement `Roman.to_roman/1` (1..3999 to a string) and `Roman.from_roman/1` (string to
+      integer). Subtractive notation is required: 4 is `IV`, 9 is `IX`, 40 is `XL`, and so on.
+
+      ```elixir
+      Roman.to_roman(1994)      #=> "MCMXCIV"
+      Roman.from_roman("MCMXCIV") #=> 1994
+      ```
+    starter_code: |
+      defmodule Roman do
+        def to_roman(number) do
+          # your code here
+        end
+
+        def from_roman(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RomanTest do
+        use ExUnit.Case
+
+        test "to roman" do
+          assert Roman.to_roman(1) == "I"
+          assert Roman.to_roman(4) == "IV"
+          assert Roman.to_roman(1994) == "MCMXCIV"
+          assert Roman.to_roman(3999) == "MMMCMXCIX"
+        end
+
+        test "from roman" do
+          assert Roman.from_roman("III") == 3
+          assert Roman.from_roman("IX") == 9
+          assert Roman.from_roman("MCMXCIV") == 1994
+        end
+
+        test "round trip" do
+          for n <- [1, 9, 14, 40, 90, 400, 1000, 2024, 3999] do
+            assert n |> Roman.to_roman() |> Roman.from_roman() == n
+          end
+        end
+      end
+    solution: |
+      defmodule Roman do
+        @numerals [
+          {1000, "M"}, {900, "CM"}, {500, "D"}, {400, "CD"}, {100, "C"}, {90, "XC"},
+          {50, "L"}, {40, "XL"}, {10, "X"}, {9, "IX"}, {5, "V"}, {4, "IV"}, {1, "I"}
+        ]
+        @values %{?I => 1, ?V => 5, ?X => 10, ?L => 50, ?C => 100, ?D => 500, ?M => 1000}
+
+        def to_roman(0), do: ""
+
+        def to_roman(n) do
+          {value, glyph} = Enum.find(@numerals, fn {value, _} -> value <= n end)
+          glyph <> to_roman(n - value)
+        end
+
+        def from_roman(string) do
+          string
+          |> String.to_charlist()
+          |> Enum.map(&Map.fetch!(@values, &1))
+          |> sum()
+        end
+
+        defp sum([a, b | rest]) when a < b, do: b - a + sum(rest)
+        defp sum([a | rest]), do: a + sum(rest)
+        defp sum([]), do: 0
+      end
+    explanation: |
+      Encoding: a greedy table that *includes* the subtractive pairs (`900 => "CM"`, ...),
+      then repeatedly take the largest value that fits. With the pairs in the table there is no
+      special casing at all. Decoding: map glyphs to values and walk pairwise; when a smaller
+      value precedes a larger one (`IV`), subtract it. The `[a, b | rest] when a < b` clause is
+      the idiomatic way to look one element ahead.
+
+      Both are O(length). Pitfalls: a table without the subtractive pairs (yields `IIII`),
+      and the decode loop that compares each glyph with the *previous* one but forgets to undo
+      the earlier addition. For invalid input `Map.fetch!/2` raises, which is acceptable for
+      an interview; a `{:ok, _} | :error` API is the follow-up.
+    tags: [strings, recursion, pattern-matching]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (roman-numerals)"
+
+  - slug: elixir-task-bob-reply-classifier
+    kind: code
+    difficulty: junior
+    title: "Bob: classify a remark with guards and clauses"
+    body: |
+      Implement `Bob.hey/1`, the lackadaisical teenager. Rules, in priority order:
+
+      1. Silence (empty or whitespace only) -> `"Fine. Be that way!"`
+      2. Yelling a question (all capitals *and* ends with `?`) -> `"Calm down, I know what I'm doing!"`
+      3. Yelling (has letters, all of them capitals) -> `"Whoa, chill out!"`
+      4. A question (ends with `?` after trimming) -> `"Sure."`
+      5. Anything else -> `"Whatever."`
+
+      Write it as small predicate functions and a `cond`, not one giant regex.
+
+      ```elixir
+      Bob.hey("WATCH OUT!")   #=> "Whoa, chill out!"
+      Bob.hey("1, 2, 3")      #=> "Whatever."
+      ```
+    starter_code: |
+      defmodule Bob do
+        def hey(remark) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule BobTest do
+        use ExUnit.Case
+
+        test "statement" do
+          assert Bob.hey("Tom-ay-to, tom-aaaah-to.") == "Whatever."
+        end
+
+        test "shouting" do
+          assert Bob.hey("WATCH OUT!") == "Whoa, chill out!"
+        end
+
+        test "shouting a question" do
+          assert Bob.hey("WHAT'S GOING ON?") == "Calm down, I know what I'm doing!"
+        end
+
+        test "question" do
+          assert Bob.hey("Does this cryogenic chamber make me look fat?") == "Sure."
+          assert Bob.hey("Okay if like my  spacebar  quite a bit?   ") == "Sure."
+        end
+
+        test "numbers only are not shouting" do
+          assert Bob.hey("1, 2, 3") == "Whatever."
+          assert Bob.hey("4?") == "Sure."
+        end
+
+        test "silence" do
+          assert Bob.hey("") == "Fine. Be that way!"
+          assert Bob.hey("   \t\n") == "Fine. Be that way!"
+        end
+      end
+    solution: |
+      defmodule Bob do
+        def hey(remark) do
+          remark = String.trim(remark)
+
+          cond do
+            remark == "" -> "Fine. Be that way!"
+            shouting?(remark) and question?(remark) -> "Calm down, I know what I'm doing!"
+            shouting?(remark) -> "Whoa, chill out!"
+            question?(remark) -> "Sure."
+            true -> "Whatever."
+          end
+        end
+
+        defp question?(s), do: String.ends_with?(s, "?")
+        defp shouting?(s), do: String.upcase(s) == s and String.downcase(s) != s
+      end
+    explanation: |
+      The interview point is decomposition: two tiny predicates and a `cond` whose clause
+      order encodes the priority rules. `shouting?` needs both halves: `upcase == s` is true
+      for `"1, 2, 3"` as well, so you also require that the string *has* letters
+      (`downcase != s`). Trimming first makes the trailing-whitespace question case free.
+
+      Pitfalls: checking `question?` before the shouted-question rule, forgetting the
+      numbers-only case, and reaching for a regex like `~r/^[A-Z ]+$/` that fails on
+      punctuation and non-ASCII letters (`String.upcase/1` handles `"ÜMLÄUTS"` correctly).
+    tags: [strings, cond, predicates]
+    source: https://exercism.org/tracks/elixir/exercises/bob
+
+  - slug: elixir-task-binary-header-pattern-parse
+    kind: code
+    difficulty: middle
+    title: "Parse a fixed binary header with pattern matching"
+    body: |
+      A packet starts with a 1-byte version, a 2-byte big-endian payload length, then the
+      payload, then possibly more packets. Implement `Packet.parse/1`:
+
+      - returns `{:ok, %{version: v, payload: bytes}, rest}` where `rest` is whatever follows
+        the payload,
+      - returns `{:error, :truncated}` when fewer bytes than `len` are available (or the header
+        itself is incomplete).
+
+      Use a single binary pattern with `::8`, `::16` and `::binary-size(len)`.
+
+      ```elixir
+      Packet.parse(<<1, 0, 3, "abc", "tail">>)
+      #=> {:ok, %{version: 1, payload: "abc"}, "tail"}
+      ```
+    starter_code: |
+      defmodule Packet do
+        def parse(binary) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PacketTest do
+        use ExUnit.Case
+
+        test "parses header and payload" do
+          assert Packet.parse(<<1, 0, 3, "abc", "tail">>) == {:ok, %{version: 1, payload: "abc"}, "tail"}
+        end
+
+        test "length is big endian 16 bit" do
+          payload = :binary.copy(<<0xAB>>, 300)
+          assert {:ok, %{version: 7, payload: ^payload}, ""} = Packet.parse(<<7, 300::16, payload::binary>>)
+        end
+
+        test "zero length payload" do
+          assert Packet.parse(<<2, 0, 0>>) == {:ok, %{version: 2, payload: ""}, ""}
+        end
+
+        test "truncated payload" do
+          assert Packet.parse(<<1, 0, 5, "abc">>) == {:error, :truncated}
+        end
+
+        test "truncated header" do
+          assert Packet.parse(<<1, 0>>) == {:error, :truncated}
+          assert Packet.parse(<<>>) == {:error, :truncated}
+        end
+      end
+    solution: |
+      defmodule Packet do
+        def parse(<<version::8, len::16, payload::binary-size(len), rest::binary>>) do
+          {:ok, %{version: version, payload: payload}, rest}
+        end
+
+        def parse(_), do: {:error, :truncated}
+      end
+    explanation: |
+      This is the feature interviewers use to check you actually know the BEAM: a size read
+      earlier in the same pattern (`len`) can be used by a later segment
+      (`binary-size(len)`), so the whole header-plus-payload parse is one function head.
+      `::16` is big-endian by default; the test with 300 bytes catches anyone who reads it as
+      two separate bytes in the wrong order. The catch-all clause turns every non-matching
+      shape, header too short or payload truncated, into `{:error, :truncated}`.
+
+      Pitfall: writing `payload::binary` (unsized) before `rest::binary`, which does not
+      compile because only the last binary segment may omit its size. Also note the match is
+      O(1): sub-binaries are references into the original, not copies.
+    tags: [binaries, pattern-matching, protocols]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-task-luhn-checksum
+    kind: code
+    difficulty: middle
+    title: "Luhn checksum validation"
+    body: |
+      Implement `Luhn.valid?/1`. The input is a string that may contain spaces. It is valid when:
+
+      - after removing spaces it has more than one character and only digits,
+      - the Luhn checksum holds: starting from the **right**, double every second digit; if the
+        doubled value is greater than 9, subtract 9; the sum of all digits must be divisible by 10.
+
+      ```elixir
+      Luhn.valid?("4539 3195 0343 6467") #=> true
+      Luhn.valid?("8273 1232 7352 0569") #=> false
+      Luhn.valid?("0")                   #=> false
+      ```
+    starter_code: |
+      defmodule Luhn do
+        def valid?(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LuhnTest do
+        use ExUnit.Case
+
+        test "valid numbers" do
+          assert Luhn.valid?("4539 3195 0343 6467")
+          assert Luhn.valid?("059")
+          assert Luhn.valid?("091")
+        end
+
+        test "invalid checksum" do
+          refute Luhn.valid?("8273 1232 7352 0569")
+          refute Luhn.valid?("055")
+        end
+
+        test "single digit and empty are invalid" do
+          refute Luhn.valid?("0")
+          refute Luhn.valid?(" 0 ")
+          refute Luhn.valid?("")
+        end
+
+        test "non digits are invalid" do
+          refute Luhn.valid?("055-444-285")
+          refute Luhn.valid?("055a 444 285")
+        end
+      end
+    solution: |
+      defmodule Luhn do
+        def valid?(string) do
+          digits = String.replace(string, " ", "")
+
+          if String.length(digits) > 1 and digits =~ ~r/^\d+$/ do
+            digits
+            |> String.to_charlist()
+            |> Enum.map(&(&1 - ?0))
+            |> Enum.reverse()
+            |> Enum.with_index()
+            |> Enum.map(fn
+              {d, i} when rem(i, 2) == 1 and d * 2 > 9 -> d * 2 - 9
+              {d, i} when rem(i, 2) == 1 -> d * 2
+              {d, _} -> d
+            end)
+            |> Enum.sum()
+            |> rem(10) == 0
+          else
+            false
+          end
+        end
+      end
+    explanation: |
+      Validate the shape first, then compute. Reversing the digit list makes "every second
+      digit from the right" simply "odd index", and `Enum.with_index/1` plus guard clauses
+      express the doubling rule declaratively. `digits =~ ~r/^\d+$/` is the compact
+      digits-only check.
+
+      O(n). Pitfalls: doubling from the left, forgetting the "subtract 9" step, treating `"0"`
+      as valid (its sum is 0, but single characters are rejected by the spec), and only
+      stripping spaces at the ends with `String.trim/1` instead of everywhere.
+    tags: [strings, enum, with_index, guards]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (luhn)"
+
+  - slug: elixir-task-word-wrap-greedy
+    kind: code
+    difficulty: middle
+    title: "Greedy word wrap into lines of a maximum width"
+    body: |
+      Implement `Wrap.wrap/2`. Split the text into words (on whitespace) and pack them greedily
+      into lines of at most `width` characters, joined by single spaces. A word longer than
+      `width` goes on a line of its own. Return the list of lines.
+
+      ```elixir
+      Wrap.wrap("the quick brown fox jumps", 10)
+      #=> ["the quick", "brown fox", "jumps"]
+      ```
+    starter_code: |
+      defmodule Wrap do
+        def wrap(text, width) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule WrapTest do
+        use ExUnit.Case
+
+        test "greedy packing" do
+          assert Wrap.wrap("the quick brown fox jumps", 10) == ["the quick", "brown fox", "jumps"]
+        end
+
+        test "exact fit" do
+          assert Wrap.wrap("aaa bbb", 7) == ["aaa bbb"]
+          assert Wrap.wrap("aaa bbb", 6) == ["aaa", "bbb"]
+        end
+
+        test "long word gets its own line" do
+          assert Wrap.wrap("a supercalifragilistic b", 5) == ["a", "supercalifragilistic", "b"]
+        end
+
+        test "collapses whitespace" do
+          assert Wrap.wrap("  one   two \n three ", 20) == ["one two three"]
+        end
+
+        test "empty text" do
+          assert Wrap.wrap("", 10) == []
+        end
+      end
+    solution: |
+      defmodule Wrap do
+        def wrap(text, width) do
+          text
+          |> String.split()
+          |> Enum.reduce([], fn
+            word, [] -> [word]
+            word, [line | lines] when byte_size(line) + 1 + byte_size(word) <= width -> [line <> " " <> word | lines]
+            word, lines -> [word | lines]
+          end)
+          |> Enum.reverse()
+        end
+      end
+    explanation: |
+      A reduce where the accumulator is the list of lines *in reverse*, so the current line is
+      always the head and appending a word is O(1). Three clauses: first word, word fits on the
+      current line, word starts a new line. `Enum.reverse/1` at the end restores order; this
+      "build backwards, reverse once" pattern is the single most common idiom in Elixir
+      interviews.
+
+      `byte_size/1` is used in the guard because `String.length/1` is not guard-safe; for ASCII
+      they agree, and the interviewer may ask you exactly that. Pitfall: `lines ++ [word]` in
+      the reduce, which makes the whole thing O(n^2).
+    tags: [strings, reduce, guards]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-task-parse-duration-string
+    kind: code
+    difficulty: middle
+    title: "Parse a duration like \"1h30m\" into seconds"
+    body: |
+      Implement `Duration.parse/1`. The input is a sequence of `<number><unit>` parts with
+      units `d`, `h`, `m`, `s` (days, hours, minutes, seconds). Return `{:ok, seconds}` or
+      `{:error, :invalid}` for anything that is not entirely made of valid parts.
+
+      ```elixir
+      Duration.parse("1h30m")  #=> {:ok, 5400}
+      Duration.parse("2d")     #=> {:ok, 172800}
+      Duration.parse("1h x")   #=> {:error, :invalid}
+      ```
+    starter_code: |
+      defmodule Duration do
+        def parse(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule DurationTest do
+        use ExUnit.Case
+
+        test "hours and minutes" do
+          assert Duration.parse("1h30m") == {:ok, 5400}
+        end
+
+        test "all units" do
+          assert Duration.parse("1d2h3m4s") == {:ok, 86400 + 7200 + 180 + 4}
+        end
+
+        test "single unit" do
+          assert Duration.parse("45s") == {:ok, 45}
+          assert Duration.parse("0m") == {:ok, 0}
+        end
+
+        test "invalid input" do
+          assert Duration.parse("1h x") == {:error, :invalid}
+          assert Duration.parse("1w") == {:error, :invalid}
+          assert Duration.parse("h") == {:error, :invalid}
+          assert Duration.parse("") == {:error, :invalid}
+        end
+      end
+    solution: |
+      defmodule Duration do
+        @seconds %{"d" => 86_400, "h" => 3_600, "m" => 60, "s" => 1}
+
+        def parse(string) do
+          parts = Regex.scan(~r/(\d+)([dhms])/, string)
+          consumed = parts |> Enum.map(fn [whole | _] -> byte_size(whole) end) |> Enum.sum()
+
+          if parts != [] and consumed == byte_size(string) do
+            {:ok, Enum.sum(for [_, n, unit] <- parts, do: String.to_integer(n) * @seconds[unit])}
+          else
+            {:error, :invalid}
+          end
+        end
+      end
+    explanation: |
+      `Regex.scan/2` extracts every `(\d+)([dhms])` pair; the subtle part is rejecting
+      garbage *between* valid parts. Comparing the total length of the matches with the length
+      of the input is a cheap way to assert the parts cover the whole string without writing a
+      second anchored regex. A multiplier map turns units into seconds and a comprehension sums
+      them.
+
+      Pitfalls: `Regex.scan` happily returns `[["1h", "1", "h"]]` for `"1h x"`, so a solution
+      that forgets the coverage check accepts invalid input; and `""` must be rejected
+      (`parts == []`). The recursive alternative, matching `<<digit, rest::binary>>` and
+      accumulating a number, is also fine and avoids regex entirely.
+    tags: [strings, regex, parsing]
+    source: https://elixir.hexdocs.pm/Regex.html
+
+  - slug: elixir-task-parse-csv-line-with-quotes
+    kind: code
+    difficulty: senior
+    title: "Parse one CSV line with quoted fields"
+    body: |
+      Implement `CSVLine.parse/1` for a single line (no newlines inside). Rules:
+
+      - fields are separated by commas,
+      - a field may be wrapped in double quotes, in which case commas inside it are literal,
+      - inside a quoted field, `""` is an escaped double quote,
+      - an empty field is the empty string.
+
+      Write a small recursive state machine over the string; do not use `String.split/2` on commas.
+
+      ```elixir
+      CSVLine.parse(~s(a,"b,c","d ""e""",f)) #=> ["a", "b,c", ~s(d "e"), "f"]
+      CSVLine.parse("a,,b")                   #=> ["a", "", "b"]
+      ```
+    starter_code: |
+      defmodule CSVLine do
+        def parse(line) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CSVLineTest do
+        use ExUnit.Case
+
+        test "plain fields" do
+          assert CSVLine.parse("a,b,c") == ["a", "b", "c"]
+        end
+
+        test "quoted field with comma" do
+          assert CSVLine.parse(~s(a,"b,c",d)) == ["a", "b,c", "d"]
+        end
+
+        test "escaped quote" do
+          assert CSVLine.parse(~s("d ""e""",f)) == [~s(d "e"), "f"]
+        end
+
+        test "empty fields" do
+          assert CSVLine.parse("a,,b") == ["a", "", "b"]
+          assert CSVLine.parse("a,") == ["a", ""]
+          assert CSVLine.parse("") == [""]
+        end
+
+        test "unicode content" do
+          assert CSVLine.parse(~s(ö,"ß,ü")) == ["ö", "ß,ü"]
+        end
+      end
+    solution: |
+      defmodule CSVLine do
+        def parse(line), do: unquoted(line, "", [])
+
+        # outside quotes
+        defp unquoted(<<>>, field, acc), do: Enum.reverse([field | acc])
+        defp unquoted(<<",", rest::binary>>, field, acc), do: unquoted(rest, "", [field | acc])
+        defp unquoted(<<?", rest::binary>>, "", acc), do: quoted(rest, "", acc)
+        defp unquoted(<<c::utf8, rest::binary>>, field, acc), do: unquoted(rest, field <> <<c::utf8>>, acc)
+
+        # inside quotes
+        defp quoted(<<?", ?", rest::binary>>, field, acc), do: quoted(rest, field <> ~s("), acc)
+        defp quoted(<<?", rest::binary>>, field, acc), do: unquoted(rest, field, acc)
+        defp quoted(<<c::utf8, rest::binary>>, field, acc), do: quoted(rest, field <> <<c::utf8>>, acc)
+      end
+    explanation: |
+      Two mutually recursive functions *are* the state machine: `unquoted/3` and `quoted/3`,
+      each pattern matching on the next character(s) of the binary. The escaped quote is the
+      clause `<<?", ?", rest::binary>>` which must come *before* the single-quote clause
+      (first match wins). The accumulator holds completed fields in reverse.
+
+      Matching `c::utf8` instead of a raw byte keeps multi-byte characters intact. Appending to
+      `field` with `<>` is O(1) amortised on the BEAM thanks to binary append optimisation, so
+      no need for iodata here. Pitfalls: splitting on `","` first (breaks quoted commas),
+      forgetting that `""` after a comma is an empty field, and an unterminated quote; the
+      reference just treats it as end of field, a stricter version would return
+      `{:error, :unterminated_quote}`.
+    tags: [strings, binaries, recursion, parsing, state-machine]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-task-log-line-named-captures
+    kind: code
+    difficulty: middle
+    title: "Parse a log line with named regex captures"
+    body: |
+      Implement `LogParser.parse/1` for lines of the form
+      `2024-01-02 12:34:56 ERROR [db] connection lost`. Return a map with atom keys
+      `:timestamp`, `:level` (downcased atom: `:error`, `:warn`, `:info`, `:debug`), `:module`
+      and `:message`, or `nil` if the line does not match. Use `Regex.named_captures/2`.
+
+      ```elixir
+      LogParser.parse("2024-01-02 12:34:56 ERROR [db] connection lost")
+      #=> %{timestamp: "2024-01-02 12:34:56", level: :error, module: "db", message: "connection lost"}
+      ```
+    starter_code: |
+      defmodule LogParser do
+        def parse(line) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LogParserTest do
+        use ExUnit.Case
+
+        test "parses a line" do
+          assert LogParser.parse("2024-01-02 12:34:56 ERROR [db] connection lost") == %{
+                   timestamp: "2024-01-02 12:34:56",
+                   level: :error,
+                   module: "db",
+                   message: "connection lost"
+                 }
+        end
+
+        test "message may contain brackets and be long" do
+          assert %{level: :info, module: "web.router", message: "GET /users [200] in 3ms"} =
+                   LogParser.parse("2024-05-05 00:00:00 INFO [web.router] GET /users [200] in 3ms")
+        end
+
+        test "unknown level or shape returns nil" do
+          assert LogParser.parse("garbage") == nil
+          assert LogParser.parse("2024-01-02 12:34:56 TRACE [db] x") == nil
+        end
+      end
+    solution: |
+      defmodule LogParser do
+        @line ~r/^(?<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?<level>ERROR|WARN|INFO|DEBUG) \[(?<module>[^\]]+)\] (?<message>.*)$/
+
+        def parse(line) do
+          case Regex.named_captures(@line, line) do
+            nil ->
+              nil
+
+            %{"timestamp" => ts, "level" => level, "module" => mod, "message" => msg} ->
+              %{timestamp: ts, level: String.to_atom(String.downcase(level)), module: mod, message: msg}
+          end
+        end
+      end
+    explanation: |
+      `Regex.named_captures/2` returns a map with *string* keys or `nil`, so the natural shape
+      is a `case` with a `nil` clause and a map-pattern clause that destructures all four
+      groups at once. Restricting `level` to the known alternatives in the regex is what makes
+      `String.to_atom/1` safe: only four atoms can ever be created, no atom-table exhaustion
+      from untrusted input (an interviewer will ask about this).
+
+      Pitfalls: a greedy `\[(.*)\]` for the module that swallows `[200]` in the message
+      (use `[^\]]+`), and converting arbitrary user strings with `String.to_atom/1`.
+    tags: [strings, regex, named-captures, parsing]
+    source: https://elixir.hexdocs.pm/Regex.html
+
+  - slug: elixir-task-graphemes-vs-bytes
+    kind: code
+    difficulty: junior
+    title: "Graphemes, codepoints and bytes: three lengths of one string"
+    body: |
+      Implement `Text.stats/1` returning `%{bytes: n, codepoints: n, graphemes: n}` and
+      `Text.reverse/1`, which reverses a string *by grapheme* so that combining accents stay
+      attached to their base letter.
+
+      ```elixir
+      Text.stats("héllo")          #=> %{bytes: 6, codepoints: 5, graphemes: 5}
+      Text.stats("é")        #=> %{bytes: 3, codepoints: 2, graphemes: 1}
+      Text.reverse("ab́c")    #=> "cb́a"
+      ```
+    starter_code: |
+      defmodule Text do
+        def stats(string) do
+          # your code here
+        end
+
+        def reverse(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TextTest do
+        use ExUnit.Case
+
+        test "ascii" do
+          assert Text.stats("hello") == %{bytes: 5, codepoints: 5, graphemes: 5}
+        end
+
+        test "multibyte codepoint" do
+          assert Text.stats("héllo") == %{bytes: 6, codepoints: 5, graphemes: 5}
+        end
+
+        test "combining accent is one grapheme" do
+          assert Text.stats("é") == %{bytes: 3, codepoints: 2, graphemes: 1}
+        end
+
+        test "empty" do
+          assert Text.stats("") == %{bytes: 0, codepoints: 0, graphemes: 0}
+          assert Text.reverse("") == ""
+        end
+
+        test "reverse keeps combining marks attached" do
+          assert Text.reverse("ab́c") == "cb́a"
+          assert Text.reverse("abc") == "cba"
+        end
+      end
+    solution: |
+      defmodule Text do
+        def stats(string) do
+          %{
+            bytes: byte_size(string),
+            codepoints: length(String.codepoints(string)),
+            graphemes: String.length(string)
+          }
+        end
+
+        def reverse(string) do
+          string
+          |> String.graphemes()
+          |> Enum.reverse()
+          |> Enum.join()
+        end
+      end
+    explanation: |
+      Three different "lengths": `byte_size/1` is O(1) and counts UTF-8 bytes,
+      `String.codepoints/1` splits into Unicode scalar values, `String.length/1` counts
+      grapheme clusters (what a human sees) and is O(n). `String.reverse/1` already works on
+      graphemes, but the exercise is to show you know *why*: reversing codepoints would move
+      the combining acute accent onto the wrong letter.
+
+      Pitfalls: using `String.length/1` in a guard or hot loop thinking it is O(1); using
+      `String.to_charlist/1` plus `Enum.reverse/1` (codepoint-level, breaks accents); and
+      assuming `byte_size == String.length` for non-ASCII text.
+    tags: [strings, unicode, graphemes, binaries]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-task-flatten-nested-list-recursion
+    kind: code
+    difficulty: junior
+    title: "Flatten a nested list without List.flatten"
+    body: |
+      Implement `Flat.flatten/1` for arbitrarily nested lists, using recursion and pattern
+      matching only (no `List.flatten/1`, no `Enum.flat_map/2`). Preserve element order.
+
+      ```elixir
+      Flat.flatten([1, [2, [3, 4]], [], [[5]]]) #=> [1, 2, 3, 4, 5]
+      ```
+    starter_code: |
+      defmodule Flat do
+        def flatten(list) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FlatTest do
+        use ExUnit.Case
+
+        test "nested" do
+          assert Flat.flatten([1, [2, [3, 4]], [], [[5]]]) == [1, 2, 3, 4, 5]
+        end
+
+        test "already flat" do
+          assert Flat.flatten([1, 2, 3]) == [1, 2, 3]
+        end
+
+        test "empty and only empties" do
+          assert Flat.flatten([]) == []
+          assert Flat.flatten([[], [[]]]) == []
+        end
+
+        test "deeply nested single element" do
+          assert Flat.flatten([[[[:a]]]]) == [:a]
+        end
+
+        test "keeps non-list values as is" do
+          assert Flat.flatten([{1, 2}, ["x", nil]]) == [{1, 2}, "x", nil]
+        end
+      end
+    solution: |
+      defmodule Flat do
+        def flatten(list), do: list |> do_flatten([]) |> Enum.reverse()
+
+        defp do_flatten([], acc), do: acc
+        defp do_flatten([head | tail], acc) when is_list(head), do: do_flatten(tail, do_flatten(head, acc))
+        defp do_flatten([head | tail], acc), do: do_flatten(tail, [head | acc])
+      end
+    explanation: |
+      Three clauses: empty list, head is itself a list (recurse into it, then continue), head
+      is a value (prepend to the accumulator). The accumulator is built in reverse and reversed
+      once at the end, so the whole thing is O(n) in the total number of leaves.
+
+      The naive version `flatten(h) ++ flatten(t)` is shorter but O(n^2) in the worst case
+      because `++` copies its left operand; mention that trade-off. Pitfall: the `is_list/1`
+      guard is required, otherwise `[head | tail]` also matches a nested list head and you
+      never descend.
+    tags: [lists, recursion, accumulator]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-task-two-sum-with-map
+    kind: code
+    difficulty: middle
+    title: "Two-sum in one pass with a map"
+    body: |
+      Implement `TwoSum.find/2`. Given a list of integers and a target, return `{i, j}` with
+      `i < j` such that `nums[i] + nums[j] == target`, or `nil` if there is no such pair. Do it
+      in a single pass, O(n), using a map from value to index. If several pairs exist, return
+      the one whose `j` is smallest.
+
+      ```elixir
+      TwoSum.find([2, 7, 11, 15], 9)  #=> {0, 1}
+      TwoSum.find([3, 2, 4], 6)       #=> {1, 2}
+      TwoSum.find([1, 2], 10)         #=> nil
+      ```
+    starter_code: |
+      defmodule TwoSum do
+        def find(nums, target) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TwoSumTest do
+        use ExUnit.Case
+
+        test "basic" do
+          assert TwoSum.find([2, 7, 11, 15], 9) == {0, 1}
+        end
+
+        test "does not reuse the same element" do
+          assert TwoSum.find([3, 2, 4], 6) == {1, 2}
+        end
+
+        test "negatives and duplicates" do
+          assert TwoSum.find([-1, 5, 3, -1], -2) == {0, 3}
+          assert TwoSum.find([3, 3], 6) == {0, 1}
+        end
+
+        test "no pair" do
+          assert TwoSum.find([1, 2], 10) == nil
+          assert TwoSum.find([], 0) == nil
+        end
+      end
+    solution: |
+      defmodule TwoSum do
+        def find(nums, target) do
+          nums
+          |> Enum.with_index()
+          |> Enum.reduce_while(%{}, fn {n, i}, seen ->
+            case Map.fetch(seen, target - n) do
+              {:ok, j} -> {:halt, {j, i}}
+              :error -> {:cont, Map.put_new(seen, n, i)}
+            end
+          end)
+          |> case do
+            {_, _} = pair -> pair
+            _seen -> nil
+          end
+        end
+      end
+    explanation: |
+      Walk the list once; for each element ask "have I already seen `target - n`?". The
+      map `seen` is value => first index. `Enum.reduce_while/3` lets you stop at the first
+      hit, and the accumulator doubles as the result, hence the final `case` that
+      distinguishes a `{i, j}` tuple from the leftover map.
+
+      O(n) time and space versus O(n^2) for the nested-loop version, which is the question's
+      whole point. Pitfalls: inserting the current element *before* looking up its complement
+      (then `[3]` with target 6 would wrongly return `{0, 0}`), and using `Map.put/3` instead
+      of `Map.put_new/3`, which would overwrite the earliest index for duplicates.
+    tags: [enum, map, reduce_while]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-task-group-by-key-and-sum
+    kind: code
+    difficulty: middle
+    title: "Group records by a key and sum a field"
+    body: |
+      Implement `Sales.totals/1`. Given a list of maps with `:category` and `:amount`, return a
+      map from category to the sum of amounts. Then implement `Sales.best/1` returning the
+      `{category, total}` with the highest total (`nil` for an empty list).
+
+      ```elixir
+      sales = [%{category: :food, amount: 10}, %{category: :tech, amount: 99}, %{category: :food, amount: 5}]
+      Sales.totals(sales) #=> %{food: 15, tech: 99}
+      Sales.best(sales)   #=> {:tech, 99}
+      ```
+    starter_code: |
+      defmodule Sales do
+        def totals(sales) do
+          # your code here
+        end
+
+        def best(sales) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SalesTest do
+        use ExUnit.Case
+
+        @sales [
+          %{category: :food, amount: 10},
+          %{category: :tech, amount: 99},
+          %{category: :food, amount: 5},
+          %{category: :books, amount: -3}
+        ]
+
+        test "totals" do
+          assert Sales.totals(@sales) == %{food: 15, tech: 99, books: -3}
+        end
+
+        test "best" do
+          assert Sales.best(@sales) == {:tech, 99}
+        end
+
+        test "empty" do
+          assert Sales.totals([]) == %{}
+          assert Sales.best([]) == nil
+        end
+
+        test "single" do
+          assert Sales.best([%{category: :x, amount: 1}]) == {:x, 1}
+        end
+      end
+    solution: |
+      defmodule Sales do
+        def totals(sales) do
+          Enum.reduce(sales, %{}, fn %{category: cat, amount: amt}, acc ->
+            Map.update(acc, cat, amt, &(&1 + amt))
+          end)
+        end
+
+        def best([]), do: nil
+
+        def best(sales) do
+          sales
+          |> totals()
+          |> Enum.max_by(fn {_cat, total} -> total end)
+        end
+      end
+    explanation: |
+      `Map.update/4` is the idiom for "insert or accumulate": the third argument is the
+      initial value when the key is absent, the function runs when it is present. One reduce,
+      O(n), no intermediate groups. `Enum.max_by/2` over the map picks the winner; maps
+      enumerate as `{key, value}` tuples.
+
+      The alternative `Enum.group_by/3` then `Map.new` with `Enum.sum` is also fine and more
+      readable to some, but builds every group list first. Pitfall: `Enum.max_by/2` raises on
+      an empty enumerable, so handle `[]` with a separate clause (or use the `:empty_fallback`
+      option available since Elixir 1.12).
+    tags: [enum, map, reduce, group_by]
+    source: https://elixir.hexdocs.pm/Map.html
+
+  - slug: elixir-task-deep-merge-maps
+    kind: code
+    difficulty: middle
+    title: "Deep merge two nested maps"
+    body: |
+      Implement `DeepMerge.merge/2`. Like `Map.merge/2`, the right map wins on conflicts, except
+      when *both* values are maps, in which case they are merged recursively. Lists and any
+      other values are replaced, not merged.
+
+      ```elixir
+      DeepMerge.merge(%{a: %{b: 1, c: 2}, d: 1}, %{a: %{c: 3, e: 4}, f: 5})
+      #=> %{a: %{b: 1, c: 3, e: 4}, d: 1, f: 5}
+      ```
+    starter_code: |
+      defmodule DeepMerge do
+        def merge(left, right) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule DeepMergeTest do
+        use ExUnit.Case
+
+        test "nested maps merge recursively" do
+          assert DeepMerge.merge(%{a: %{b: 1, c: 2}, d: 1}, %{a: %{c: 3, e: 4}, f: 5}) ==
+                   %{a: %{b: 1, c: 3, e: 4}, d: 1, f: 5}
+        end
+
+        test "right wins for non-map conflicts" do
+          assert DeepMerge.merge(%{a: 1, l: [1, 2]}, %{a: 2, l: [3]}) == %{a: 2, l: [3]}
+        end
+
+        test "map replaced by scalar and vice versa" do
+          assert DeepMerge.merge(%{a: %{x: 1}}, %{a: 5}) == %{a: 5}
+          assert DeepMerge.merge(%{a: 5}, %{a: %{x: 1}}) == %{a: %{x: 1}}
+        end
+
+        test "three levels deep" do
+          assert DeepMerge.merge(%{a: %{b: %{c: 1}}}, %{a: %{b: %{d: 2}}}) == %{a: %{b: %{c: 1, d: 2}}}
+        end
+
+        test "empty maps" do
+          assert DeepMerge.merge(%{}, %{a: 1}) == %{a: 1}
+          assert DeepMerge.merge(%{a: 1}, %{}) == %{a: 1}
+        end
+      end
+    solution: |
+      defmodule DeepMerge do
+        def merge(left, right) do
+          Map.merge(left, right, &resolve/3)
+        end
+
+        defp resolve(_key, l, r) when is_map(l) and is_map(r), do: merge(l, r)
+        defp resolve(_key, _l, r), do: r
+      end
+    explanation: |
+      `Map.merge/3` takes a conflict resolver that receives the key and both values. The
+      resolver recurses into `merge/2` when both sides are maps and otherwise returns the right
+      value; two clauses with guards, done. This is the canonical small-but-complete answer.
+
+      Follow-ups to be ready for: structs are maps too (`is_map/1` is true for them), so a
+      production version usually checks `is_struct/1` and treats structs as opaque values;
+      and the complexity is O(total keys), since each key is visited once.
+    tags: [map, recursion, merge]
+    source: https://elixir.hexdocs.pm/Map.html
+
+  - slug: elixir-task-spiral-order-matrix
+    kind: code
+    difficulty: middle
+    title: "Spiral order traversal of a matrix"
+    body: |
+      Implement `Spiral.order/1`. Given a matrix as a list of rows, return its elements in
+      clockwise spiral order starting at the top-left. Rows are non-empty and equal length;
+      the matrix itself may be empty or non-square.
+
+      Hint: take the first row, then rotate the rest of the matrix counter-clockwise and recurse.
+
+      ```elixir
+      Spiral.order([[1, 2, 3], [4, 5, 6], [7, 8, 9]]) #=> [1, 2, 3, 6, 9, 8, 7, 4, 5]
+      ```
+    starter_code: |
+      defmodule Spiral do
+        def order(matrix) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SpiralTest do
+        use ExUnit.Case
+
+        test "3x3" do
+          assert Spiral.order([[1, 2, 3], [4, 5, 6], [7, 8, 9]]) == [1, 2, 3, 6, 9, 8, 7, 4, 5]
+        end
+
+        test "3x4" do
+          assert Spiral.order([[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]]) ==
+                   [1, 2, 3, 4, 8, 12, 11, 10, 9, 5, 6, 7]
+        end
+
+        test "single row and single column" do
+          assert Spiral.order([[1, 2, 3]]) == [1, 2, 3]
+          assert Spiral.order([[1], [2], [3]]) == [1, 2, 3]
+        end
+
+        test "empty" do
+          assert Spiral.order([]) == []
+        end
+      end
+    solution: |
+      defmodule Spiral do
+        def order([]), do: []
+        def order([row | rest]), do: row ++ order(rotate_ccw(rest))
+
+        defp rotate_ccw([]), do: []
+        defp rotate_ccw(rows), do: rows |> Enum.zip_with(& &1) |> Enum.reverse()
+      end
+    explanation: |
+      The functional formulation: peel off the first row, rotate what remains 90 degrees
+      counter-clockwise (transpose, then reverse the rows), and recurse. The next "top row"
+      is then the old right column read top to bottom, which is exactly the spiral.
+      `Enum.zip_with(rows, & &1)` is the transpose idiom (zip all rows, keep each tuple as a
+      list).
+
+      Each rotation is O(cells), and there are O(min(rows, cols)) rotations, so O(n * m *
+      min(n, m)) overall, worse than the index-walking O(n * m) but dramatically shorter and
+      what a good Elixir interviewer wants to see. Pitfall: `Enum.zip/1` on an empty list
+      returns `[]`, so guard `rotate_ccw([])` explicitly or `order/1` loops forever on
+      `[[]]`-shaped leftovers.
+    tags: [lists, recursion, matrix, zip]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-task-frequencies-without-enum-frequencies
+    kind: code
+    difficulty: junior
+    title: "Count element frequencies without Enum.frequencies"
+    body: |
+      Implement `Freq.count/1` which returns a map from each element to how many times it
+      appears, without using `Enum.frequencies/1`, `Enum.group_by/2` or `Enum.frequencies_by/2`.
+      Then `Freq.most_common/1` returns the element with the highest count (any one of them on
+      ties, `nil` for an empty list).
+
+      ```elixir
+      Freq.count(["a", "b", "a"]) #=> %{"a" => 2, "b" => 1}
+      Freq.most_common([1, 2, 2]) #=> 2
+      ```
+    starter_code: |
+      defmodule Freq do
+        def count(list) do
+          # your code here
+        end
+
+        def most_common(list) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FreqTest do
+        use ExUnit.Case
+
+        test "counts" do
+          assert Freq.count(["a", "b", "a"]) == %{"a" => 2, "b" => 1}
+        end
+
+        test "mixed terms" do
+          assert Freq.count([1, :a, 1, "1", :a, 1]) == %{1 => 3, :a => 2, "1" => 1}
+        end
+
+        test "empty" do
+          assert Freq.count([]) == %{}
+          assert Freq.most_common([]) == nil
+        end
+
+        test "most common" do
+          assert Freq.most_common([1, 2, 2, 3, 2]) == 2
+          assert Freq.most_common([:x]) == :x
+        end
+      end
+    solution: |
+      defmodule Freq do
+        def count(list) do
+          Enum.reduce(list, %{}, fn x, acc -> Map.update(acc, x, 1, &(&1 + 1)) end)
+        end
+
+        def most_common([]), do: nil
+
+        def most_common(list) do
+          {elem, _n} = list |> count() |> Enum.max_by(fn {_, n} -> n end)
+          elem
+        end
+      end
+    explanation: |
+      This is the exercise behind `Enum.frequencies/1` itself: a reduce with
+      `Map.update(acc, x, 1, &(&1 + 1))`, which inserts 1 on first sight and increments after.
+      O(n) with map lookups that are effectively O(log n) for large maps. The accumulator is
+      the map, there is nothing to reverse.
+
+      Pitfalls: `Map.get/3` followed by `Map.put/3` (works, two lookups, less idiomatic), and
+      `Enum.max_by/2` on an empty map raising, hence the explicit `[]` clause. Interviewers often
+      follow up with "now do it for a 10 GB file", which is where `File.stream!/1` plus the same
+      reduce is the answer.
+    tags: [enum, map, reduce]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-task-my-map-filter-reduce-recursion
+    kind: code
+    difficulty: junior
+    title: "Implement map, filter and reduce with recursion"
+    body: |
+      Implement `MyEnum.map/2`, `MyEnum.filter/2` and `MyEnum.reduce/3` for lists using only
+      recursion and pattern matching (no `Enum`, no `for`). `reduce/3` takes the list, the
+      initial accumulator and a two-argument function `(element, acc) -> acc`, like
+      `Enum.reduce/3`. Bonus: implement `map` and `filter` *in terms of* your `reduce`.
+
+      ```elixir
+      MyEnum.map([1, 2, 3], &(&1 * 2))            #=> [2, 4, 6]
+      MyEnum.filter([1, 2, 3, 4], &(rem(&1, 2) == 0)) #=> [2, 4]
+      MyEnum.reduce([1, 2, 3], 0, &+/2)           #=> 6
+      ```
+    starter_code: |
+      defmodule MyEnum do
+        def map(list, fun) do
+          # your code here
+        end
+
+        def filter(list, fun) do
+          # your code here
+        end
+
+        def reduce(list, acc, fun) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MyEnumTest do
+        use ExUnit.Case
+
+        test "map" do
+          assert MyEnum.map([1, 2, 3], &(&1 * 2)) == [2, 4, 6]
+          assert MyEnum.map([], &(&1 * 2)) == []
+        end
+
+        test "filter" do
+          assert MyEnum.filter([1, 2, 3, 4], &(rem(&1, 2) == 0)) == [2, 4]
+          assert MyEnum.filter([1, 3], &(rem(&1, 2) == 0)) == []
+        end
+
+        test "reduce" do
+          assert MyEnum.reduce([1, 2, 3], 0, &+/2) == 6
+          assert MyEnum.reduce([], :init, fn _, _ -> :changed end) == :init
+          assert MyEnum.reduce([1, 2, 3], [], &[&1 | &2]) == [3, 2, 1]
+        end
+
+        test "order is preserved" do
+          assert MyEnum.map([3, 1, 2], & &1) == [3, 1, 2]
+          assert MyEnum.filter([3, 1, 2], fn _ -> true end) == [3, 1, 2]
+        end
+      end
+    solution: |
+      defmodule MyEnum do
+        def reduce([], acc, _fun), do: acc
+        def reduce([head | tail], acc, fun), do: reduce(tail, fun.(head, acc), fun)
+
+        def map(list, fun) do
+          list
+          |> reduce([], fn x, acc -> [fun.(x) | acc] end)
+          |> reverse()
+        end
+
+        def filter(list, fun) do
+          list
+          |> reduce([], fn x, acc -> if fun.(x), do: [x | acc], else: acc end)
+          |> reverse()
+        end
+
+        defp reverse(list), do: reduce(list, [], &[&1 | &2])
+      end
+    explanation: |
+      `reduce/3` is the primitive: base case on `[]`, recursive case applies the function and
+      passes the new accumulator down. It is tail recursive, so constant stack. `map` and
+      `filter` then fall out as reduces that prepend to an accumulator and reverse at the end;
+      even `reverse` is a reduce.
+
+      The alternative body-recursive `map([h | t], f) -> [f.(h) | map(t, f)]` is equally
+      acceptable and often *faster* on the BEAM for short lists (no reverse), but not tail
+      recursive. Say both and explain the trade-off. Pitfall: appending with `acc ++ [x]` to
+      avoid the reverse, which is O(n^2).
+    tags: [recursion, reduce, higher-order-functions]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-task-reduce-while-budget-early-exit
+    kind: code
+    difficulty: middle
+    title: "Early exit with Enum.reduce_while"
+    body: |
+      Implement `Budget.take_within/2`. Given a list of `{name, price}` items and a budget,
+      return the names of the items that fit, taken in order, stopping at the first item that
+      would exceed the remaining budget (do not skip it and continue). Use
+      `Enum.reduce_while/3` so that iteration stops as soon as the budget is blown.
+
+      ```elixir
+      Budget.take_within([{"a", 3}, {"b", 4}, {"c", 1}], 5) #=> ["a"]
+      ```
+    starter_code: |
+      defmodule Budget do
+        def take_within(items, budget) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule BudgetTest do
+        use ExUnit.Case
+
+        test "stops at the first item that does not fit" do
+          assert Budget.take_within([{"a", 3}, {"b", 4}, {"c", 1}], 5) == ["a"]
+        end
+
+        test "takes all when everything fits" do
+          assert Budget.take_within([{"a", 1}, {"b", 1}], 10) == ["a", "b"]
+        end
+
+        test "exact budget" do
+          assert Budget.take_within([{"a", 2}, {"b", 3}], 5) == ["a", "b"]
+        end
+
+        test "nothing fits or empty" do
+          assert Budget.take_within([{"a", 9}], 5) == []
+          assert Budget.take_within([], 5) == []
+        end
+
+        test "stops early and does not evaluate the rest" do
+          items = Stream.concat([{"a", 1}, {"b", 100}], Stream.repeatedly(fn -> raise "should not be reached" end))
+          assert Budget.take_within(items, 50) == ["a"]
+        end
+      end
+    solution: |
+      defmodule Budget do
+        def take_within(items, budget) do
+          items
+          |> Enum.reduce_while({budget, []}, fn {name, price}, {left, taken} ->
+            if price <= left,
+              do: {:cont, {left - price, [name | taken]}},
+              else: {:halt, {left, taken}}
+          end)
+          |> elem(1)
+          |> Enum.reverse()
+        end
+      end
+    explanation: |
+      `Enum.reduce_while/3` is the tool whenever a fold must stop early: return
+      `{:cont, acc}` to keep going and `{:halt, acc}` to stop with the current accumulator.
+      The accumulator here is a tuple of remaining budget and the (reversed) names taken.
+
+      The last test is the important one: it feeds an infinite stream whose tail raises, so a
+      solution using `Enum.map` plus `Enum.take_while` (which would evaluate everything) fails,
+      whereas `reduce_while` returns after the second element. Pitfall: using `Enum.reduce/3`
+      with a flag in the accumulator; it works but still walks the whole collection.
+    tags: [enum, reduce_while, streams]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-task-stream-unfold-fibonacci-collatz
+    kind: code
+    difficulty: middle
+    title: "Infinite and finite sequences with Stream.unfold"
+    body: |
+      Implement two lazy sequences using `Stream.unfold/2`:
+
+      - `Seq.fib/0` returns an infinite stream `0, 1, 1, 2, 3, 5, ...`
+      - `Seq.collatz/1` returns the finite Collatz sequence starting at `n` and ending with `1`
+        (`n -> n/2` if even, `3n + 1` if odd).
+
+      ```elixir
+      Seq.fib() |> Enum.take(8)          #=> [0, 1, 1, 2, 3, 5, 8, 13]
+      Seq.collatz(6) |> Enum.to_list()   #=> [6, 3, 10, 5, 16, 8, 4, 2, 1]
+      ```
+    starter_code: |
+      defmodule Seq do
+        def fib do
+          # your code here
+        end
+
+        def collatz(n) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SeqTest do
+        use ExUnit.Case
+
+        test "fibonacci prefix" do
+          assert Seq.fib() |> Enum.take(8) == [0, 1, 1, 2, 3, 5, 8, 13]
+        end
+
+        test "fibonacci is lazy and can go far" do
+          assert Seq.fib() |> Enum.at(90) == 2_880_067_194_370_816_120
+        end
+
+        test "collatz 6" do
+          assert Seq.collatz(6) |> Enum.to_list() == [6, 3, 10, 5, 16, 8, 4, 2, 1]
+        end
+
+        test "collatz 1 is just [1]" do
+          assert Seq.collatz(1) |> Enum.to_list() == [1]
+        end
+
+        test "collatz 27 has 112 steps" do
+          assert Seq.collatz(27) |> Enum.count() == 112
+        end
+      end
+    solution: |
+      defmodule Seq do
+        def fib do
+          Stream.unfold({0, 1}, fn {a, b} -> {a, {b, a + b}} end)
+        end
+
+        def collatz(n) do
+          Stream.unfold(n, fn
+            nil -> nil
+            1 -> {1, nil}
+            k when rem(k, 2) == 0 -> {k, div(k, 2)}
+            k -> {k, 3 * k + 1}
+          end)
+        end
+      end
+    explanation: |
+      `Stream.unfold(acc, fun)` calls `fun` with the accumulator and expects `{emitted, next_acc}`
+      or `nil` to stop. For Fibonacci the accumulator is the pair `{a, b}`; emit `a`, move to
+      `{b, a + b}`. Nothing is computed until an `Enum` function consumes the stream, which is
+      why `Enum.at(90)` works with big integers and no list of 91 elements kept around beyond
+      what `Enum.at` needs.
+
+      For Collatz you need a sentinel to emit the final `1` *and then* stop, hence the `nil`
+      accumulator state: `1 -> {1, nil}` emits 1, the next call sees `nil` and returns `nil`.
+      Pitfall: returning `nil` when you see `1`, which drops the last element.
+    tags: [streams, unfold, laziness]
+    source: https://elixir.hexdocs.pm/Stream.html
+
+  - slug: elixir-task-lazy-primes-stream-iterate
+    kind: code
+    difficulty: middle
+    title: "Lazy primes with Stream.iterate and a filter"
+    body: |
+      Implement `Primes.stream/0`, an infinite lazy stream of prime numbers built from
+      `Stream.iterate/2` and `Stream.filter/2`, and `Primes.nth/1` returning the n-th prime
+      (1-based). Use trial division up to the square root for the primality check.
+
+      ```elixir
+      Primes.stream() |> Enum.take(5) #=> [2, 3, 5, 7, 11]
+      Primes.nth(100)                  #=> 541
+      ```
+    starter_code: |
+      defmodule Primes do
+        def stream do
+          # your code here
+        end
+
+        def nth(n) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PrimesTest do
+        use ExUnit.Case
+
+        test "first primes" do
+          assert Primes.stream() |> Enum.take(10) == [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+        end
+
+        test "nth" do
+          assert Primes.nth(1) == 2
+          assert Primes.nth(100) == 541
+          assert Primes.nth(1000) == 7919
+        end
+
+        test "stream is lazy" do
+          assert %Stream{} = Primes.stream()
+        end
+      end
+    solution: |
+      defmodule Primes do
+        def stream do
+          Stream.iterate(2, &(&1 + 1)) |> Stream.filter(&prime?/1)
+        end
+
+        def nth(n), do: stream() |> Enum.at(n - 1)
+
+        defp prime?(2), do: true
+        defp prime?(n) when n < 2 or rem(n, 2) == 0, do: false
+
+        defp prime?(n) do
+          limit = :math.sqrt(n) |> floor()
+          not Enum.any?(3..limit//2, &(rem(n, &1) == 0))
+        end
+      end
+    explanation: |
+      `Stream.iterate(2, &(&1 + 1))` is the infinite counter; `Stream.filter/2` keeps the
+      stream lazy, so `Enum.at/2` pulls only as many integers as needed. The primality test
+      skips even numbers and checks odd divisors up to `sqrt(n)` with a stepped range
+      (`3..limit//2`), O(sqrt n) per candidate.
+
+      Note the `//2` step syntax (Elixir 1.12+): a range like `3..1` would otherwise iterate
+      *downwards* and `Enum.any?` would be wrong for n = 3 and 5; the step makes empty ranges
+      empty. Pitfall: using `Enum.filter` on the infinite iterate, which never returns.
+    tags: [streams, iterate, primes, ranges]
+    source: https://elixir.hexdocs.pm/Stream.html
+
+  - slug: elixir-task-stream-resource-line-reader
+    kind: code
+    difficulty: middle
+    title: "Simulate a line reader with Stream.resource"
+    body: |
+      Implement `LineReader.stream/2`, which takes a list of lines standing in for a file and
+      a `notify` pid. Build the stream with `Stream.resource/3`:
+
+      - `start_fun` sends `:opened` to `notify` and returns the lines,
+      - `next_fun` emits one line at a time and halts when none are left,
+      - `after_fun` sends `:closed` to `notify`.
+
+      The point is that `:closed` must be sent even when the consumer stops early with
+      `Enum.take/2`.
+
+      ```elixir
+      LineReader.stream(["a", "b", "c"], self()) |> Enum.take(2) #=> ["a", "b"]
+      # the test process has now received :opened and :closed
+      ```
+    starter_code: |
+      defmodule LineReader do
+        def stream(lines, notify) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LineReaderTest do
+        use ExUnit.Case
+
+        test "reads all lines and closes" do
+          assert LineReader.stream(["a", "b", "c"], self()) |> Enum.to_list() == ["a", "b", "c"]
+          assert_received :opened
+          assert_received :closed
+        end
+
+        test "closes even when the consumer stops early" do
+          assert LineReader.stream(["a", "b", "c"], self()) |> Enum.take(2) == ["a", "b"]
+          assert_received :closed
+        end
+
+        test "nothing happens until enumerated" do
+          _stream = LineReader.stream(["a"], self())
+          refute_received :opened
+        end
+
+        test "empty source" do
+          assert LineReader.stream([], self()) |> Enum.to_list() == []
+          assert_received :opened
+          assert_received :closed
+        end
+      end
+    solution: |
+      defmodule LineReader do
+        def stream(lines, notify) do
+          Stream.resource(
+            fn ->
+              send(notify, :opened)
+              lines
+            end,
+            fn
+              [] -> {:halt, []}
+              [line | rest] -> {[line], rest}
+            end,
+            fn _ -> send(notify, :closed) end
+          )
+        end
+      end
+    explanation: |
+      `Stream.resource/3` is the primitive behind `File.stream!/1`: a start function that
+      acquires the resource lazily, a next function returning `{[elements], state}` or
+      `{:halt, state}`, and an after function that always runs for cleanup, even when
+      enumeration is cut short by `Enum.take/2` or an exception. Here the "resource" is just a
+      list, which makes the behaviour testable with messages.
+
+      Pitfalls: returning a bare element instead of a *list* of elements from `next_fun`, and
+      opening the resource outside `start_fun` (then the third test fails, because the side
+      effect happens when the stream is built, not when it is consumed).
+    tags: [streams, resource, laziness, side-effects]
+    source: https://elixir.hexdocs.pm/Stream.html
+
+  - slug: elixir-task-fizzbuzz-pattern-matching
+    kind: code
+    difficulty: junior
+    title: "FizzBuzz with pattern matching instead of if/else"
+    body: |
+      Implement `FizzBuzz.say/1` for a single integer and `FizzBuzz.run/1` for a range or list.
+      Multiples of 3 give `"Fizz"`, multiples of 5 give `"Buzz"`, multiples of both give
+      `"FizzBuzz"`, everything else gives the number as a string. Write `say/1` with function
+      clauses or a `case` on a tuple of remainders, not nested `if`s.
+
+      ```elixir
+      FizzBuzz.say(15)          #=> "FizzBuzz"
+      FizzBuzz.run(1..5)        #=> ["1", "2", "Fizz", "4", "Buzz"]
+      ```
+    starter_code: |
+      defmodule FizzBuzz do
+        def say(n) do
+          # your code here
+        end
+
+        def run(numbers) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FizzBuzzTest do
+        use ExUnit.Case
+
+        test "say" do
+          assert FizzBuzz.say(3) == "Fizz"
+          assert FizzBuzz.say(5) == "Buzz"
+          assert FizzBuzz.say(15) == "FizzBuzz"
+          assert FizzBuzz.say(7) == "7"
+        end
+
+        test "run over a range" do
+          assert FizzBuzz.run(1..15) |> Enum.take(-3) == ["13", "14", "FizzBuzz"]
+          assert FizzBuzz.run(1..5) == ["1", "2", "Fizz", "4", "Buzz"]
+        end
+
+        test "zero and negatives" do
+          assert FizzBuzz.say(0) == "FizzBuzz"
+          assert FizzBuzz.say(-9) == "Fizz"
+        end
+
+        test "empty input" do
+          assert FizzBuzz.run([]) == []
+        end
+      end
+    solution: |
+      defmodule FizzBuzz do
+        def say(n) do
+          case {rem(n, 3), rem(n, 5)} do
+            {0, 0} -> "FizzBuzz"
+            {0, _} -> "Fizz"
+            {_, 0} -> "Buzz"
+            _ -> Integer.to_string(n)
+          end
+        end
+
+        def run(numbers), do: Enum.map(numbers, &say/1)
+      end
+    explanation: |
+      Matching on the tuple `{rem(n, 3), rem(n, 5)}` lets the four cases be read as a truth
+      table, with the most specific pattern (`{0, 0}`) first. This is the "show me you think in
+      patterns" version of FizzBuzz that Elixir interviewers prefer over `cond`.
+
+      Pitfalls: ordering `{0, _}` before `{0, 0}` (then 15 says "Fizz"), and returning
+      integers for the default case while the others are strings, which bites as soon as you
+      `Enum.join/2`. `rem/2` keeps the sign of the dividend, so negatives still match `0`.
+    tags: [pattern-matching, case, enum]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-task-fibonacci-tail-recursive-accumulator
+    kind: code
+    difficulty: junior
+    title: "Fibonacci with a tail-recursive accumulator"
+    body: |
+      Implement `Fib.of/1` returning the n-th Fibonacci number (`of(0) = 0`, `of(1) = 1`).
+      The naive `of(n - 1) + of(n - 2)` is exponential; write a tail-recursive version with
+      two accumulators that runs in O(n) and constant stack, so that `Fib.of(1000)` returns
+      instantly.
+
+      ```elixir
+      Fib.of(10)   #=> 55
+      Fib.of(50)   #=> 12586269025
+      ```
+    starter_code: |
+      defmodule Fib do
+        def of(n) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FibTest do
+        use ExUnit.Case
+
+        test "base cases" do
+          assert Fib.of(0) == 0
+          assert Fib.of(1) == 1
+        end
+
+        test "small values" do
+          assert Enum.map(0..10, &Fib.of/1) == [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55]
+        end
+
+        test "large values are fast and exact" do
+          assert Fib.of(50) == 12_586_269_025
+          assert Fib.of(1000) |> Integer.digits() |> length() == 209
+        end
+      end
+    solution: |
+      defmodule Fib do
+        def of(n) when n >= 0, do: of(n, 0, 1)
+
+        defp of(0, a, _b), do: a
+        defp of(n, a, b), do: of(n - 1, b, a + b)
+      end
+    explanation: |
+      Carry the last two values as arguments: `of(n, a, b)` means "a is fib(k), b is
+      fib(k+1), n steps remain". Each step shifts the window and decrements `n`; when `n`
+      reaches 0, `a` is the answer. The recursive call is in tail position, so the BEAM reuses
+      the stack frame, O(n) time and O(1) stack. Integers are arbitrary precision, so
+      `Fib.of(1000)` is exact.
+
+      Pitfalls: the exponential two-call version (the interviewer will ask you *why* it is
+      slow: it recomputes the same subproblems, 2^n calls), and forgetting the guard so
+      negative input loops forever. Mention memoisation with a map as the other standard fix.
+    tags: [recursion, tail-call, accumulator]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-task-sieve-of-eratosthenes
+    kind: code
+    difficulty: middle
+    title: "Sieve of Eratosthenes up to a limit"
+    body: |
+      Implement `Sieve.primes_to/1` returning all primes up to and including `limit`, using a
+      sieve: start from the list `2..limit` and repeatedly take the head as a prime and remove
+      its multiples from the rest. Do not use division-based primality tests on each number.
+
+      ```elixir
+      Sieve.primes_to(10)  #=> [2, 3, 5, 7]
+      Sieve.primes_to(1)   #=> []
+      ```
+    starter_code: |
+      defmodule Sieve do
+        def primes_to(limit) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SieveTest do
+        use ExUnit.Case
+
+        test "small limits" do
+          assert Sieve.primes_to(10) == [2, 3, 5, 7]
+          assert Sieve.primes_to(2) == [2]
+        end
+
+        test "limit below 2" do
+          assert Sieve.primes_to(1) == []
+          assert Sieve.primes_to(0) == []
+        end
+
+        test "limit is prime itself" do
+          assert Sieve.primes_to(13) == [2, 3, 5, 7, 11, 13]
+        end
+
+        test "count up to 1000" do
+          assert length(Sieve.primes_to(1000)) == 168
+          assert List.last(Sieve.primes_to(1000)) == 997
+        end
+      end
+    solution: |
+      defmodule Sieve do
+        def primes_to(limit) when limit < 2, do: []
+
+        def primes_to(limit) do
+          composites =
+            Enum.reduce(2..limit, MapSet.new(), fn n, marked ->
+              if n * n > limit or MapSet.member?(marked, n),
+                do: marked,
+                else: Enum.into(:lists.seq(n * n, limit, n), marked)
+            end)
+
+          Enum.reject(2..limit, &MapSet.member?(composites, &1))
+        end
+      end
+    explanation: |
+      A real sieve marks multiples rather than testing divisibility. With immutable data the
+      "array of booleans" becomes a `MapSet` of composites: for each `n` up to `sqrt(limit)`
+      that is not already marked, add `n*n, n*n+n, ...` (`:lists.seq/3` gives the stepped
+      range). Finally reject everything marked. O(n log log n) set insertions.
+
+      The popular one-liner `[h | sieve(Enum.reject(t, &(rem(&1, h) == 0)))]` is *not* a
+      sieve (it is trial division in disguise, O(n^2 / log n)); an interviewer who asks for
+      "the sieve" may call that out. Pitfall: starting marking at `2n` instead of `n*n`
+      (correct but does redundant work), and forgetting the `limit < 2` clause so `2..1`
+      iterates downward.
+    tags: [numbers, primes, mapset, reduce]
+    source: https://exercism.org/tracks/elixir/exercises/sieve
+
+  - slug: elixir-task-permutations-list-comprehension
+    kind: code
+    difficulty: middle
+    title: "All permutations of a list"
+    body: |
+      Implement `Perms.of/1` returning every permutation of the list (as a list of lists).
+      The classic solution is three lines with a `for` comprehension: pick each element as the
+      head and recurse on the remainder. Also implement `Perms.count/1` returning `n!` without
+      generating the permutations.
+
+      ```elixir
+      Perms.of([1, 2, 3])
+      #=> [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]]
+      Perms.count([1, 2, 3, 4]) #=> 24
+      ```
+    starter_code: |
+      defmodule Perms do
+        def of(list) do
+          # your code here
+        end
+
+        def count(list) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PermsTest do
+        use ExUnit.Case
+
+        test "three elements" do
+          assert Perms.of([1, 2, 3]) == [[1, 2, 3], [1, 3, 2], [2, 1, 3], [2, 3, 1], [3, 1, 2], [3, 2, 1]]
+        end
+
+        test "empty list has one permutation" do
+          assert Perms.of([]) == [[]]
+        end
+
+        test "single element" do
+          assert Perms.of([:a]) == [[:a]]
+        end
+
+        test "duplicates are kept positionally" do
+          assert Perms.of([1, 1]) == [[1, 1], [1, 1]]
+        end
+
+        test "count" do
+          assert Perms.count([]) == 1
+          assert Perms.count([1, 2, 3, 4]) == 24
+          assert length(Perms.of([1, 2, 3, 4, 5])) == Perms.count([1, 2, 3, 4, 5])
+        end
+      end
+    solution: |
+      defmodule Perms do
+        def of([]), do: [[]]
+
+        def of(list) do
+          for {head, i} <- Enum.with_index(list),
+              tail <- of(List.delete_at(list, i)),
+              do: [head | tail]
+        end
+
+        def count(list), do: Enum.reduce(1..length(list)//1, 1, &*/2)
+      end
+    explanation: |
+      Permutations of a list are "each element, followed by every permutation of the others".
+      A comprehension with two generators expresses exactly that, and the base case `of([]) ==
+      [[]]` (one empty permutation) makes the recursion terminate correctly. Removing by
+      *index* (`List.delete_at/2`) rather than by value (`list -- [head]`) keeps duplicate
+      elements distinct, which the `[1, 1]` test checks.
+
+      Output size is n!, so this is inherently exponential; `count/1` shows you know that and
+      can compute it without materialising anything (`1..0//1` is an empty range, so the
+      empty list gives 1). Pitfall: `for h <- list, t <- of(list -- [h])`, which collapses
+      duplicates.
+    tags: [recursion, comprehensions, combinatorics]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-task-coin-change-memoized-map
+    kind: code
+    difficulty: senior
+    title: "Minimum coins for change, memoized with a map accumulator"
+    body: |
+      Implement `Change.min_coins/2`. Given a list of coin denominations and a target amount,
+      return `{:ok, coins}` where `coins` is a smallest list of coins (sorted ascending) that
+      sums to the target, or `{:error, :no_change}` if it cannot be made. Greedy does not
+      work for denominations like `[1, 5, 10, 21, 25]` (63 = three 21s, not 25+25+10+1+1+1),
+      so solve it with recursion over the amount and a memo map threaded through the recursion.
+
+      ```elixir
+      Change.min_coins([1, 5, 10, 25, 100], 15)    #=> {:ok, [5, 10]}
+      Change.min_coins([1, 5, 10, 21, 25], 63)     #=> {:ok, [21, 21, 21]}
+      Change.min_coins([5, 10], 3)                 #=> {:error, :no_change}
+      ```
+    starter_code: |
+      defmodule Change do
+        def min_coins(coins, amount) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ChangeTest do
+        use ExUnit.Case
+
+        test "simple" do
+          assert Change.min_coins([1, 5, 10, 25, 100], 15) == {:ok, [5, 10]}
+        end
+
+        test "greedy would be wrong" do
+          assert Change.min_coins([1, 5, 10, 21, 25], 63) == {:ok, [21, 21, 21]}
+        end
+
+        test "impossible" do
+          assert Change.min_coins([5, 10], 3) == {:error, :no_change}
+        end
+
+        test "zero amount" do
+          assert Change.min_coins([1, 5], 0) == {:ok, []}
+        end
+
+        test "memoization keeps it fast" do
+          assert {:ok, coins} = Change.min_coins([1, 2, 5, 10, 20, 50, 100], 9_999)
+          assert Enum.sum(coins) == 9_999
+          assert length(coins) == 105
+        end
+      end
+    solution: |
+      defmodule Change do
+        def min_coins(coins, amount) do
+          case solve(coins, amount, %{}) do
+            {nil, _memo} -> {:error, :no_change}
+            {result, _memo} -> {:ok, Enum.sort(result)}
+          end
+        end
+
+        defp solve(_coins, 0, memo), do: {[], memo}
+        defp solve(_coins, amount, memo) when amount < 0, do: {nil, memo}
+
+        defp solve(coins, amount, memo) do
+          case memo do
+            %{^amount => cached} ->
+              {cached, memo}
+
+            _ ->
+              {best, memo} =
+                Enum.reduce(coins, {nil, memo}, fn coin, {best, memo} ->
+                  case solve(coins, amount - coin, memo) do
+                    {nil, memo} -> {best, memo}
+                    {sub, memo} when best == nil or length(sub) + 1 < length(best) -> {[coin | sub], memo}
+                    {_sub, memo} -> {best, memo}
+                  end
+                end)
+
+              {best, Map.put(memo, amount, best)}
+          end
+        end
+      end
+    explanation: |
+      Top-down dynamic programming without mutation: every recursive call returns
+      `{result, memo}` and the memo map is *threaded* through the reduce over the coins. The
+      key is the remaining amount; `%{^amount => cached}` with a pin is the idiomatic cache
+      lookup. Base cases are amount 0 (empty change) and negative (dead end, `nil`).
+
+      Complexity is O(amount * coins) states, each O(coins) work, so the 9_999 test is fast;
+      without the memo it is exponential. Pitfalls: forgetting to pass the *updated* memo out of
+      the inner `case` (a classic shadowing bug, note `memo` is rebound in each branch), and
+      using `length/1` on every comparison, which is O(k); fine here, but caching the count
+      alongside the list is the optimisation to mention. Bottom-up over `0..amount` with
+      `Enum.reduce` is an equally good answer.
+    tags: [recursion, dynamic-programming, memoization, map]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (change)"
+
+  - slug: elixir-task-counter-agent
+    kind: code
+    difficulty: junior
+    title: "A counter backed by an Agent"
+    body: |
+      Implement `Counter` on top of `Agent`:
+
+      - `start_link/1` starts an agent holding the initial integer and returns `{:ok, pid}`,
+      - `increment/1` and `decrement/1` change the value by one and return `:ok`,
+      - `value/1` returns the current value,
+      - `reset/1` sets the value back to 0 and returns the value it had *before* the reset.
+
+      ```elixir
+      {:ok, c} = Counter.start_link(5)
+      Counter.increment(c)
+      Counter.value(c)   #=> 6
+      Counter.reset(c)   #=> 6
+      Counter.value(c)   #=> 0
+      ```
+    starter_code: |
+      defmodule Counter do
+        use Agent
+
+        def start_link(initial) do
+          # your code here
+        end
+
+        def increment(pid), do: nil
+        def decrement(pid), do: nil
+        def value(pid), do: nil
+        def reset(pid), do: nil
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CounterTest do
+        use ExUnit.Case
+
+        test "starts with the initial value" do
+          {:ok, c} = Counter.start_link(5)
+          assert Counter.value(c) == 5
+        end
+
+        test "increments and decrements" do
+          {:ok, c} = Counter.start_link(0)
+          assert Counter.increment(c) == :ok
+          Counter.increment(c)
+          Counter.decrement(c)
+          assert Counter.value(c) == 1
+        end
+
+        test "reset returns the previous value" do
+          {:ok, c} = Counter.start_link(3)
+          assert Counter.reset(c) == 3
+          assert Counter.value(c) == 0
+        end
+
+        test "concurrent increments are not lost" do
+          {:ok, c} = Counter.start_link(0)
+          1..50 |> Task.async_stream(fn _ -> Counter.increment(c) end) |> Stream.run()
+          assert Counter.value(c) == 50
+        end
+      end
+    solution: |
+      defmodule Counter do
+        use Agent
+
+        def start_link(initial), do: Agent.start_link(fn -> initial end)
+
+        def increment(pid), do: Agent.update(pid, &(&1 + 1))
+        def decrement(pid), do: Agent.update(pid, &(&1 - 1))
+        def value(pid), do: Agent.get(pid, & &1)
+        def reset(pid), do: Agent.get_and_update(pid, fn v -> {v, 0} end)
+      end
+    explanation: |
+      `Agent` is "a GenServer that only holds state": `get/2` runs a function on the state and
+      returns the result, `update/2` replaces the state, `get_and_update/2` does both and
+      returns `{reply, new_state}`. Because all four calls are serialised through the agent's
+      mailbox, the 50 concurrent increments cannot interleave, which is the reason to use a
+      process instead of a plain integer.
+
+      Pitfalls: `Agent.get` followed by `Agent.update` for `reset` (a read-modify-write race:
+      two callers could both read 3), and doing heavy work inside the agent function, which
+      blocks every other caller; keep the function tiny. Mention that once you need more than
+      get/update you reach for `GenServer`.
+    tags: [agent, processes, state]
+    source: https://elixir.hexdocs.pm/Agent.html
+
+  - slug: elixir-task-kv-store-genserver
+    kind: code
+    difficulty: junior
+    title: "Key-value store as a GenServer"
+    body: |
+      Implement `KV`, a GenServer wrapping a map:
+
+      - `start_link/0` returns `{:ok, pid}`,
+      - `put(pid, key, value)` stores and returns `:ok` (synchronous),
+      - `get(pid, key)` returns the value or `nil`,
+      - `delete(pid, key)` removes the key and returns `:ok`,
+      - `keys(pid)` returns the sorted list of keys.
+
+      ```elixir
+      {:ok, kv} = KV.start_link()
+      KV.put(kv, :a, 1)
+      KV.get(kv, :a)   #=> 1
+      KV.get(kv, :zzz) #=> nil
+      ```
+    starter_code: |
+      defmodule KV do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, %{})
+
+        def put(pid, key, value), do: nil
+        def get(pid, key), do: nil
+        def delete(pid, key), do: nil
+        def keys(pid), do: nil
+
+        @impl true
+        def init(state), do: {:ok, state}
+
+        # your callbacks here
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule KVTest do
+        use ExUnit.Case
+
+        setup do
+          {:ok, kv} = KV.start_link()
+          %{kv: kv}
+        end
+
+        test "put and get", %{kv: kv} do
+          assert KV.put(kv, :a, 1) == :ok
+          assert KV.get(kv, :a) == 1
+        end
+
+        test "missing key is nil", %{kv: kv} do
+          assert KV.get(kv, :missing) == nil
+        end
+
+        test "put overwrites", %{kv: kv} do
+          KV.put(kv, :a, 1)
+          KV.put(kv, :a, 2)
+          assert KV.get(kv, :a) == 2
+        end
+
+        test "delete", %{kv: kv} do
+          KV.put(kv, :a, 1)
+          assert KV.delete(kv, :a) == :ok
+          assert KV.get(kv, :a) == nil
+          assert KV.delete(kv, :never_there) == :ok
+        end
+
+        test "keys are sorted", %{kv: kv} do
+          KV.put(kv, :b, 1)
+          KV.put(kv, :a, 1)
+          assert KV.keys(kv) == [:a, :b]
+        end
+      end
+    solution: |
+      defmodule KV do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, %{})
+
+        def put(pid, key, value), do: GenServer.call(pid, {:put, key, value})
+        def get(pid, key), do: GenServer.call(pid, {:get, key})
+        def delete(pid, key), do: GenServer.call(pid, {:delete, key})
+        def keys(pid), do: GenServer.call(pid, :keys)
+
+        @impl true
+        def init(state), do: {:ok, state}
+
+        @impl true
+        def handle_call({:put, key, value}, _from, state), do: {:reply, :ok, Map.put(state, key, value)}
+        def handle_call({:get, key}, _from, state), do: {:reply, Map.get(state, key), state}
+        def handle_call({:delete, key}, _from, state), do: {:reply, :ok, Map.delete(state, key)}
+        def handle_call(:keys, _from, state), do: {:reply, state |> Map.keys() |> Enum.sort(), state}
+      end
+    explanation: |
+      The GenServer "hello world": a client API of thin functions that `GenServer.call/2` the
+      process, and `handle_call/3` clauses that pattern match on the message tuple and return
+      `{:reply, reply, new_state}`. The state is just a map; the process only exists to make
+      that map shareable and to serialise access.
+
+      Using `call` for `put` (not `cast`) gives back-pressure and a guarantee that a following
+      `get` sees the write; say this when the interviewer asks "why not cast?". Pitfalls:
+      forgetting `@impl true` / `init/1`, returning `{:reply, state}` (wrong arity), and
+      naming the process `__MODULE__` so tests cannot start more than one instance.
+    tags: [genserver, otp, state]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-task-stack-genserver-pop-empty
+    kind: code
+    difficulty: junior
+    title: "Stack GenServer whose pop returns {:ok, value} | :empty"
+    body: |
+      Implement `Stack`, a GenServer:
+
+      - `start_link/1` takes the initial list (top first) and returns `{:ok, pid}`,
+      - `push(pid, value)` is asynchronous (`cast`) and returns `:ok`,
+      - `pop(pid)` returns `{:ok, value}` or `:empty`,
+      - `size(pid)` returns the number of elements.
+
+      ```elixir
+      {:ok, s} = Stack.start_link([])
+      Stack.push(s, 1)
+      Stack.push(s, 2)
+      Stack.pop(s)  #=> {:ok, 2}
+      Stack.pop(s)  #=> {:ok, 1}
+      Stack.pop(s)  #=> :empty
+      ```
+    starter_code: |
+      defmodule Stack do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        def push(pid, value), do: nil
+        def pop(pid), do: nil
+        def size(pid), do: nil
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        # your callbacks here
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule StackTest do
+        use ExUnit.Case
+
+        test "push then pop is LIFO" do
+          {:ok, s} = Stack.start_link([])
+          assert Stack.push(s, 1) == :ok
+          Stack.push(s, 2)
+          assert Stack.pop(s) == {:ok, 2}
+          assert Stack.pop(s) == {:ok, 1}
+        end
+
+        test "pop on empty" do
+          {:ok, s} = Stack.start_link([])
+          assert Stack.pop(s) == :empty
+          assert Stack.size(s) == 0
+        end
+
+        test "initial elements" do
+          {:ok, s} = Stack.start_link([:a, :b])
+          assert Stack.size(s) == 2
+          assert Stack.pop(s) == {:ok, :a}
+        end
+
+        test "casts are processed in order before the next call" do
+          {:ok, s} = Stack.start_link([])
+          for i <- 1..100, do: Stack.push(s, i)
+          assert Stack.size(s) == 100
+          assert Stack.pop(s) == {:ok, 100}
+        end
+      end
+    solution: |
+      defmodule Stack do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        def push(pid, value), do: GenServer.cast(pid, {:push, value})
+        def pop(pid), do: GenServer.call(pid, :pop)
+        def size(pid), do: GenServer.call(pid, :size)
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        @impl true
+        def handle_cast({:push, value}, stack), do: {:noreply, [value | stack]}
+
+        @impl true
+        def handle_call(:pop, _from, []), do: {:reply, :empty, []}
+        def handle_call(:pop, _from, [top | rest]), do: {:reply, {:ok, top}, rest}
+        def handle_call(:size, _from, stack), do: {:reply, length(stack), stack}
+      end
+    explanation: |
+      Two `handle_call(:pop, ...)` clauses, one matching the empty list and one matching
+      `[top | rest]`, replace any `if`; this is the pattern-matching style interviewers look
+      for. `push` is a `cast` (`{:noreply, state}`), `pop` and `size` are `call`s.
+
+      The last test demonstrates a BEAM guarantee: messages from one process to another are
+      delivered in order, so 100 casts followed by a call are processed in sequence and the
+      call sees all pushes. Pitfalls: `{:reply, nil, []}` on empty (ambiguous when `nil` is a
+      valid element, hence the `:empty` atom), and `length/1` being O(n) on every `size` call;
+      storing the count in the state is the follow-up.
+    tags: [genserver, otp, cast, pattern-matching]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-task-ping-pong-receive-loop
+    kind: code
+    difficulty: junior
+    title: "Ping-pong with raw send/receive"
+    body: |
+      Without GenServer, implement `PingPong`:
+
+      - `start/0` spawns a process running a `receive` loop and returns its pid,
+      - the loop answers `{:ping, from}` with `{:pong, count}` sent to `from`, where `count`
+        is how many pings it has answered so far (1 for the first),
+      - `:stop` makes the loop exit normally,
+      - `ping(pid)` sends a ping and waits for the reply, returning `{:pong, n}` or `:timeout`
+        after 100 ms.
+
+      ```elixir
+      pid = PingPong.start()
+      PingPong.ping(pid) #=> {:pong, 1}
+      PingPong.ping(pid) #=> {:pong, 2}
+      ```
+    starter_code: |
+      defmodule PingPong do
+        def start do
+          # spawn the loop
+        end
+
+        def ping(pid) do
+          # send and receive with a timeout
+        end
+
+        defp loop(count) do
+          # your receive loop here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PingPongTest do
+        use ExUnit.Case
+
+        test "replies with an increasing count" do
+          pid = PingPong.start()
+          assert PingPong.ping(pid) == {:pong, 1}
+          assert PingPong.ping(pid) == {:pong, 2}
+        end
+
+        test "stop ends the process" do
+          pid = PingPong.start()
+          ref = Process.monitor(pid)
+          send(pid, :stop)
+          assert_receive {:DOWN, ^ref, :process, ^pid, :normal}
+        end
+
+        test "ping to a dead process times out" do
+          pid = PingPong.start()
+          ref = Process.monitor(pid)
+          send(pid, :stop)
+          assert_receive {:DOWN, ^ref, _, _, _}
+          assert PingPong.ping(pid) == :timeout
+        end
+
+        test "unknown messages are ignored" do
+          pid = PingPong.start()
+          send(pid, :garbage)
+          assert PingPong.ping(pid) == {:pong, 1}
+        end
+      end
+    solution: |
+      defmodule PingPong do
+        def start, do: spawn(fn -> loop(0) end)
+
+        def ping(pid) do
+          send(pid, {:ping, self()})
+
+          receive do
+            {:pong, n} -> {:pong, n}
+          after
+            100 -> :timeout
+          end
+        end
+
+        defp loop(count) do
+          receive do
+            {:ping, from} ->
+              send(from, {:pong, count + 1})
+              loop(count + 1)
+
+            :stop ->
+              :ok
+
+            _other ->
+              loop(count)
+          end
+        end
+      end
+    explanation: |
+      This is what GenServer generates for you: a tail-recursive `loop/1` whose argument *is*
+      the state, a `receive` that pattern matches messages, and a client function that sends
+      and then blocks in its own `receive ... after`. The request carries `self()` so the
+      server knows whom to answer.
+
+      Pitfalls: forgetting the catch-all clause (unexpected messages then sit in the mailbox
+      forever and the process leaks memory), forgetting `after` (a dead server hangs the
+      caller), and not matching on a unique reference; the GenServer `call` implementation
+      tags each request with `make_ref()` so stale replies cannot be confused with new ones;
+      mention it as the follow-up.
+    tags: [processes, send, receive, spawn]
+    source: https://elixir.hexdocs.pm/processes.html
+
+  - slug: elixir-task-parallel-map-task-async-stream
+    kind: code
+    difficulty: middle
+    title: "Parallel map that preserves order with Task.async_stream"
+    body: |
+      Implement `Parallel.map/3`: apply `fun` to every element concurrently, at most
+      `max_concurrency` at a time, and return the results in the *original* order. Then
+      implement `Parallel.map_safe/3`, which returns `{:ok, result}` per element, or
+      `{:error, :timeout}` for elements whose computation exceeds the given timeout (the other
+      results are still returned).
+
+      ```elixir
+      Parallel.map([3, 1, 2], fn x -> Process.sleep(x); x * 10 end, 4)
+      #=> [30, 10, 20]
+      Parallel.map_safe([1, 50], fn ms -> Process.sleep(ms); ms end, timeout: 20)
+      #=> [{:ok, 1}, {:error, :timeout}]
+      ```
+    starter_code: |
+      defmodule Parallel do
+        def map(enum, fun, max_concurrency) do
+          # your code here
+        end
+
+        def map_safe(enum, fun, opts) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ParallelTest do
+        use ExUnit.Case
+
+        test "order is preserved even if later elements finish first" do
+          assert Parallel.map([15, 1, 8], fn x -> Process.sleep(x); x * 10 end, 4) == [150, 10, 80]
+        end
+
+        test "runs concurrently" do
+          {micros, result} = :timer.tc(fn -> Parallel.map(List.duplicate(20, 8), fn ms -> Process.sleep(ms); ms end, 8) end)
+          assert result == List.duplicate(20, 8)
+          assert micros < 120_000
+        end
+
+        test "empty" do
+          assert Parallel.map([], fn x -> x end, 2) == []
+        end
+
+        test "map_safe reports timeouts per element" do
+          assert Parallel.map_safe([1, 50], fn ms -> Process.sleep(ms); ms end, timeout: 20) ==
+                   [{:ok, 1}, {:error, :timeout}]
+        end
+      end
+    solution: |
+      defmodule Parallel do
+        def map(enum, fun, max_concurrency) do
+          enum
+          |> Task.async_stream(fun, max_concurrency: max_concurrency, ordered: true)
+          |> Enum.map(fn {:ok, result} -> result end)
+        end
+
+        def map_safe(enum, fun, opts) do
+          enum
+          |> Task.async_stream(fun, timeout: opts[:timeout], on_timeout: :kill_task)
+          |> Enum.map(fn
+            {:ok, result} -> {:ok, result}
+            {:exit, :timeout} -> {:error, :timeout}
+          end)
+        end
+      end
+    explanation: |
+      `Task.async_stream/3` is the stdlib answer to "parallel map with bounded concurrency":
+      it spawns at most `max_concurrency` linked tasks (default: number of schedulers) and
+      emits `{:ok, result}` tuples in input order (`ordered: true` is the default). The
+      stream is lazy, so you still need an `Enum` call to run it.
+
+      The important option for robustness is `on_timeout: :kill_task`: by default a task that
+      exceeds `timeout` (5000 ms) *crashes the caller*; with `:kill_task` you get
+      `{:exit, :timeout}` for that element instead. Pitfalls: `Enum.map(&Task.async/1)` plus
+      `Task.await/1` with no concurrency limit (fine for 10 items, a problem for 100k), and
+      forgetting that an exception inside the task still propagates to the caller via the link.
+    tags: [task, concurrency, async_stream]
+    source: https://elixir.hexdocs.pm/Task.html
+
+  - slug: elixir-task-collect-n-messages-with-after
+    kind: code
+    difficulty: middle
+    title: "Collect N messages with receive ... after"
+    body: |
+      Implement `Collector.collect/2`. It waits for `n` messages of the form `{:item, value}`
+      in the *current* process's mailbox and returns `{:ok, values}` in arrival order. If
+      `timeout_ms` passes without a message arriving, it returns `{:timeout, values_so_far}`.
+      Messages that are not `{:item, _}` must be left alone (not consumed).
+
+      ```elixir
+      send(self(), {:item, 1})
+      send(self(), {:item, 2})
+      Collector.collect(2, 10)   #=> {:ok, [1, 2]}
+      Collector.collect(1, 10)   #=> {:timeout, []}
+      ```
+    starter_code: |
+      defmodule Collector do
+        def collect(n, timeout_ms) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CollectorTest do
+        use ExUnit.Case
+
+        test "collects n items in order" do
+          for i <- 1..3, do: send(self(), {:item, i})
+          assert Collector.collect(3, 10) == {:ok, [1, 2, 3]}
+        end
+
+        test "zero items" do
+          assert Collector.collect(0, 10) == {:ok, []}
+        end
+
+        test "times out with partial results" do
+          send(self(), {:item, :only})
+          assert Collector.collect(3, 10) == {:timeout, [:only]}
+        end
+
+        test "leaves other messages in the mailbox" do
+          send(self(), :unrelated)
+          send(self(), {:item, 1})
+          assert Collector.collect(1, 10) == {:ok, [1]}
+          assert_received :unrelated
+        end
+
+        test "works with messages that arrive later" do
+          me = self()
+          spawn(fn -> send(me, {:item, :late}) end)
+          assert Collector.collect(1, 200) == {:ok, [:late]}
+        end
+      end
+    solution: |
+      defmodule Collector do
+        def collect(n, timeout_ms), do: collect(n, timeout_ms, [])
+
+        defp collect(0, _timeout, acc), do: {:ok, Enum.reverse(acc)}
+
+        defp collect(n, timeout, acc) do
+          receive do
+            {:item, value} -> collect(n - 1, timeout, [value | acc])
+          after
+            timeout -> {:timeout, Enum.reverse(acc)}
+          end
+        end
+      end
+    explanation: |
+      A recursive `receive` with a countdown and an accumulator. `receive` is selective: it
+      scans the mailbox for the first message matching `{:item, _}` and leaves everything else
+      in place, which the fourth test verifies with `assert_received`. The `after` clause gives
+      the per-message timeout; note it restarts on every recursive call, so the total wait can
+      exceed `timeout_ms` (a deadline-based version would compute the remaining time with
+      `System.monotonic_time/1`, a good follow-up).
+
+      Pitfalls: a catch-all `_ ->` clause that eats unrelated messages, and forgetting the
+      `0` base clause so the function waits for one message too many.
+    tags: [processes, receive, timeout, mailbox]
+    source: https://elixir.hexdocs.pm/processes.html
+
+  - slug: elixir-task-rate-limiter-genserver-injected-clock
+    kind: code
+    difficulty: senior
+    title: "Sliding-window rate limiter GenServer with an injected clock"
+    body: |
+      Implement `RateLimiter`, a GenServer that allows at most `limit` requests per key within
+      any sliding window of `window_ms` milliseconds. To keep it deterministic, the current
+      time is passed in by the caller:
+
+      - `start_link(limit: 3, window_ms: 1000)` returns `{:ok, pid}`,
+      - `allow?(pid, key, now_ms)` returns `true` and records the hit if fewer than `limit`
+        hits for `key` are within `(now_ms - window_ms, now_ms]`, otherwise `false`,
+      - old timestamps must be pruned so memory does not grow forever.
+
+      ```elixir
+      {:ok, rl} = RateLimiter.start_link(limit: 2, window_ms: 1000)
+      RateLimiter.allow?(rl, "ip1", 0)    #=> true
+      RateLimiter.allow?(rl, "ip1", 100)  #=> true
+      RateLimiter.allow?(rl, "ip1", 900)  #=> false
+      RateLimiter.allow?(rl, "ip1", 1001) #=> true   (the hit at 0 has expired)
+      ```
+    starter_code: |
+      defmodule RateLimiter do
+        use GenServer
+
+        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+        def allow?(pid, key, now_ms), do: nil
+
+        @impl true
+        def init(opts) do
+          # your state here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RateLimiterTest do
+        use ExUnit.Case
+
+        setup do
+          {:ok, rl} = RateLimiter.start_link(limit: 2, window_ms: 1000)
+          %{rl: rl}
+        end
+
+        test "allows up to the limit, then blocks", %{rl: rl} do
+          assert RateLimiter.allow?(rl, "ip1", 0)
+          assert RateLimiter.allow?(rl, "ip1", 100)
+          refute RateLimiter.allow?(rl, "ip1", 900)
+        end
+
+        test "window slides", %{rl: rl} do
+          assert RateLimiter.allow?(rl, "ip1", 0)
+          assert RateLimiter.allow?(rl, "ip1", 500)
+          refute RateLimiter.allow?(rl, "ip1", 999)
+          assert RateLimiter.allow?(rl, "ip1", 1001)
+          refute RateLimiter.allow?(rl, "ip1", 1002)
+          assert RateLimiter.allow?(rl, "ip1", 1501)
+        end
+
+        test "keys are independent", %{rl: rl} do
+          assert RateLimiter.allow?(rl, "a", 0)
+          assert RateLimiter.allow?(rl, "a", 0)
+          refute RateLimiter.allow?(rl, "a", 0)
+          assert RateLimiter.allow?(rl, "b", 0)
+        end
+
+        test "blocked requests are not counted", %{rl: rl} do
+          for _ <- 1..10, do: RateLimiter.allow?(rl, "x", 0)
+          assert RateLimiter.allow?(rl, "x", 1001)
+          assert RateLimiter.allow?(rl, "x", 1001)
+        end
+      end
+    solution: |
+      defmodule RateLimiter do
+        use GenServer
+
+        def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+        def allow?(pid, key, now_ms), do: GenServer.call(pid, {:allow?, key, now_ms})
+
+        @impl true
+        def init(opts) do
+          {:ok, %{limit: opts[:limit], window: opts[:window_ms], hits: %{}}}
+        end
+
+        @impl true
+        def handle_call({:allow?, key, now}, _from, %{limit: limit, window: window, hits: hits} = state) do
+          recent = hits |> Map.get(key, []) |> Enum.filter(&(&1 > now - window))
+
+          if length(recent) < limit do
+            {:reply, true, %{state | hits: Map.put(hits, key, [now | recent])}}
+          else
+            {:reply, false, %{state | hits: Map.put(hits, key, recent)}}
+          end
+        end
+      end
+    explanation: |
+      A sliding log: per key keep the timestamps of allowed hits, drop the ones older than
+      `now - window` on every request, and compare the count with the limit. Pruning on access
+      bounds the list to `limit` entries per key, and because the clock is an argument the
+      tests are fully deterministic; in production the client function would pass
+      `System.monotonic_time(:millisecond)`. Interviewers specifically like seeing time injected
+      rather than `Process.sleep` in tests.
+
+      Pitfalls: recording the timestamp even when the request is denied (the fourth test), using
+      `System.system_time` (wall clock, can jump) instead of monotonic time, and the GenServer
+      being a bottleneck for a hot path; the scaling answer is ETS with `:ets.update_counter/3`
+      in fixed windows, or one process per key via `Registry`.
+    tags: [genserver, otp, rate-limiting, time]
+    source: https://elixirforum.com/t/if-you-were-interviewing-a-candidate-for-a-senior-elixir-role-what-coding-exercise-would-you-give-them/53881
+
+  - slug: elixir-task-pubsub-genserver-assert-receive
+    kind: code
+    difficulty: middle
+    title: "A minimal pub/sub GenServer"
+    body: |
+      Implement `PubSub`, a GenServer:
+
+      - `start_link/0` returns `{:ok, pid}`,
+      - `subscribe(pid, topic)` registers the *calling* process for the topic,
+      - `unsubscribe(pid, topic)` removes it,
+      - `publish(pid, topic, message)` sends `{:pubsub, topic, message}` to every subscriber of
+        that topic and returns the number of processes notified,
+      - a subscriber that dies must be removed automatically (monitor it).
+
+      ```elixir
+      {:ok, ps} = PubSub.start_link()
+      PubSub.subscribe(ps, :news)
+      PubSub.publish(ps, :news, "hi")   #=> 1
+      # the subscriber now has {:pubsub, :news, "hi"} in its mailbox
+      ```
+    starter_code: |
+      defmodule PubSub do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, %{})
+
+        def subscribe(pid, topic), do: nil
+        def unsubscribe(pid, topic), do: nil
+        def publish(pid, topic, message), do: nil
+
+        @impl true
+        def init(state), do: {:ok, state}
+
+        # your callbacks here
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PubSubTest do
+        use ExUnit.Case
+
+        setup do
+          {:ok, ps} = PubSub.start_link()
+          %{ps: ps}
+        end
+
+        test "subscriber receives published messages", %{ps: ps} do
+          :ok = PubSub.subscribe(ps, :news)
+          assert PubSub.publish(ps, :news, "hi") == 1
+          assert_receive {:pubsub, :news, "hi"}
+        end
+
+        test "topics are isolated", %{ps: ps} do
+          PubSub.subscribe(ps, :news)
+          assert PubSub.publish(ps, :sports, "goal") == 0
+          refute_receive {:pubsub, _, _}, 20
+        end
+
+        test "unsubscribe stops delivery", %{ps: ps} do
+          PubSub.subscribe(ps, :news)
+          :ok = PubSub.unsubscribe(ps, :news)
+          assert PubSub.publish(ps, :news, "x") == 0
+          refute_receive {:pubsub, _, _}, 20
+        end
+
+        test "multiple subscribers, dead ones are dropped", %{ps: ps} do
+          PubSub.subscribe(ps, :news)
+          me = self()
+          other = spawn(fn ->
+            PubSub.subscribe(ps, :news)
+            send(me, :subscribed)
+            receive do: (:die -> :ok)
+          end)
+          assert_receive :subscribed
+          assert PubSub.publish(ps, :news, 1) == 2
+          ref = Process.monitor(other)
+          send(other, :die)
+          assert_receive {:DOWN, ^ref, _, _, _}
+          assert PubSub.publish(ps, :news, 2) == 1
+          assert_receive {:pubsub, :news, 2}
+        end
+      end
+    solution: |
+      defmodule PubSub do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, %{})
+
+        def subscribe(pid, topic), do: GenServer.call(pid, {:subscribe, topic})
+        def unsubscribe(pid, topic), do: GenServer.call(pid, {:unsubscribe, topic})
+        def publish(pid, topic, message), do: GenServer.call(pid, {:publish, topic, message})
+
+        @impl true
+        def init(state), do: {:ok, state}
+
+        @impl true
+        def handle_call({:subscribe, topic}, {from, _ref}, subs) do
+          Process.monitor(from)
+          {:reply, :ok, Map.update(subs, topic, MapSet.new([from]), &MapSet.put(&1, from))}
+        end
+
+        def handle_call({:unsubscribe, topic}, {from, _ref}, subs) do
+          {:reply, :ok, Map.update(subs, topic, MapSet.new(), &MapSet.delete(&1, from))}
+        end
+
+        def handle_call({:publish, topic, message}, _from, subs) do
+          pids = Map.get(subs, topic, MapSet.new())
+          Enum.each(pids, &send(&1, {:pubsub, topic, message}))
+          {:reply, MapSet.size(pids), subs}
+        end
+
+        @impl true
+        def handle_info({:DOWN, _ref, :process, pid, _reason}, subs) do
+          {:noreply, Map.new(subs, fn {topic, pids} -> {topic, MapSet.delete(pids, pid)} end)}
+        end
+      end
+    explanation: |
+      State is `%{topic => MapSet.of(pid)}`. The subscriber pid comes for free from the
+      `from` tuple of `handle_call/3` (`{pid, ref}`), so the client does not have to pass
+      `self()`. `Process.monitor/1` in `subscribe` plus a `handle_info/2` clause for
+      `{:DOWN, ...}` is the standard way to clean up after crashed subscribers; without it the
+      server would keep sending to dead pids forever.
+
+      Publishing is `send/2` in a loop, which never blocks: that is the whole appeal of
+      message passing. Pitfalls: linking instead of monitoring (a subscriber crash would take
+      the server down), and a `publish` that is a `cast` (fine, but then the test cannot know
+      the count). `Registry` with `keys: :duplicate` is the production answer; mention it.
+    tags: [genserver, otp, pubsub, monitor, assert_receive]
+    source: https://elixir.hexdocs.pm/Process.html
+
+  - slug: elixir-task-supervisor-restarts-crashed-worker
+    kind: code
+    difficulty: middle
+    title: "A supervisor that restarts a crashed worker"
+    body: |
+      Implement two modules:
+
+      - `Worker`, a GenServer started with `start_link(name_tag)` that stores the tag and
+        answers `Worker.tag(pid)`, and
+      - `WorkerSup.start_link/1`, which starts a `Supervisor` with a single `Worker` child
+        under the `:one_for_one` strategy, plus `WorkerSup.worker_pid(sup)` that returns the
+        current worker pid (use `Supervisor.which_children/1`).
+
+      When the worker is killed, the supervisor must start a fresh one with the same tag.
+
+      ```elixir
+      {:ok, sup} = WorkerSup.start_link(:alpha)
+      pid = WorkerSup.worker_pid(sup)
+      Worker.tag(pid)     #=> :alpha
+      Process.exit(pid, :kill)
+      WorkerSup.worker_pid(sup) != pid  #=> true
+      ```
+    starter_code: |
+      defmodule Worker do
+        use GenServer
+
+        def start_link(tag), do: GenServer.start_link(__MODULE__, tag)
+        def tag(pid), do: nil
+
+        @impl true
+        def init(tag), do: {:ok, tag}
+      end
+
+      defmodule WorkerSup do
+        def start_link(tag) do
+          # your code here
+        end
+
+        def worker_pid(sup) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule WorkerSupTest do
+        use ExUnit.Case
+
+        test "worker is running under the supervisor" do
+          {:ok, sup} = WorkerSup.start_link(:alpha)
+          pid = WorkerSup.worker_pid(sup)
+          assert is_pid(pid) and Process.alive?(pid)
+          assert Worker.tag(pid) == :alpha
+        end
+
+        test "killed worker is restarted with the same argument" do
+          {:ok, sup} = WorkerSup.start_link(:beta)
+          pid1 = WorkerSup.worker_pid(sup)
+          ref = Process.monitor(pid1)
+          Process.exit(pid1, :kill)
+          assert_receive {:DOWN, ^ref, :process, ^pid1, :killed}
+          pid2 = WorkerSup.worker_pid(sup)
+          assert pid2 != pid1
+          assert Process.alive?(pid2)
+          assert Worker.tag(pid2) == :beta
+        end
+
+        test "the test process survives the crash" do
+          {:ok, sup} = WorkerSup.start_link(:gamma)
+          pid = WorkerSup.worker_pid(sup)
+          Process.exit(pid, :kill)
+          assert Process.alive?(self())
+          assert Process.alive?(sup)
+        end
+      end
+    solution: |
+      defmodule Worker do
+        use GenServer
+
+        def start_link(tag), do: GenServer.start_link(__MODULE__, tag)
+        def tag(pid), do: GenServer.call(pid, :tag)
+
+        @impl true
+        def init(tag), do: {:ok, tag}
+
+        @impl true
+        def handle_call(:tag, _from, tag), do: {:reply, tag, tag}
+      end
+
+      defmodule WorkerSup do
+        def start_link(tag) do
+          Supervisor.start_link([{Worker, tag}], strategy: :one_for_one)
+        end
+
+        def worker_pid(sup) do
+          [{Worker, pid, :worker, _}] = Supervisor.which_children(sup)
+          pid
+        end
+      end
+    explanation: |
+      `use GenServer` defines a default `child_spec/1`, so the child list can be just
+      `[{Worker, tag}]`; the supervisor calls `Worker.start_link(tag)` and, because the default
+      restart is `:permanent`, calls it again whenever the child exits for any reason.
+      `Supervisor.which_children/1` returns `{id, pid, type, modules}` tuples, from which the
+      new pid is read.
+
+      The test uses a monitor to wait for the `:DOWN` message deterministically instead of
+      sleeping; the exit signal reaches the supervisor before our next call, so the restart has
+      already happened when `which_children` answers. Pitfalls: the worker links to the test
+      process when started directly (a kill would then take the test down too; here the
+      supervisor is the one linked to the worker), and `:max_restarts` (3 in 5 s by default),
+      after which the supervisor itself gives up and exits.
+    tags: [supervisor, otp, fault-tolerance, monitor]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-task-timeout-wrapper-task-yield-shutdown
+    kind: code
+    difficulty: middle
+    title: "Run a function with a deadline using Task.yield and Task.shutdown"
+    body: |
+      Implement `Deadline.run/2`. It runs the zero-arity function in a task and returns
+      `{:ok, result}` if it finishes within `timeout_ms`, or `{:error, :timeout}` otherwise.
+      On timeout the task must be shut down so it does not keep running, and the caller must
+      not crash. Use `Task.yield/2` plus `Task.shutdown/1` (not a bare `Task.await/2`).
+
+      ```elixir
+      Deadline.run(fn -> 1 + 1 end, 100)                    #=> {:ok, 2}
+      Deadline.run(fn -> Process.sleep(:infinity) end, 20)  #=> {:error, :timeout}
+      ```
+    starter_code: |
+      defmodule Deadline do
+        def run(fun, timeout_ms) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule DeadlineTest do
+        use ExUnit.Case
+
+        test "fast function" do
+          assert Deadline.run(fn -> 1 + 1 end, 100) == {:ok, 2}
+        end
+
+        test "slow function times out and does not crash the caller" do
+          assert Deadline.run(fn -> Process.sleep(:infinity) end, 20) == {:error, :timeout}
+          assert Process.alive?(self())
+        end
+
+        test "the task is really stopped on timeout" do
+          me = self()
+          Deadline.run(fn -> send(me, {:task, self()}); Process.sleep(:infinity) end, 20)
+          assert_receive {:task, task_pid}
+          ref = Process.monitor(task_pid)
+          assert_receive {:DOWN, ^ref, :process, ^task_pid, _}, 500
+        end
+
+        test "no stray messages are left in the mailbox" do
+          Deadline.run(fn -> :done end, 100)
+          refute_receive _, 20
+        end
+      end
+    solution: |
+      defmodule Deadline do
+        def run(fun, timeout_ms) do
+          task = Task.async(fun)
+
+          case Task.yield(task, timeout_ms) || Task.shutdown(task, :brutal_kill) do
+            {:ok, result} -> {:ok, result}
+            nil -> {:error, :timeout}
+            {:exit, reason} -> {:error, {:exit, reason}}
+          end
+        end
+      end
+    explanation: |
+      `Task.await/2` *exits the caller* on timeout, which is rarely what you want in a request
+      path. The documented pattern is `Task.yield(task, timeout) || Task.shutdown(task)`:
+      `yield` returns `{:ok, result}`, `{:exit, reason}` or `nil` after the timeout, and
+      `shutdown` then kills the task (unlinking first, so the caller survives) while still
+      returning a result if one arrived in between.
+
+      The third test checks that the task really dies; the fourth checks that the task's reply
+      message was consumed and not left in the mailbox, which `Task.shutdown` guarantees.
+      Pitfalls: `Task.start/1` plus a `receive ... after` (reply can arrive late and pollute
+      the mailbox), and `Task.async` without ever awaiting or shutting down, which leaks a
+      linked process.
+    tags: [task, timeout, concurrency]
+    source: https://elixir.hexdocs.pm/Task.html
+
+  - slug: elixir-task-lru-cache-genserver
+    kind: code
+    difficulty: senior
+    title: "LRU cache GenServer with a maximum size"
+    body: |
+      Implement `LRU`, a GenServer:
+
+      - `start_link(capacity)` returns `{:ok, pid}`,
+      - `put(pid, key, value)` inserts or updates and marks the key most recently used; when
+        the size would exceed `capacity`, the least recently used key is evicted,
+      - `get(pid, key)` returns `{:ok, value}` and marks the key as most recently used, or
+        `:miss`,
+      - `keys(pid)` returns the keys from most to least recently used.
+
+      ```elixir
+      {:ok, c} = LRU.start_link(2)
+      LRU.put(c, :a, 1); LRU.put(c, :b, 2)
+      LRU.get(c, :a)          #=> {:ok, 1}   (a is now most recent)
+      LRU.put(c, :c, 3)       # evicts :b
+      LRU.get(c, :b)          #=> :miss
+      LRU.keys(c)             #=> [:c, :a]
+      ```
+    starter_code: |
+      defmodule LRU do
+        use GenServer
+
+        def start_link(capacity), do: GenServer.start_link(__MODULE__, capacity)
+
+        def put(pid, key, value), do: nil
+        def get(pid, key), do: nil
+        def keys(pid), do: nil
+
+        @impl true
+        def init(capacity) do
+          # your state here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LRUTest do
+        use ExUnit.Case
+
+        test "evicts the least recently used" do
+          {:ok, c} = LRU.start_link(2)
+          LRU.put(c, :a, 1)
+          LRU.put(c, :b, 2)
+          assert LRU.get(c, :a) == {:ok, 1}
+          LRU.put(c, :c, 3)
+          assert LRU.get(c, :b) == :miss
+          assert LRU.get(c, :a) == {:ok, 1}
+          assert LRU.get(c, :c) == {:ok, 3}
+        end
+
+        test "keys are ordered most recent first" do
+          {:ok, c} = LRU.start_link(3)
+          LRU.put(c, :a, 1)
+          LRU.put(c, :b, 2)
+          LRU.put(c, :c, 3)
+          LRU.get(c, :a)
+          assert LRU.keys(c) == [:a, :c, :b]
+        end
+
+        test "updating an existing key does not evict" do
+          {:ok, c} = LRU.start_link(2)
+          LRU.put(c, :a, 1)
+          LRU.put(c, :b, 2)
+          LRU.put(c, :a, 10)
+          assert LRU.keys(c) == [:a, :b]
+          assert LRU.get(c, :a) == {:ok, 10}
+        end
+
+        test "miss does not change order" do
+          {:ok, c} = LRU.start_link(2)
+          LRU.put(c, :a, 1)
+          LRU.put(c, :b, 2)
+          assert LRU.get(c, :zzz) == :miss
+          assert LRU.keys(c) == [:b, :a]
+        end
+
+        test "capacity one" do
+          {:ok, c} = LRU.start_link(1)
+          LRU.put(c, :a, 1)
+          LRU.put(c, :b, 2)
+          assert LRU.get(c, :a) == :miss
+          assert LRU.keys(c) == [:b]
+        end
+      end
+    solution: |
+      defmodule LRU do
+        use GenServer
+
+        def start_link(capacity), do: GenServer.start_link(__MODULE__, capacity)
+
+        def put(pid, key, value), do: GenServer.call(pid, {:put, key, value})
+        def get(pid, key), do: GenServer.call(pid, {:get, key})
+        def keys(pid), do: GenServer.call(pid, :keys)
+
+        @impl true
+        def init(capacity), do: {:ok, %{cap: capacity, items: %{}, order: []}}
+
+        @impl true
+        def handle_call({:put, key, value}, _from, %{cap: cap, items: items, order: order} = s) do
+          order = [key | List.delete(order, key)]
+          items = Map.put(items, key, value)
+
+          {items, order} =
+            if map_size(items) > cap do
+              {evicted, kept} = List.pop_at(order, -1)
+              {Map.delete(items, evicted), kept}
+            else
+              {items, order}
+            end
+
+          {:reply, :ok, %{s | items: items, order: order}}
+        end
+
+        def handle_call({:get, key}, _from, %{items: items, order: order} = s) do
+          case items do
+            %{^key => value} -> {:reply, {:ok, value}, %{s | order: [key | List.delete(order, key)]}}
+            _ -> {:reply, :miss, s}
+          end
+        end
+
+        def handle_call(:keys, _from, s), do: {:reply, s.order, s}
+      end
+    explanation: |
+      State is a map for O(1) value lookup plus a recency list, most recent first. Every
+      access does `[key | List.delete(order, key)]` to move the key to the front, and an
+      insert that overflows pops the *last* element of the list and deletes it from the map.
+      Eviction checks `map_size/1`, so updating an existing key never evicts.
+
+      This is O(capacity) per operation because of `List.delete/2`; for an interview that is
+      the honest, readable answer, and the follow-up is how to get O(log n) or O(1): a map of
+      key => monotonically increasing tick plus a `:gb_trees` keyed by tick, or ETS with an
+      `ordered_set`. Pitfalls: forgetting to re-order on `get` (then it is FIFO, not LRU),
+      and evicting before checking whether the key already existed.
+    tags: [genserver, otp, cache, data-structures]
+    source: https://www.secondtalent.com/interview-guide/elixir-phoenix/
+
+  - slug: elixir-task-bank-account-genserver-insufficient-funds
+    kind: code
+    difficulty: middle
+    title: "Bank account GenServer with {:error, :insufficient_funds}"
+    body: |
+      Implement `Account`, a GenServer holding an integer balance (cents):
+
+      - `open/1` starts the process with the initial balance and returns `{:ok, pid}`,
+      - `deposit(pid, amount)` and `withdraw(pid, amount)` return `{:ok, new_balance}`,
+      - a withdrawal larger than the balance returns `{:error, :insufficient_funds}` and leaves
+        the balance unchanged,
+      - any amount that is not a positive integer returns `{:error, :invalid_amount}`;
+        validate this in the *client* function with a guard, before sending a message,
+      - `balance/1` returns the balance.
+
+      ```elixir
+      {:ok, acc} = Account.open(100)
+      Account.withdraw(acc, 30)   #=> {:ok, 70}
+      Account.withdraw(acc, 500)  #=> {:error, :insufficient_funds}
+      Account.deposit(acc, -5)    #=> {:error, :invalid_amount}
+      ```
+    starter_code: |
+      defmodule Account do
+        use GenServer
+
+        def open(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        def deposit(pid, amount), do: nil
+        def withdraw(pid, amount), do: nil
+        def balance(pid), do: nil
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        # your callbacks here
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AccountTest do
+        use ExUnit.Case
+
+        test "deposit and withdraw" do
+          {:ok, acc} = Account.open(100)
+          assert Account.deposit(acc, 50) == {:ok, 150}
+          assert Account.withdraw(acc, 30) == {:ok, 120}
+          assert Account.balance(acc) == 120
+        end
+
+        test "insufficient funds leaves balance unchanged" do
+          {:ok, acc} = Account.open(100)
+          assert Account.withdraw(acc, 500) == {:error, :insufficient_funds}
+          assert Account.balance(acc) == 100
+        end
+
+        test "withdrawing the exact balance is allowed" do
+          {:ok, acc} = Account.open(10)
+          assert Account.withdraw(acc, 10) == {:ok, 0}
+        end
+
+        test "invalid amounts are rejected before reaching the server" do
+          {:ok, acc} = Account.open(10)
+          assert Account.deposit(acc, -5) == {:error, :invalid_amount}
+          assert Account.deposit(acc, 0) == {:error, :invalid_amount}
+          assert Account.withdraw(acc, 1.5) == {:error, :invalid_amount}
+          assert Account.balance(acc) == 10
+        end
+
+        test "concurrent withdrawals never overdraw" do
+          {:ok, acc} = Account.open(100)
+          results = 1..20 |> Task.async_stream(fn _ -> Account.withdraw(acc, 10) end) |> Enum.map(fn {:ok, r} -> r end)
+          assert Enum.count(results, &match?({:ok, _}, &1)) == 10
+          assert Account.balance(acc) == 0
+        end
+      end
+    solution: |
+      defmodule Account do
+        use GenServer
+
+        def open(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        def deposit(pid, amount) when is_integer(amount) and amount > 0, do: GenServer.call(pid, {:deposit, amount})
+        def deposit(_pid, _amount), do: {:error, :invalid_amount}
+
+        def withdraw(pid, amount) when is_integer(amount) and amount > 0, do: GenServer.call(pid, {:withdraw, amount})
+        def withdraw(_pid, _amount), do: {:error, :invalid_amount}
+
+        def balance(pid), do: GenServer.call(pid, :balance)
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        @impl true
+        def handle_call({:deposit, amount}, _from, balance), do: {:reply, {:ok, balance + amount}, balance + amount}
+
+        def handle_call({:withdraw, amount}, _from, balance) when amount > balance,
+          do: {:reply, {:error, :insufficient_funds}, balance}
+
+        def handle_call({:withdraw, amount}, _from, balance), do: {:reply, {:ok, balance - amount}, balance - amount}
+
+        def handle_call(:balance, _from, balance), do: {:reply, balance, balance}
+      end
+    explanation: |
+      Two things interviewers check here. First, validation belongs in the client function
+      with guards (`is_integer(amount) and amount > 0`): a bad argument never becomes a
+      message, so the server state cannot be corrupted and no round trip is wasted. Second,
+      the business rule is a *guard on the callback clause* (`when amount > balance`), which
+      keeps the "happy path" clause free of conditionals.
+
+      The last test is the reason to use a process at all: 20 concurrent withdrawals of 10
+      from 100 result in exactly 10 successes, because `handle_call` runs one message at a time.
+      Pitfalls: using floats for money (`1.5` is rejected on purpose; use integer cents or
+      `Decimal`), and using `cast` for withdraw, which cannot return the error.
+    tags: [genserver, otp, guards, concurrency]
+    source: "Classic exercise, cf. https://github.com/exercism/elixir/tree/main/exercises/practice (bank-account)"
+
+  - slug: elixir-task-order-state-machine-transition
+    kind: code
+    difficulty: junior
+    title: "Order status state machine as pure functions"
+    body: |
+      Implement `OrderState.transition/2` as a pure function over atoms. States and events:
+
+      - `:pending` --`:pay`--> `:paid`
+      - `:paid` --`:ship`--> `:shipped`
+      - `:shipped` --`:deliver`--> `:delivered`
+      - `:pending` or `:paid` --`:cancel`--> `:cancelled`
+
+      Return `{:ok, new_state}` or `{:error, :invalid}`. Also implement
+      `OrderState.run/2`, which applies a list of events from `:pending` and returns the final
+      `{:ok, state}` or the first `{:error, :invalid}`.
+
+      ```elixir
+      OrderState.transition(:pending, :pay)        #=> {:ok, :paid}
+      OrderState.transition(:shipped, :cancel)     #=> {:error, :invalid}
+      OrderState.run(:pending, [:pay, :ship])      #=> {:ok, :shipped}
+      ```
+    starter_code: |
+      defmodule OrderState do
+        def transition(state, event) do
+          # your code here
+        end
+
+        def run(state, events) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule OrderStateTest do
+        use ExUnit.Case
+
+        test "happy path" do
+          assert OrderState.transition(:pending, :pay) == {:ok, :paid}
+          assert OrderState.transition(:paid, :ship) == {:ok, :shipped}
+          assert OrderState.transition(:shipped, :deliver) == {:ok, :delivered}
+        end
+
+        test "cancel only before shipping" do
+          assert OrderState.transition(:pending, :cancel) == {:ok, :cancelled}
+          assert OrderState.transition(:paid, :cancel) == {:ok, :cancelled}
+          assert OrderState.transition(:shipped, :cancel) == {:error, :invalid}
+        end
+
+        test "invalid transitions" do
+          assert OrderState.transition(:pending, :ship) == {:error, :invalid}
+          assert OrderState.transition(:delivered, :pay) == {:error, :invalid}
+          assert OrderState.transition(:cancelled, :pay) == {:error, :invalid}
+          assert OrderState.transition(:pending, :teleport) == {:error, :invalid}
+        end
+
+        test "run applies events in order and stops at the first error" do
+          assert OrderState.run(:pending, [:pay, :ship, :deliver]) == {:ok, :delivered}
+          assert OrderState.run(:pending, [:pay, :cancel, :ship]) == {:error, :invalid}
+          assert OrderState.run(:pending, []) == {:ok, :pending}
+        end
+      end
+    solution: |
+      defmodule OrderState do
+        def transition(:pending, :pay), do: {:ok, :paid}
+        def transition(:paid, :ship), do: {:ok, :shipped}
+        def transition(:shipped, :deliver), do: {:ok, :delivered}
+        def transition(state, :cancel) when state in [:pending, :paid], do: {:ok, :cancelled}
+        def transition(_state, _event), do: {:error, :invalid}
+
+        def run(state, events) do
+          Enum.reduce_while(events, {:ok, state}, fn event, {:ok, current} ->
+            case transition(current, event) do
+              {:ok, next} -> {:cont, {:ok, next}}
+              error -> {:halt, error}
+            end
+          end)
+        end
+      end
+    explanation: |
+      A state machine in Elixir is a set of function clauses: each valid `(state, event)` pair
+      is one head, a guard collects the shared `:cancel` rule, and the final catch-all turns
+      everything else into `{:error, :invalid}`. The transition table *is* the code, which is
+      why interviewers like this: it reads like the spec and the compiler checks nothing is
+      ambiguous.
+
+      `run/2` folds events with `Enum.reduce_while/3`, halting on the first error. Pitfalls:
+      putting the catch-all clause first (it shadows everything, and the compiler warns),
+      and a `Map`-based table that silently returns `nil` for unknown events. When the
+      machine needs timers or side effects, point to `:gen_statem` or a GenServer holding the
+      state atom and delegating to this pure module.
+    tags: [pattern-matching, state-machine, pure-functions]
+    source: https://elixirschool.com/en/lessons/advanced/otp_concurrency
+
+  - slug: elixir-task-arithmetic-tokenizer-evaluator-precedence
+    kind: code
+    difficulty: senior
+    title: "Tokenize and evaluate \"1 + 2 * 3\" with correct precedence"
+    body: |
+      Implement `Calc.eval/1` for expressions with non-negative integers, `+ - * /`
+      (integer division), parentheses and arbitrary whitespace. `*` and `/` bind tighter than
+      `+` and `-`; all operators are left-associative. Split the work into `Calc.tokenize/1`
+      (returning a list like `[1, :+, 2, :*, 3]`) and a recursive-descent parser with the
+      grammar
+
+      ```
+      expr   := term   (('+' | '-') term)*
+      term   := factor (('*' | '/') factor)*
+      factor := number | '(' expr ')'
+      ```
+
+      ```elixir
+      Calc.eval("1 + 2 * 3")        #=> 7
+      Calc.eval("(1 + 2) * 3")      #=> 9
+      Calc.tokenize("10 / (2+3)")   #=> [10, :/, :"(", 2, :+, 3, :")"]
+      ```
+    starter_code: |
+      defmodule Calc do
+        def eval(string) do
+          # your code here
+        end
+
+        def tokenize(string) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CalcTest do
+        use ExUnit.Case
+
+        test "tokenize" do
+          assert Calc.tokenize("10 / (2+3)") == [10, :/, :"(", 2, :+, 3, :")"]
+        end
+
+        test "precedence" do
+          assert Calc.eval("1 + 2 * 3") == 7
+          assert Calc.eval("2 * 3 + 1") == 7
+        end
+
+        test "parentheses" do
+          assert Calc.eval("(1 + 2) * 3") == 9
+          assert Calc.eval("2 * (3 + 4) - 5") == 9
+          assert Calc.eval("((7))") == 7
+        end
+
+        test "left associativity" do
+          assert Calc.eval("10 - 4 - 3") == 3
+          assert Calc.eval("100 / 10 / 2") == 5
+        end
+
+        test "single number and whitespace" do
+          assert Calc.eval("  42 ") == 42
+        end
+      end
+    solution: |
+      defmodule Calc do
+        def eval(string) do
+          {value, []} = string |> tokenize() |> expr()
+          value
+        end
+
+        def tokenize(string) do
+          ~r/\d+|[-+*\/()]/
+          |> Regex.scan(string)
+          |> Enum.map(fn
+            [<<d, _::binary>> = num] when d in ?0..?9 -> String.to_integer(num)
+            [op] -> String.to_atom(op)
+          end)
+        end
+
+        defp expr(tokens), do: tokens |> term() |> loop([:+, :-], &term/1)
+        defp term(tokens), do: tokens |> factor() |> loop([:*, :/], &factor/1)
+
+        defp loop({left, [op | rest]} = result, ops, next) do
+          if op in ops do
+            {right, rest} = next.(rest)
+            loop({apply_op(op, left, right), rest}, ops, next)
+          else
+            result
+          end
+        end
+
+        defp loop(result, _ops, _next), do: result
+
+        defp factor([n | rest]) when is_integer(n), do: {n, rest}
+
+        defp factor([:"(" | rest]) do
+          {value, [:")" | rest]} = expr(rest)
+          {value, rest}
+        end
+
+        defp apply_op(:+, a, b), do: a + b
+        defp apply_op(:-, a, b), do: a - b
+        defp apply_op(:*, a, b), do: a * b
+        defp apply_op(:/, a, b), do: div(a, b)
+      end
+    explanation: |
+      Precedence comes from the grammar, not from a table: `expr` is a sum of `term`s and
+      `term` is a product of `factor`s, so multiplication is always reduced before it bubbles
+      up to the addition level. Every parser function takes the token list and returns
+      `{value, remaining_tokens}`, the standard functional recursive-descent shape, and
+      because the `loop` helper folds from the left, `10 - 4 - 3` is `(10 - 4) - 3`.
+
+      The `loop/3` function is shared by both levels, parameterised by the operator set and
+      the "next lower" parser, which keeps the whole thing around 30 lines. Pitfalls: a naive
+      right-recursive `expr := term '+' expr` (wrong associativity for `-` and `/`), and
+      evaluating with `Code.eval_string/1`, which an interviewer will reject on sight.
+      Follow-ups: error handling for malformed input (return `{:error, ...}` instead of a
+      `MatchError`) and unary minus.
+    tags: [parsing, recursion, recursive-descent, tokenizer]
+    source: https://elixirforum.com/t/if-you-were-interviewing-a-candidate-for-a-senior-elixir-role-what-coding-exercise-would-you-give-them/53881
+
+  - slug: elixir-task-mini-json-encoder
+    kind: code
+    difficulty: senior
+    title: "A minimal JSON encoder for maps, lists, strings and numbers"
+    body: |
+      Implement `MiniJSON.encode/1` without any library. Support:
+
+      - maps with atom or string keys (keys emitted in sorted order so output is
+        deterministic), nested arbitrarily,
+      - lists,
+      - strings (escape `"`, `\` and newline as `\n`),
+      - integers and floats, `true`, `false` and `nil` (as `null`),
+      - atoms other than the three above are encoded as strings.
+
+      No spaces in the output.
+
+      ```elixir
+      MiniJSON.encode(%{name: "Ann", tags: ["a", "b"], age: 30, admin: false, x: nil})
+      #=> ~s({"admin":false,"age":30,"name":"Ann","tags":["a","b"],"x":null})
+      ```
+    starter_code: |
+      defmodule MiniJSON do
+        def encode(term) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniJSONTest do
+        use ExUnit.Case
+
+        test "flat map with sorted keys" do
+          assert MiniJSON.encode(%{name: "Ann", tags: ["a", "b"], age: 30, admin: false, x: nil}) ==
+                   ~s({"admin":false,"age":30,"name":"Ann","tags":["a","b"],"x":null})
+        end
+
+        test "nested structures" do
+          assert MiniJSON.encode(%{"a" => %{"b" => [1, [2, %{}]]}}) == ~s({"a":{"b":[1,[2,{}]]}})
+        end
+
+        test "string escaping" do
+          assert MiniJSON.encode(~s(say "hi"\\ now\nplease)) == ~s("say \\"hi\\"\\\\ now\\nplease")
+        end
+
+        test "scalars" do
+          assert MiniJSON.encode(1.5) == "1.5"
+          assert MiniJSON.encode(-7) == "-7"
+          assert MiniJSON.encode(true) == "true"
+          assert MiniJSON.encode(nil) == "null"
+          assert MiniJSON.encode(:ok) == ~s("ok")
+          assert MiniJSON.encode([]) == "[]"
+        end
+      end
+    solution: |
+      defmodule MiniJSON do
+        def encode(nil), do: "null"
+        def encode(true), do: "true"
+        def encode(false), do: "false"
+        def encode(n) when is_integer(n) or is_float(n), do: to_string(n)
+        def encode(atom) when is_atom(atom), do: encode(Atom.to_string(atom))
+
+        def encode(string) when is_binary(string) do
+          escaped =
+            string
+            |> String.replace("\\", "\\\\")
+            |> String.replace("\"", "\\\"")
+            |> String.replace("\n", "\\n")
+
+          ~s("#{escaped}")
+        end
+
+        def encode(list) when is_list(list), do: "[" <> Enum.map_join(list, ",", &encode/1) <> "]"
+
+        def encode(map) when is_map(map) do
+          pairs =
+            map
+            |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+            |> Enum.sort()
+            |> Enum.map_join(",", fn {k, v} -> encode(k) <> ":" <> encode(v) end)
+
+          "{" <> pairs <> "}"
+        end
+      end
+    explanation: |
+      An encoder is a recursive function with one clause per type, ordered from most to least
+      specific: `nil`, `true` and `false` are atoms, so their clauses must precede the
+      `is_atom/1` clause, and `is_binary/1` before `is_list/1` is irrelevant but keeping
+      scalars first reads well. Maps normalise keys with `to_string/1` and sort them, which is
+      what makes the output testable; real encoders (Jason, the built-in `JSON` module in
+      Elixir 1.18+) keep map order, which is undefined for more than 32 keys.
+
+      The escaping order matters: backslashes first, otherwise the backslashes you add for
+      quotes get doubled. Pitfalls: `Enum.join/2` building many intermediate binaries (fine
+      here; production encoders return iodata and let `IO.iodata_to_binary/1` do one copy),
+      keyword lists encoded as arrays of arrays, and forgetting that a charlist is a list of
+      integers.
+    tags: [recursion, pattern-matching, guards, encoding]
+    source: https://elixir.hexdocs.pm/String.Chars.html
+
+  - slug: elixir-task-topological-sort-cycle-detection
+    kind: code
+    difficulty: senior
+    title: "Topological sort with cycle detection"
+    body: |
+      Implement `Topo.sort/1`. The input is a map from node to the list of nodes it depends on.
+      Return `{:ok, order}` where every node appears *after* all of its dependencies, or
+      `{:error, :cycle}` if the graph contains a cycle. Nodes that only appear as dependencies
+      (and have no entry of their own) must also be included.
+
+      ```elixir
+      Topo.sort(%{app: [:db, :cache], db: [:config], cache: [:config], config: []})
+      #=> {:ok, [:config, :db, :cache, :app]}   (or any other valid order)
+      Topo.sort(%{a: [:b], b: [:a]})
+      #=> {:error, :cycle}
+      ```
+    starter_code: |
+      defmodule Topo do
+        def sort(deps) do
+          # your code here
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TopoTest do
+        use ExUnit.Case
+
+        defp valid?(order, deps) do
+          index = order |> Enum.with_index() |> Map.new()
+
+          Enum.all?(deps, fn {node, ds} ->
+            Enum.all?(ds, fn d -> index[d] < index[node] end)
+          end)
+        end
+
+        test "diamond dependency" do
+          deps = %{app: [:db, :cache], db: [:config], cache: [:config], config: []}
+          assert {:ok, order} = Topo.sort(deps)
+          assert Enum.sort(order) == [:app, :cache, :config, :db]
+          assert valid?(order, deps)
+        end
+
+        test "implicit nodes are included" do
+          deps = %{a: [:b], b: [:c]}
+          assert {:ok, order} = Topo.sort(deps)
+          assert order == [:c, :b, :a]
+        end
+
+        test "cycle" do
+          assert Topo.sort(%{a: [:b], b: [:a]}) == {:error, :cycle}
+          assert Topo.sort(%{a: [:a]}) == {:error, :cycle}
+        end
+
+        test "independent nodes and empty graph" do
+          assert {:ok, order} = Topo.sort(%{x: [], y: []})
+          assert Enum.sort(order) == [:x, :y]
+          assert Topo.sort(%{}) == {:ok, []}
+        end
+      end
+    solution: |
+      defmodule Topo do
+        def sort(deps) do
+          deps
+          |> Map.keys()
+          |> Enum.sort()
+          |> Enum.reduce_while({[], MapSet.new()}, fn node, {order, done} ->
+            case visit(node, deps, order, done, MapSet.new()) do
+              {:ok, order, done} -> {:cont, {order, done}}
+              :cycle -> {:halt, :cycle}
+            end
+          end)
+          |> case do
+            :cycle -> {:error, :cycle}
+            {order, _done} -> {:ok, Enum.reverse(order)}
+          end
+        end
+
+        # depth-first: a node is added to `order` only after all its deps are
+        defp visit(node, deps, order, done, path) do
+          cond do
+            MapSet.member?(done, node) -> {:ok, order, done}
+            MapSet.member?(path, node) -> :cycle
+            true ->
+              path = MapSet.put(path, node)
+
+              Enum.reduce_while(Map.get(deps, node, []), {:ok, order, done}, fn dep, {:ok, order, done} ->
+                case visit(dep, deps, order, done, path) do
+                  {:ok, order, done} -> {:cont, {:ok, order, done}}
+                  :cycle -> {:halt, :cycle}
+                end
+              end)
+              |> case do
+                {:ok, order, done} -> {:ok, [node | order], MapSet.put(done, node)}
+                :cycle -> :cycle
+              end
+          end
+        end
+      end
+    explanation: |
+      Depth-first post-order: visit all dependencies of a node, *then* append the node. Two
+      sets drive it: `done` (fully processed, skip) and `path` (the current recursion stack;
+      meeting a node already on the path means a cycle). The order accumulates in reverse,
+      so one `Enum.reverse/1` at the end yields dependencies first. `Map.get(deps, node, [])`
+      covers nodes that only appear as dependencies.
+
+      Threading `{order, done}` through nested `reduce_while` calls is the hardest part in an
+      immutable language and is exactly what the interviewer wants to see you handle without
+      a process or ETS. O(V + E). Kahn's algorithm (repeatedly remove nodes with in-degree
+      zero) is the equally good alternative and detects cycles when nodes remain. Pitfall:
+      using one `visited` set for both purposes, which reports a false cycle on diamonds.
+    tags: [graphs, recursion, dfs, reduce_while]
+    source: https://elixirforum.com/t/prep-for-an-elixir-job-interview/25660

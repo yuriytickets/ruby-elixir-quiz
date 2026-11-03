@@ -1,0 +1,1616 @@
+language: ruby
+topic: metaprogramming
+items:
+  - slug: ruby-meta-code-my-attr-accessor
+    kind: code
+    difficulty: middle
+    title: "Reimplement `attr_accessor` as `my_attr_accessor`"
+    body: |
+      Add `my_attr_accessor(*names)` to `Module` so that any class can call it. For each name it must
+      define a public reader and a writer (`name` and `name=`) backed by the instance variable
+      `@name`. Use `define_method`, `instance_variable_get` and `instance_variable_set`; do not use
+      `attr_accessor` or string `eval`.
+
+      ```ruby
+      class Point
+        my_attr_accessor :x, :y
+      end
+      pt = Point.new
+      pt.x = 3
+      pt.x  # => 3
+      ```
+    starter_code: |
+      class Module
+        def my_attr_accessor(*names)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        class Point
+          my_attr_accessor :x, :y
+        end
+
+        def test_reader_and_writer
+          pt = Point.new
+          pt.x = 3
+          assert_equal 3, pt.x
+          assert_nil pt.y
+        end
+
+        def test_backed_by_instance_variables
+          pt = Point.new
+          pt.y = 7
+          assert_equal 7, pt.instance_variable_get(:@y)
+          assert_equal [:@y], pt.instance_variables
+        end
+
+        def test_defines_public_instance_methods
+          assert_includes Point.public_instance_methods(false), :x=
+        end
+      end
+    solution: |
+      class Module
+        def my_attr_accessor(*names)
+          names.each do |name|
+            define_method(name) { instance_variable_get("@#{name}") }
+            define_method("#{name}=") { |v| instance_variable_set("@#{name}", v) }
+          end
+        end
+      end
+    explanation: |
+      `attr_accessor` is an ordinary (C-implemented) method on `Module`; calling it inside a class
+      body works because `self` is the class there. The `define_method` blocks are closures over
+      `name`, and inside them `self` is the instance, so `instance_variable_get` reads the right
+      object. Reading an unset ivar returns `nil`, matching the real `attr_reader`.
+    tags: [define_method, instance_variable_get, attr_accessor]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-code-validates-dsl
+    kind: code
+    difficulty: middle
+    title: "A tiny `validates` DSL"
+    body: |
+      Implement a `Validations` module. Including it gives a class the macro
+      `validates(attr, presence: false, length: nil)` and instances the methods `errors` (array of
+      strings) and `valid?`. Rules:
+
+      - `presence: true` adds `"<attr> can't be blank"` when the value is `nil` or blank
+        (`to_s.strip.empty?`);
+      - `length: { maximum: n }` adds `"<attr> is too long"` when a non-nil value's `to_s.length > n`;
+      - each class keeps its **own** list, exposed as the class method `validations`;
+      - errors are produced in the order the validations were declared.
+
+      Hint: `self.included(base)` + `base.extend(ClassMethods)`.
+    starter_code: |
+      module Validations
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        class User
+          include Validations
+          attr_accessor :name, :bio
+          validates :name, presence: true
+          validates :bio, length: { maximum: 5 }
+        end
+
+        class Other
+          include Validations
+          attr_accessor :title
+          validates :title, presence: true
+        end
+
+        def test_valid_record
+          u = User.new; u.name = "Ann"; u.bio = "hi"
+          assert u.valid?
+          assert_equal [], u.errors
+        end
+
+        def test_presence
+          u = User.new; u.name = "  "
+          refute u.valid?
+          assert_equal ["name can't be blank"], u.errors
+        end
+
+        def test_length
+          u = User.new; u.name = "Ann"; u.bio = "too long"
+          assert_equal ["bio is too long"], u.errors
+        end
+
+        def test_validations_are_per_class
+          assert_equal 2, User.validations.size
+          assert_equal 1, Other.validations.size
+        end
+      end
+    solution: |
+      module Validations
+        def self.included(base) = base.extend(ClassMethods)
+
+        module ClassMethods
+          def validations = @validations ||= []
+
+          def validates(attr, presence: false, length: nil)
+            validations << [attr, presence, length]
+          end
+        end
+
+        def errors
+          self.class.validations.each_with_object([]) do |(attr, presence, length), errs|
+            value = public_send(attr)
+            errs << "#{attr} can't be blank" if presence && (value.nil? || value.to_s.strip.empty?)
+            errs << "#{attr} is too long" if length && value && value.to_s.length > length[:maximum]
+          end
+        end
+
+        def valid? = errors.empty?
+      end
+    explanation: |
+      This is the ActiveModel shape in miniature: the `included` hook extends the host class with
+      class-level macros, the macro records declarations in a *class-level instance variable*
+      (`@validations` on the class object, so subclasses and siblings do not share it the way a
+      `@@class_variable` would), and instance methods read the recorded rules via `self.class`.
+    tags: [dsl, included, extend, class-instance-variable]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-code-method-missing-recorder
+    kind: code
+    difficulty: middle
+    title: "A `method_missing` recorder with `respond_to_missing?`"
+    body: |
+      Implement `Recorder`. Any method whose name ends in `!` is accepted: it appends
+      `[name, args]` to `calls` and returns `self` so calls chain. Any other unknown method must
+      raise `NoMethodError` as usual. `respond_to?` must be truthy for bang names, and
+      `method(:fly!)` must return a `Method` object.
+
+      ```ruby
+      r = Recorder.new.move!(1, 2).jump!
+      r.calls  # => [[:move!, [1, 2]], [:jump!, []]]
+      ```
+    starter_code: |
+      class Recorder
+        attr_reader :calls
+
+        def initialize
+          @calls = []
+        end
+
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_records_bang_calls_and_chains
+          r = Recorder.new.move!(1, 2).jump!
+          assert_equal [[:move!, [1, 2]], [:jump!, []]], r.calls
+        end
+
+        def test_other_methods_raise
+          assert_raises(NoMethodError) { Recorder.new.move }
+        end
+
+        def test_respond_to_and_method
+          r = Recorder.new
+          assert r.respond_to?(:fly!)
+          refute r.respond_to?(:fly)
+          assert_kind_of Method, r.method(:fly!)
+        end
+      end
+    solution: |
+      class Recorder
+        attr_reader :calls
+
+        def initialize
+          @calls = []
+        end
+
+        def method_missing(name, *args, &blk)
+          return super unless name.to_s.end_with?("!")
+          @calls << [name, args]
+          self
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          name.to_s.end_with?("!") || super
+        end
+      end
+    explanation: |
+      Calling `super` for names you do not handle preserves the normal `NoMethodError` (with the
+      right message and backtrace). `respond_to_missing?` is what makes `respond_to?` and `method`
+      agree with `method_missing`; without it `method(:fly!)` raises `NameError`. Overriding
+      `respond_to?` directly is the common wrong answer.
+    tags: [method_missing, respond_to_missing]
+    source: https://thoughtbot.com/blog/always-define-respond-to-missing-when-overriding
+
+  - slug: ruby-meta-code-compare-by-macro
+    kind: code
+    difficulty: senior
+    title: "`compare_by` macro that generates `<=>` and includes Comparable"
+    body: |
+      Add `compare_by(*attrs)` to `Module`. Calling it in a class must include `Comparable` and
+      define `<=>` that compares the arrays of the given attribute values (lexicographically, in
+      the order given). If `other` is not an instance of the same class, `<=>` must return `nil`
+      (so `<` raises `ArgumentError`, as Comparable expects).
+
+      ```ruby
+      class Version
+        attr_reader :major, :minor
+        def initialize(major, minor) = (@major, @minor = major, minor)
+        compare_by :major, :minor
+      end
+      Version.new(1, 2) < Version.new(1, 10)  # => true
+      ```
+    starter_code: |
+      class Module
+        def compare_by(*attrs)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        class Version
+          attr_reader :major, :minor
+          def initialize(major, minor) = (@major, @minor = major, minor)
+          compare_by :major, :minor
+        end
+
+        def test_ordering_and_equality
+          assert Version.new(1, 2) < Version.new(1, 10)
+          assert Version.new(2, 0) > Version.new(1, 99)
+          assert_equal Version.new(1, 2), Version.new(1, 2)
+          assert_equal Version.new(1, 5), [Version.new(2, 0), Version.new(1, 5), Version.new(1, 9)].min
+        end
+
+        def test_comparable_helpers
+          assert Version.new(1, 5).between?(Version.new(1, 0), Version.new(2, 0))
+          assert_equal Version.new(1, 0), Version.new(0, 9).clamp(Version.new(1, 0), Version.new(2, 0))
+        end
+
+        def test_different_types
+          assert_nil Version.new(1, 0) <=> "1.0"
+          assert_raises(ArgumentError) { Version.new(1, 0) < "1.0" }
+        end
+      end
+    solution: |
+      class Module
+        def compare_by(*attrs)
+          include Comparable
+          define_method(:<=>) do |other|
+            return nil unless other.is_a?(self.class)
+            attrs.map { |a| public_send(a) } <=> attrs.map { |a| other.public_send(a) }
+          end
+        end
+      end
+    explanation: |
+      `Comparable` derives `<`, `==`, `between?`, `clamp` etc. from a single `<=>`. `Array#<=>`
+      already compares element-wise, so mapping attributes to arrays gives lexicographic ordering
+      for free. Returning `nil` for foreign types is the contract: `Comparable#<` turns it into
+      `ArgumentError: comparison of Version with String failed`. Note `include` is a private method
+      of `Module`, callable here because `self` is the class.
+    tags: [comparable, define_method, dsl]
+    source: https://docs.ruby-lang.org/en/3.3/Comparable.html
+
+  - slug: ruby-meta-code-my-delegate
+    kind: code
+    difficulty: middle
+    title: "Implement a `my_delegate` macro (mini Forwardable)"
+    body: |
+      Add `my_delegate(*methods, to:)` to `Module`. For each method name it defines an instance
+      method that forwards positional args, keyword args and a block to the object returned by
+      calling `to` (a method name) on `self`, using `public_send`. Do not use `Forwardable`.
+
+      ```ruby
+      class Playlist
+        attr_reader :songs
+        def initialize(songs) = @songs = songs
+        my_delegate :size, :first, to: :songs
+      end
+      Playlist.new(%w[a b c]).first(2)  # => ["a", "b"]
+      ```
+    starter_code: |
+      class Module
+        def my_delegate(*methods, to:)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        class Playlist
+          attr_reader :songs
+          def initialize(songs) = @songs = songs
+          my_delegate :size, :first, :each, to: :songs
+          my_delegate :length, to: :name
+          def name = "mix"
+        end
+
+        def test_delegates_to_target
+          pl = Playlist.new(%w[a b c])
+          assert_equal 3, pl.size
+          assert_equal "a", pl.first
+          assert_equal 3, pl.length
+        end
+
+        def test_forwards_arguments_and_blocks
+          pl = Playlist.new(%w[a b c])
+          assert_equal %w[a b], pl.first(2)
+          seen = []
+          pl.each { |s| seen << s }
+          assert_equal %w[a b c], seen
+        end
+
+        def test_only_listed_methods_are_delegated
+          assert_raises(NoMethodError) { Playlist.new([]).push(1) }
+        end
+      end
+    solution: |
+      class Module
+        def my_delegate(*methods, to:)
+          methods.each do |m|
+            define_method(m) { |*args, **kw, &blk| send(to).public_send(m, *args, **kw, &blk) }
+          end
+        end
+      end
+    explanation: |
+      This is what `Forwardable#def_delegators` and Rails' `delegate` generate (Rails compiles a
+      string with `module_eval` for speed and better backtraces). Explicit delegation beats a
+      `method_missing` catch-all: the methods show up in `instance_methods`, `respond_to?` works
+      without extra code, and each call is a normal dispatch.
+    tags: [delegation, define_method, forwardable]
+    source: https://docs.ruby-lang.org/en/3.3/Forwardable.html
+
+  - slug: ruby-meta-code-dynamic-finders
+    kind: code
+    difficulty: senior
+    title: "Rails-style dynamic finders with first-call method definition"
+    body: |
+      `Repo.new(records)` wraps an array of hashes. Implement ghost methods `find_by_<attr>(value)`
+      that return the first record whose `attr` (symbol key) equals `value`, or `nil`. Requirements:
+
+      - unknown names (e.g. `find_all_by_name`, `destroy_all`) raise `NoMethodError`;
+      - `respond_to?(:find_by_name)` is true;
+      - on the **first** call, define the real method on the class (`self.class.define_method`)
+        so later calls bypass `method_missing`; `Repo.method_defined?(:find_by_id)` must become true.
+    starter_code: |
+      class Repo
+        def initialize(records)
+          @records = records
+        end
+
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def setup
+          @repo = Repo.new([{ id: 1, name: "ann" }, { id: 2, name: "bob" }])
+        end
+
+        def test_finds_by_any_attribute
+          assert_equal({ id: 2, name: "bob" }, @repo.find_by_name("bob"))
+          assert_equal({ id: 1, name: "ann" }, @repo.find_by_id(1))
+          assert_nil @repo.find_by_name("zed")
+        end
+
+        def test_respond_to
+          assert @repo.respond_to?(:find_by_name)
+          refute @repo.respond_to?(:find_all_by_name)
+        end
+
+        def test_unknown_methods_raise
+          assert_raises(NoMethodError) { @repo.destroy_all }
+        end
+
+        def test_method_is_defined_after_first_call
+          refute Repo.method_defined?(:find_by_age)
+          @repo.find_by_age(1)
+          assert Repo.method_defined?(:find_by_age)
+        end
+      end
+    solution: |
+      class Repo
+        def initialize(records)
+          @records = records
+        end
+
+        def method_missing(name, *args)
+          attr = finder_attr(name)
+          return super unless attr
+          self.class.define_method(name) { |value| @records.find { |r| r[attr] == value } }
+          public_send(name, *args)
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          !finder_attr(name).nil? || super
+        end
+
+        private
+
+        def finder_attr(name)
+          m = name.to_s.match(/\Afind_by_(\w+)\z/)
+          m && m[1].to_sym
+        end
+      end
+    explanation: |
+      ActiveRecord's `DynamicMatchers` does exactly this: `method_missing` matches the pattern,
+      defines a real method (via `class_eval`), then re-sends the call. The first call pays the
+      `method_missing` cost; subsequent calls are regular method dispatch, and the method becomes
+      visible to `method_defined?`, `instance_methods` and tooling. `define_method` is public since
+      Ruby 2.5, so `self.class.define_method` needs no `send`.
+    tags: [method_missing, define_method, rails, dynamic-finders]
+    source: https://github.com/rails/rails/blob/main/activerecord/lib/active_record/dynamic_matchers.rb
+
+  - slug: ruby-meta-code-memoize-with-prepend
+    kind: code
+    difficulty: senior
+    title: "A `memoize` class macro built on `prepend`"
+    body: |
+      Add `memoize(name)` to `Module`. It must wrap the instance method `name` so that results are
+      cached per instance and per argument list, including `nil` results. Implement it by
+      building a `Module.new` with a `define_method` that calls `super`, then `prepend`-ing it;
+      do **not** use `alias_method`. The original method must remain callable through `super`.
+
+      ```ruby
+      class Calc
+        def square(x) = x * x
+        memoize :square
+      end
+      ```
+    starter_code: |
+      class Module
+        def memoize(name)
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        class Calc
+          attr_reader :calls
+          def initialize = @calls = 0
+
+          def square(x)
+            @calls += 1
+            x * x
+          end
+          memoize :square
+
+          def nothing
+            @calls += 1
+            nil
+          end
+          memoize :nothing
+        end
+
+        def test_result_unchanged
+          c = Calc.new
+          assert_equal 9, c.square(3)
+          assert_equal 16, c.square(4)
+        end
+
+        def test_computes_once_per_args
+          c = Calc.new
+          3.times { c.square(3) }
+          c.square(4)
+          assert_equal 2, c.calls
+        end
+
+        def test_caches_nil
+          c = Calc.new
+          c.nothing
+          c.nothing
+          assert_equal 1, c.calls
+        end
+
+        def test_wrapper_is_prepended
+          owner = Calc.instance_method(:square).owner
+          refute_equal Calc, owner
+          assert Calc.ancestors.index(owner) < Calc.ancestors.index(Calc)
+          assert_equal Calc, Calc.instance_method(:square).super_method.owner
+        end
+      end
+    solution: |
+      class Module
+        def memoize(name)
+          wrapper = Module.new do
+            define_method(name) do |*args|
+              @__memo ||= {}
+              key = [name, args]
+              @__memo.key?(key) ? @__memo[key] : (@__memo[key] = super(*args))
+            end
+          end
+          prepend wrapper
+        end
+      end
+    explanation: |
+      `prepend` inserts the module *before* the class in the ancestor chain, so the wrapper's
+      method is found first and `super` reaches the original. This is the modern replacement for
+      alias-method chaining: no renamed copies, no double-wrapping if applied twice by accident
+      (well, it would nest, but predictably), and `super_method` shows the chain. Inside a
+      `define_method` block you must write `super(*args)` explicitly; bare `super` is not allowed there.
+    tags: [prepend, define_method, memoization, module-new]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-code-ivars-to-hash
+    kind: code
+    difficulty: junior
+    title: "Serialize any object's instance variables to a Hash"
+    body: |
+      Implement `to_h_from_ivars(obj)` that returns a Hash mapping each instance variable name
+      (without the `@`, as a Symbol) to its value, in definition order. Use `instance_variables`
+      and `instance_variable_get`.
+
+      ```ruby
+      class Pt
+        def initialize(x, y) = (@x, @y = x, y)
+      end
+      to_h_from_ivars(Pt.new(1, 2))  # => { x: 1, y: 2 }
+      ```
+    starter_code: |
+      def to_h_from_ivars(obj)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        class Pt
+          def initialize(x, y) = (@x, @y = x, y)
+        end
+
+        def test_extracts_ivars
+          assert_equal({ x: 1, y: 2 }, to_h_from_ivars(Pt.new(1, 2)))
+        end
+
+        def test_empty_object
+          assert_equal({}, to_h_from_ivars(Object.new))
+        end
+
+        def test_ivar_set_later
+          o = Object.new
+          o.instance_variable_set(:@name, "ann")
+          assert_equal({ name: "ann" }, to_h_from_ivars(o))
+        end
+      end
+    solution: |
+      def to_h_from_ivars(obj)
+        obj.instance_variables.to_h do |iv|
+          [iv.to_s.delete_prefix("@").to_sym, obj.instance_variable_get(iv)]
+        end
+      end
+    explanation: |
+      `instance_variables` lists only ivars that have been assigned (an `attr_accessor` alone adds
+      nothing), in assignment order. `instance_variable_get` takes the name *with* the `@`. This
+      is the core of naive serializers and of `inspect`; real libraries add cycle detection and
+      honour `as_json`/`to_h` hooks.
+    tags: [instance_variables, instance_variable_get, reflection]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-meta-send-vs-public-send
+    kind: mcq
+    difficulty: junior
+    title: "`send` vs `public_send` on a private method"
+    body: |
+      ```ruby
+      class Safe
+        private
+        def secret = 42
+      end
+
+      p Safe.new.send(:secret)
+      p Safe.new.public_send(:secret)
+      ```
+    choices:
+      - "`42` then `42`"
+      - "`42` then `NoMethodError: private method 'secret' called`"
+      - "`NoMethodError` on the first call"
+      - "`42` then `nil`"
+    answer: 1
+    explanation: |
+      `send` ignores visibility and can call private and protected methods, which makes it both
+      handy in tests and a way to break encapsulation. `public_send` respects visibility exactly like
+      a normal `obj.method` call. When dispatching on user-controlled method names, use
+      `public_send` (and ideally an allowlist) so callers cannot reach private internals.
+    tags: [send, public_send, visibility]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-meta-instance-variable-get-unset
+    kind: mcq
+    difficulty: junior
+    title: "Reading an instance variable that was never assigned"
+    body: |
+      ```ruby
+      class Box
+        attr_accessor :item
+      end
+
+      b = Box.new
+      p b.instance_variables
+      p b.instance_variable_get(:@item)
+      ```
+    choices:
+      - "`[:@item]` then `nil`"
+      - "`[]` then `NameError`"
+      - "`[]` then `nil`"
+      - "`[:@item]` then `NameError`"
+    answer: 2
+    explanation: |
+      Declaring an accessor does not create the variable; ivars exist only once assigned, so
+      `instance_variables` is empty. `instance_variable_get` returns `nil` for a missing ivar rather
+      than raising (it raises `NameError` only for a malformed name such as `:item` without `@`).
+      Use `instance_variable_defined?` to tell "unset" from "set to nil".
+    tags: [instance_variables, instance_variable_get]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-meta-instance-eval-def-on-class
+    kind: mcq
+    difficulty: middle
+    title: "`def` inside `instance_eval` on a class"
+    body: |
+      ```ruby
+      String.instance_eval do
+        def shout = upcase + "!"
+      end
+
+      p String.respond_to?(:shout)
+      p "hi".respond_to?(:shout)
+      ```
+    choices:
+      - "`false` then `true`: it defines an instance method, like `class_eval`"
+      - "`true` then `false`: it defines a singleton (class-level) method on `String`"
+      - "`true` then `true`"
+      - "`NoMethodError`: `instance_eval` is not defined on classes"
+    answer: 1
+    explanation: |
+      `instance_eval` sets `self` to the receiver *and* sets the "definee" for `def` to the
+      receiver's singleton class. For a class object that means `def` creates class methods. `class_eval`
+      (alias `module_eval`) sets the definee to the class itself, so `def` creates instance methods.
+      Rule of thumb: `instance_eval` to add to one object, `class_eval` to add to all instances.
+    tags: [instance_eval, class_eval, singleton]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-meta-method-missing-without-respond-to-missing
+    kind: mcq
+    difficulty: middle
+    title: "What breaks when you forget `respond_to_missing?`"
+    body: |
+      ```ruby
+      class Ghost
+        def method_missing(name, *args)
+          name.to_s.start_with?("get_") ? name : super
+        end
+      end
+
+      g = Ghost.new
+      p g.get_x
+      p g.respond_to?(:get_x)
+      g.method(:get_x)
+      ```
+    choices:
+      - "`:get_x`, `true`, returns a `Method`"
+      - "`:get_x`, `false`, raises `NameError: undefined method 'get_x'`"
+      - "`:get_x`, `true`, raises `NameError`"
+      - "`NoMethodError` on the first call because `super` is invoked"
+    answer: 1
+    explanation: |
+      `method_missing` only affects dispatch of unknown messages. Introspection (`respond_to?`,
+      `method`, `public_method`, `instance_method`) consults `respond_to_missing?`, which defaults to
+      `false`. Define `respond_to_missing?(name, include_private = false)` with the same predicate
+      and all three start agreeing. Libraries that duck-type with `respond_to?` (Rails, JSON
+      serializers, RSpec `instance_double`) depend on this.
+    tags: [method_missing, respond_to_missing]
+    source: https://thoughtbot.com/blog/always-define-respond-to-missing-when-overriding
+
+  - slug: ruby-meta-remove-method-vs-undef-method
+    kind: mcq
+    difficulty: middle
+    title: "`remove_method` vs `undef_method`"
+    body: |
+      ```ruby
+      class Parent; def hi = "parent"; end
+      class Child < Parent; def hi = "child"; end
+
+      Child.send(:remove_method, :hi)
+      p Child.new.hi
+      Child.send(:undef_method, :hi)
+      p Child.new.hi
+      ```
+    choices:
+      - "`\"parent\"` then `\"parent\"`"
+      - "`NoMethodError` then `NoMethodError`"
+      - "`\"parent\"` then `NoMethodError`"
+      - "`\"child\"` then `\"parent\"`"
+    answer: 2
+    explanation: |
+      `remove_method` deletes the definition from *this* class only, so lookup continues up the
+      ancestor chain and finds `Parent#hi`. `undef_method` installs a marker that stops lookup
+      dead, so even inherited implementations become unreachable and the call raises
+      `NoMethodError`. Both are private methods on `Module` (hence `send`).
+    tags: [remove_method, undef_method]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-anonymous-class-name
+    kind: mcq
+    difficulty: junior
+    title: "Naming an anonymous class"
+    body: |
+      ```ruby
+      klass = Class.new(StandardError)
+      p klass.name
+      MyError = klass
+      p klass.name
+      p klass.superclass
+      ```
+    choices:
+      - "`nil`, `\"MyError\"`, `StandardError`"
+      - "`\"#<Class:0x...>\"`, `\"MyError\"`, `StandardError`"
+      - "`nil`, `nil`, `StandardError`"
+      - "`nil`, `\"MyError\"`, `Object`"
+    answer: 0
+    explanation: |
+      `Class.new` (and `Module.new`) returns an anonymous class whose `name` is `nil`. The first
+      time it is assigned to a constant, Ruby names it after that constant, permanently. The
+      optional argument is the superclass, defaulting to `Object`. `inspect` on an anonymous class
+      shows `#<Class:0x...>`, but `name` itself is `nil`, which bites code that does `klass.name.underscore`.
+    tags: [class-new, anonymous-class]
+    source: https://docs.ruby-lang.org/en/3.3/Class.html
+
+  - slug: ruby-meta-prepend-vs-include-lookup
+    kind: mcq
+    difficulty: middle
+    title: "`prepend` vs `include` and method lookup"
+    body: |
+      ```ruby
+      module Loud; def hi = "loud"; end
+      class A; include Loud; def hi = "a"; end
+      class B; prepend Loud; def hi = "b"; end
+
+      p A.new.hi, B.new.hi
+      p B.ancestors.first(2)
+      ```
+    choices:
+      - "`\"a\"`, `\"b\"`, `[B, Loud]`"
+      - "`\"loud\"`, `\"loud\"`, `[Loud, B]`"
+      - "`\"a\"`, `\"loud\"`, `[Loud, B]`"
+      - "`\"loud\"`, `\"b\"`, `[B, Loud]`"
+    answer: 2
+    explanation: |
+      `include` inserts the module *after* the class in the ancestor chain, so the class's own
+      `hi` wins. `prepend` inserts it *before*, so `Loud#hi` shadows `B#hi` and can call it with
+      `super`. That is why `prepend` is the clean way to wrap existing methods (logging, memoization,
+      instrumentation) and the modern replacement for alias-method chaining.
+    tags: [prepend, include, ancestors]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-inherited-hook-timing
+    kind: mcq
+    difficulty: middle
+    title: "When does `inherited` fire?"
+    body: |
+      ```ruby
+      class Base
+        def self.inherited(sub)
+          puts "inherited #{sub}"
+          super
+        end
+      end
+
+      class Child < Base
+        puts "body"
+      end
+      ```
+    choices:
+      - "`body` then `inherited Child`"
+      - "`inherited Child` then `body`"
+      - "Only `body`; `inherited` fires on `Child.new`"
+      - "`inherited #<Class:0x...>` then `body`, because the name is not yet set"
+    answer: 1
+    explanation: |
+      `inherited` is invoked as soon as the subclass object is created by `class Child < Base`,
+      before the class body executes. The constant is already assigned at that moment, so `sub.name`
+      is `"Child"`. Consequence: inside `inherited` you cannot see methods the subclass body will
+      define later; frameworks that need that use `TracePoint(:end)` or defer work until first use.
+      Calling `super` keeps other hooks (e.g. from gems) working.
+    tags: [inherited, hooks]
+    source: https://docs.ruby-lang.org/en/3.3/Class.html
+
+  - slug: ruby-meta-refinements-scope-and-send
+    kind: mcq
+    difficulty: senior
+    title: "Refinement scope rules in Ruby 3.3"
+    body: |
+      ```ruby
+      module Shout
+        refine String do
+          def shout = upcase + "!"
+        end
+      end
+      ```
+
+      Which statement about activating and seeing this refinement is correct?
+    choices:
+      - "`using Shout` inside a method activates it for that method's body only"
+      - "`using Shout` is lexical (file or class body to its end); `send`, `public_send`, `respond_to?` and `method` all see the refined method within that scope"
+      - "Once any file calls `using Shout`, the method is visible everywhere `Shout` is loaded"
+      - "Refined methods are visible to direct calls but never to `send`"
+    answer: 1
+    explanation: |
+      `using` is permitted only at top level or in a class/module body (inside a method it raises
+      `RuntimeError: main.using is permitted only at toplevel`), and it applies lexically from that
+      line to the end of the file or body. Since Ruby 2.4-2.7 the dynamic entry points `send`,
+      `public_send`, `respond_to?`, `Kernel#method` and `instance_method` also honour refinements
+      active at the call site (verified on 3.3; older docs still say otherwise). Code in other files
+      never sees it, which is the whole point.
+    tags: [refinements, using]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/refinements_rdoc.html
+
+  - slug: ruby-meta-freeze-is-shallow
+    kind: mcq
+    difficulty: junior
+    title: "`freeze` is shallow"
+    body: |
+      ```ruby
+      list = ["x"].freeze
+      list[0] << "y"
+      p list
+      list << "z"
+      ```
+    choices:
+      - "`FrozenError` on `list[0] << \"y\"`"
+      - "`[\"xy\"]` then `FrozenError: can't modify frozen Array`"
+      - "`[\"xy\"]` then `[\"xy\", \"z\"]`"
+      - "`[\"x\"]` then `FrozenError`"
+    answer: 1
+    explanation: |
+      `freeze` marks only the receiver immutable; the strings inside are separate objects and stay
+      mutable. Appending to the array itself raises `FrozenError`. Deep freezing needs recursion
+      (or `Ractor.make_shareable`). `frozen?` reports the flag; integers, symbols, `nil`, `true` and
+      `false` are always frozen, and `# frozen_string_literal: true` freezes string literals.
+    tags: [freeze, frozen, immutability]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-meta-module-function-visibility
+    kind: mcq
+    difficulty: middle
+    title: "What does `module_function` do to the instance method?"
+    body: |
+      ```ruby
+      module Util
+        module_function
+        def double(x) = x * 2
+      end
+
+      p Util.double(2)
+      p Object.new.extend(Util).double(2)
+      ```
+    choices:
+      - "`4` then `4`"
+      - "`4` then `NoMethodError: private method 'double' called`"
+      - "`NoMethodError` on `Util.double`; only `extend self` enables that"
+      - "`4` then `nil`"
+    answer: 1
+    explanation: |
+      `module_function` copies each subsequent method onto the module's singleton (so
+      `Util.double` works) and makes the instance-method version *private*. Including or
+      extending the module therefore gives you a private helper, not a public one. Compare
+      `extend self`, which keeps one shared public implementation; and note the copy means later
+      redefinition of the instance method does not affect `Util.double`.
+    tags: [module_function, extend-self]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-allocate-skips-initialize
+    kind: mcq
+    difficulty: junior
+    title: "`Class#allocate` vs `new`"
+    body: |
+      ```ruby
+      class Conn
+        def initialize = @open = true
+      end
+
+      p Conn.allocate.instance_variables
+      p Conn.new.instance_variables
+      ```
+    choices:
+      - "`[:@open]` then `[:@open]`"
+      - "`[]` then `[:@open]`"
+      - "`NoMethodError: private method 'allocate'`"
+      - "`[]` then `[]`"
+    answer: 1
+    explanation: |
+      `new` is implemented as `allocate` followed by `initialize(*args)`. `allocate` alone returns
+      a blank instance with no ivars, which is what `Marshal.load`, `Object#dup`-style copying and
+      some ORMs use to rebuild objects without running constructor logic. It is public, but
+      building objects this way skips invariants `initialize` would enforce.
+    tags: [allocate, new, initialize]
+    source: https://docs.ruby-lang.org/en/3.3/Class.html
+
+  - slug: ruby-meta-method-missing-vs-define-method-cost
+    kind: mcq
+    difficulty: senior
+    title: "Dispatch cost: `method_missing` vs `define_method`"
+    body: |
+      You need `red`, `green` and `blue` accessors on a `Color` class and the list is fixed.
+      Which claim about performance is correct?
+    choices:
+      - "`method_missing` is faster because no methods are added to the method table"
+      - "`define_method` is faster: each call is a normal lookup that hits the inline/method cache, while `method_missing` pays a failed lookup plus an extra `method_missing` frame and symbol handling on every call"
+      - "They are equivalent after the first call because Ruby caches `method_missing` results"
+      - "`class_eval` with a string is slower than `define_method` because the string is re-parsed on every call"
+    answer: 1
+    explanation: |
+      Real methods participate in the VM's inline method caches, so repeated calls are cheap.
+      `method_missing` is reached only after the full lookup fails, then Ruby builds the call to
+      `method_missing(name, *args)`, allocating an args array each time. Ruby does not memoize
+      `method_missing` results. `class_eval` with a string is parsed once at definition and yields
+      the fastest methods of all (no block-call overhead), which is why Rails uses it for hot
+      paths. Pick `define_method` when names are known; `method_missing` when they are open-ended.
+    tags: [performance, method_missing, define_method, method-cache]
+    source: https://pluralsight.com/blog/software-development/7-deadly-sins-of-ruby-metaprogramming
+
+  - slug: ruby-meta-dunder-send-purpose
+    kind: mcq
+    difficulty: junior
+    title: "Why does `__send__` exist next to `send`?"
+    body: |
+      Both `obj.send(:m)` and `obj.__send__(:m)` call `m`. Why does Ruby ship both?
+    choices:
+      - "`__send__` is the private-only variant; `send` can call public methods only"
+      - "`send` is defined in `Kernel` and may be overridden or missing (e.g. `Socket#send`, `BasicObject` subclasses); `__send__` lives on `BasicObject` and is reserved so it stays reliable"
+      - "`__send__` is faster because it bypasses the method cache"
+      - "They are identical aliases; `__send__` is just the deprecated older name"
+    answer: 1
+    explanation: |
+      `send` is a `Kernel` method and a perfectly ordinary name: `Socket#send` sends bytes, and a
+      `BasicObject`-based proxy may not have `Kernel` at all. `__send__` (like `__id__`) is defined
+      on `BasicObject` and Ruby warns if you redefine it, so library code that must dispatch on
+      arbitrary objects uses `__send__`. Both bypass visibility; neither is faster.
+    tags: [send, __send__, basicobject]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-meta-open-method-missing-respond-to-missing
+    kind: open
+    difficulty: junior
+    title: "Explain `method_missing` and why it must be paired with `respond_to_missing?`"
+    body: |
+      What is `method_missing`, how does Ruby get there, and what else must you implement when
+      you override it?
+    answer: |
+      - When a message is sent, Ruby walks the receiver's ancestor chain; if no method is found
+        it calls `method_missing(name, *args, &block)` on the receiver, whose default (in
+        `BasicObject`) raises `NoMethodError`.
+      - Overriding it lets an object answer messages it has no method for ("ghost methods"):
+        dynamic finders, proxies, builders, `OpenStruct`-style records.
+      - Always call `super` for names you do not handle so real typos still raise.
+      - `respond_to?`, `method`, `public_method` do *not* consult `method_missing`; they consult
+        `respond_to_missing?(name, include_private)`. Implement it with the same predicate so
+        `respond_to?` is truthful and `method(:ghost)` returns a `Method`.
+      - Consider defining the method on first call (`define_method`) to avoid paying the lookup
+        miss every time, and keep the predicate cheap: `method_missing` is on the path for *every*
+        misspelled call.
+    explanation: |
+      Follow-ups: "What happens if `method_missing` itself has a typo inside?" (infinite recursion
+      or confusing `NoMethodError` from within `method_missing`), "Why is `method_missing` private?"
+      (so `obj.method_missing(:x)` is not a public API; `send` can still reach it).
+    tags: [method_missing, respond_to_missing]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-meta-open-define-method-vs-method-missing
+    kind: open
+    difficulty: middle
+    title: "`define_method` vs `method_missing`: when do you pick which?"
+    body: |
+      Both can give a class dynamic behaviour. Compare them on performance, introspection,
+      debuggability and the kind of problem each fits.
+    answer: |
+      - `define_method` creates real methods at load time: they appear in `instance_methods`,
+        `respond_to?` works for free, `method(:x).source_location` points at the `define_method`
+        line, and calls are ordinary cached dispatch.
+      - `method_missing` runs only after lookup fails, costs an extra frame and args allocation per
+        call, and needs `respond_to_missing?` to keep introspection honest; stack traces are less
+        obvious and typos can be swallowed.
+      - Use `define_method` when the set of names is finite and known when the class loads
+        (attributes from a schema, color constants, delegators, RSpec `let`).
+      - Use `method_missing` when names are open-ended or depend on runtime data (dynamic finders,
+        proxies that forward anything, builders for arbitrary XML tags), ideally defining the method
+        on first hit.
+      - `define_method` takes a block, so bodies are closures over the surrounding scope; bare
+        `super` is not allowed inside (use `super(*args)`), and blocks have slightly more call overhead
+        than `def` or string `class_eval`.
+      - Both can be abused; a plain `def` or a `Struct`/`Data` is often enough.
+    explanation: |
+      Follow-up: "How does Rails handle `user.name` for columns?" (it generates real methods via
+      `define_attribute_methods` on first instantiation, not `method_missing`, precisely for the
+      reasons above).
+    tags: [define_method, method_missing, performance]
+    source: https://pluralsight.com/blog/software-development/7-deadly-sins-of-ruby-metaprogramming
+
+  - slug: ruby-meta-open-class-eval-vs-instance-eval
+    kind: open
+    difficulty: middle
+    title: "`class_eval`, `instance_eval`, `class_exec`, `instance_exec`: what changes?"
+    body: |
+      For each of the four, what is `self` inside the block, what does `def` define, and when
+      would you use the `_exec` variants?
+    answer: |
+      - `Foo.class_eval { }` (alias `module_eval`): `self` is `Foo`; `def` defines *instance*
+        methods of `Foo`. Used to reopen a class you hold in a variable or to add methods from a
+        block/closure.
+      - `obj.instance_eval { }`: `self` is `obj`; `def` defines *singleton* methods on `obj`. On a
+        class object that means class methods. Also used for DSLs and for peeking at private state
+        in tests.
+      - `class_exec` / `instance_exec` are the same but pass arguments to the block, which is the
+        only way to inject values when the block is written elsewhere (`instance_exec(record, &callback)`).
+      - String forms exist (`class_eval "def x; end"`) and are parsed once; they can see constants
+        lexically and generate the fastest methods, at the cost of eval-style risks.
+      - All of them change the "default definee" and `self`, not the local-variable scope: locals
+        from the surrounding block remain visible (closures), unlike `class Foo; end` which opens a
+        fresh scope.
+    explanation: |
+      Follow-up: "What does `self` refer to inside `Class.new { }`?" (the new class; the block is
+      `class_eval`-ed). "Can you call `private` inside `class_eval`?" (yes, `self` is the module).
+    tags: [class_eval, instance_eval, class_exec, instance_exec]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-open-singleton-class
+    kind: open
+    difficulty: middle
+    title: "What is the singleton class, and how do `class << self`, `extend` and `define_singleton_method` relate to it?"
+    body: |
+      Explain where a "class method" actually lives and the different ways to add methods to a
+      single object.
+    answer: |
+      - Every object can have a hidden *singleton class* (eigenclass) inserted between the object
+        and its class in the lookup chain; `obj.singleton_class` reveals it. Methods there belong to
+        that one object.
+      - "Class methods" are singleton methods of the class object: `def self.x`, `class << self; def x`,
+        `define_singleton_method(:x) { }` and `String.instance_eval { def x }` all land in
+        `String.singleton_class`.
+      - `obj.extend(Mod)` includes `Mod` into `obj`'s singleton class, so `Mod`'s instance methods
+        become singleton methods of `obj`; `extend` inside a class body adds class methods, which is
+        the `included`-hook + `base.extend(ClassMethods)` pattern.
+      - `class << self` is a scope where `self` is the singleton class, so `attr_accessor` and
+        `private` there apply to class-level methods.
+      - The singleton class of a class inherits from the singleton class of its superclass, which is
+        why class methods are inherited.
+      - Immediates (Integer, Symbol, `nil`, `true`, `false`) cannot have singleton methods
+        (`TypeError`), and objects with singleton methods cannot be `Marshal.dump`-ed.
+    explanation: |
+      Follow-up: "What does `singleton_methods` return after `extend`?" (methods from the extended
+      module too, unless you pass `false`). "What is `Class.singleton_class.singleton_class`?" (it
+      goes on forever; the metaclass tower).
+    tags: [singleton-class, extend, class-methods]
+    source: https://docs.ruby-lang.org/en/3.3/Object.html
+
+  - slug: ruby-meta-open-module-hooks
+    kind: open
+    difficulty: middle
+    title: "Which module/class hooks does Ruby provide and what are they used for?"
+    body: |
+      Name the lifecycle hooks (`inherited`, `included`, ...) and give a concrete real-world use
+      for at least three of them.
+    answer: |
+      - `included(base)`, `extended(obj)`, `prepended(base)`: fire when the module is mixed in.
+        Classic use: `def self.included(base) = base.extend(ClassMethods)` to add class-level
+        macros (what `ActiveSupport::Concern` wraps in `included do ... end`).
+      - `inherited(subclass)`: fires on `class Sub < Base`; used for plugin registries
+        (`Base.subclasses`), STI setup, Rails `ApplicationRecord` behaviours. Call `super`.
+      - `method_added(name)`, `singleton_method_added`, `method_removed`, `method_undefined`:
+        used by memoizers and instrumentation to wrap a method right after it is defined, and by
+        tools like `Hoisting`/contract libraries.
+      - `const_missing(name)`: used for autoloading (Rails classic autoloader; Zeitwerk now uses
+        `Module#autoload` instead).
+      - `Module#append_features` / `prepend_features` are the lower-level versions that actually
+        perform the insertion; overriding them without `super` breaks the mix-in.
+      - Hooks are private instance methods of `Module`/`Class`; define them as `def self.xxx`.
+    explanation: |
+      Follow-up: "Why does the `included` hook see the host but `include` the module in the host
+      body does not need it?" (because the hook is the only place where the module code gets a
+      reference to `base`). "What goes wrong if you forget `super` in `inherited`?" (other gems'
+      hooks on the same class stop running).
+    tags: [hooks, included, inherited, method_added]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-open-refinements-tradeoffs
+    kind: open
+    difficulty: senior
+    title: "Refinements: what problem do they solve, and why does almost nobody use them?"
+    body: |
+      Compare monkey patching (`class String; def shout; end; end`) with a refinement. What are
+      the limitations that keep refinements rare in production code?
+    answer: |
+      - A monkey patch is global: every caller in the process sees it, two gems patching the same
+        method conflict, and upgrades can silently change behaviour (`Array#sum` vs ActiveSupport).
+      - A refinement (`refine String do ... end` inside a module, activated with `using`) is
+        lexically scoped: only code after `using` in that file/class body sees the new or overridden
+        method; other code, including code the refined method calls, does not.
+      - Limitations: `using` cannot be called inside a method or from `require`d code on your
+        behalf; refinements do not apply to `Kernel#method`/`respond_to?` in older rubies (they do in
+        3.x); they cannot refine singleton classes of specific objects well; `super` semantics are
+        subtle; tooling and YARD/IDE support is weaker; and the extra indirection has a small call cost.
+      - Where they shine: library-internal helpers (`refine Array do def second`), test DSLs, and
+        core-class extensions you must not leak (ActiveSupport does not use them historically because
+        its extensions are meant to be global).
+      - Alternatives interviewers like to hear: wrapper objects/decorators, helper modules, plain
+        functions.
+    explanation: |
+      Follow-up: "Does a refined method apply inside a block passed to `each` from the refined
+      scope?" (yes, lexical scope includes the block's source). "What does `Module#refinements`
+      return?" (the refinement modules, added in 3.2 for introspection).
+    tags: [refinements, monkey-patching]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/refinements_rdoc.html
+
+  - slug: ruby-meta-open-eval-dangers
+    kind: open
+    difficulty: senior
+    title: "Why is `eval` dangerous, and what do you reach for instead?"
+    body: |
+      A junior wrote `eval("@#{field} = value")` and `send("find_by_#{params[:key]}")` in a
+      controller. Explain the risks and the safer alternatives.
+    answer: |
+      - `eval` with interpolated input is remote code execution: `field = "x = 1; system('rm -rf /') #"`.
+        It also defeats the parser-once model (each call re-parses), breaks static analysis, and
+        makes error locations meaningless.
+      - `send` with user-controlled names lets a request reach *private* methods (`send(:destroy_all)`,
+        `send(:instance_variable_set, ...)`); `public_send` limits it to public methods but still
+        exposes everything public. Use an allowlist: `FINDERS.fetch(params[:key])`.
+      - `instance_variable_set("@#{field}", value)` avoids parsing but still allows arbitrary ivar
+        writes; validate `field` against known attributes first.
+      - `Marshal.load`, `YAML.unsafe_load`, `Kernel#open("|cmd")` and `const_get(user_string)` are
+        in the same family: deserialisation and reflection on untrusted input.
+      - Safer tools: `define_method` with closures instead of string eval, `Binding#local_variable_get`
+        for templating, `public_send` + allowlists, `Hash#fetch` dispatch tables, and `JSON.parse` for
+        data.
+      - Legitimate string-eval uses exist (ERB, Rails attribute methods, performance-critical
+        generated code) but the string must be built only from trusted, validated identifiers.
+    explanation: |
+      Follow-up: "Is `instance_eval` as dangerous as `eval`?" (with a string, yes; with a block, no
+      code is parsed at runtime). "How would you audit a codebase for this?" (`brakeman` flags
+      `send`/`eval`/`constantize` on params).
+    tags: [eval, security, send]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-meta-open-alias-method-chain-vs-prepend
+    kind: open
+    difficulty: senior
+    title: "Alias-method chaining vs `prepend` for wrapping a method"
+    body: |
+      ```ruby
+      class Order
+        alias_method :save_without_audit, :save
+        def save(*args)
+          audit!
+          save_without_audit(*args)
+        end
+      end
+      ```
+
+      This was the Rails 2-4 way (`alias_method_chain`). What problems does it have and how does
+      `prepend` fix them?
+    answer: |
+      - Chaining copies the original under a new name and redefines the method in the *same*
+        class. If two libraries do it, the second wraps the first, but if either is loaded twice
+        or reopened, `save_without_audit` may already be the wrapped version, giving double
+        execution or infinite recursion.
+      - It pollutes the class with `*_without_*` methods, `method(:save).owner` lies (it is still
+        `Order`), and `super` in subclasses behaves unexpectedly because the chain lives inside one
+        method table.
+      - `prepend` puts a module *before* the class in the ancestor chain: the wrapper is a normal
+        method that calls `super`; multiple wrappers stack in a predictable order visible in
+        `ancestors`; the original stays untouched and testable; `super_method` shows the chain.
+      - Caveats with `prepend`: it cannot be undone (no `unprepend`), prepended modules shadow the
+        class's own definitions forever, and `Module#prepend` on a class with an existing method
+        cache invalidates it (same as any redefinition).
+      - Rails removed `alias_method_chain` in 5.1 in favour of `Module#prepend`; `alias_method`
+        itself is still fine for genuinely giving a method a second name (`alias_method :to_s, :inspect`).
+    explanation: |
+      Follow-up: "How would you wrap a *class* method with `prepend`?" (`singleton_class.prepend(Mod)`).
+      "How does `Module#prepend` interact with `include` of the same module?" (a module can be
+      both included and prepended into the same class only once each; later calls are no-ops).
+    tags: [alias_method, prepend, decorator]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-open-delegation-options
+    kind: open
+    difficulty: middle
+    title: "Delegation in Ruby: `Forwardable`, `SimpleDelegator`, `method_missing`"
+    body: |
+      You are wrapping an `Order` with a presenter. Compare the three stdlib-level approaches and
+      say when each is appropriate.
+    answer: |
+      - `Forwardable` (`extend Forwardable; def_delegators :@order, :total, :items`): explicit,
+        generates real methods, `respond_to?` and docs work, no surprises. Best when you delegate a
+        known handful of methods. Rails' `delegate ... to:` is the same idea with `prefix`/`allow_nil`.
+      - `SimpleDelegator` (`class Presenter < SimpleDelegator`): forwards *every* unknown method to
+        the wrapped object via `method_missing`, lets you override some and call `super`,
+        `__getobj__`/`__setobj__` to access or swap the target. Best for decorators that should look
+        like the object; pitfalls: `is_a?`/`==`/`class` are not forwarded consistently, and it inherits
+        from `Delegator` which is a `BasicObject`-like shell so some `Kernel` methods are missing.
+      - Hand-written `method_missing` + `respond_to_missing?`: maximum control (filter names, log,
+        lazy targets), but you must handle visibility, blocks and performance yourself; use only when
+        the other two do not fit.
+      - Composition without any forwarding (explicit methods) is often clearest for a public API.
+    explanation: |
+      Follow-up: "What does `SimpleDelegator#==` return?" (true if the other object is the
+      wrapped object or equal to it). "Why can `SimpleDelegator` break `case obj when Order`?"
+      (`===` uses `is_a?`, which the delegator does not forward by default).
+    tags: [forwardable, simpledelegator, delegation]
+    source: https://docs.ruby-lang.org/en/3.3/SimpleDelegator.html
+
+  - slug: ruby-meta-open-rails-dynamic-finders
+    kind: open
+    difficulty: senior
+    title: "How does `User.find_by_email(...)` work in ActiveRecord?"
+    body: |
+      Walk through what happens on the first and the second call of a dynamic finder, and how
+      `respond_to?` stays correct.
+    answer: |
+      - `find_by_email` is not defined on `User`, so lookup fails and reaches
+        `ActiveRecord::DynamicMatchers#method_missing` on the class.
+      - It matches the name against the `find_by_*`/`find_by_*!` pattern and checks that the
+        attribute names are real columns (`attribute_method?`); otherwise `super` raises the usual
+        `NoMethodError`.
+      - It then *defines a real singleton method* on the model with `class_eval` (a string, for
+        speed and clean backtraces) whose body calls `find_by(email: email)`, and re-dispatches the
+        original call with `send`.
+      - Second call: the method exists, so normal dispatch runs; `method_missing` is never involved
+        again, and the method shows up in `User.methods`.
+      - `respond_to_missing?` is overridden with the same matcher so `User.respond_to?(:find_by_email)`
+        is true even before the first call.
+      - Historically `find_all_by_*`, `find_or_create_by_*` etc. were also dynamic; they were
+        removed in Rails 4 because the combinatorial explosion was hard to document and slow.
+        Column accessors (`user.email`) are generated eagerly via `define_attribute_methods`, not
+        through `method_missing`, for performance.
+    explanation: |
+      Follow-up: "Why `class_eval` with a string rather than `define_method`?" (no block-call
+      overhead, visible source in backtraces). "What is the risk of generating methods from
+      arbitrary names?" (method-table growth from attacker-controlled names; AR validates columns first).
+    tags: [rails, dynamic-finders, method_missing]
+    source: https://github.com/rails/rails/blob/main/activerecord/lib/active_record/dynamic_matchers.rb
+
+  - slug: ruby-meta-open-tracepoint-uses
+    kind: open
+    difficulty: senior
+    title: "What is `TracePoint` and what would you use it for?"
+    body: |
+      Describe the `TracePoint` API and give practical uses and costs.
+    answer: |
+      - `TracePoint.new(:call, :return, :raise, :line, :class, :end, :c_call, ...) { |tp| ... }`
+        registers a VM-level hook; `enable`/`disable` (or `enable { block }` for a scoped region)
+        turn it on. Inside the hook `tp.event`, `tp.method_id`, `tp.defined_class`, `tp.path`,
+        `tp.lineno`, `tp.binding`, `tp.return_value`, `tp.raised_exception` are available.
+      - Uses: debuggers and line coverage, profilers (`:call`/`:return` timings), finding where a
+        method is defined or who calls it in a legacy codebase, catching every exception raised
+        (`:raise`) including rescued ones, running code after a class body finishes (`:end`, used by
+        some frameworks instead of `inherited`), detecting monkey patches.
+      - Cost: enabled tracepoints disable some VM optimisations and YJIT for the traced region and
+        add a hook call per event; `:line` is especially heavy. Never leave them on in production;
+        scope them with `enable(target: method(:x))` (2.6+) to limit overhead.
+      - They replaced the old `set_trace_func` and are thread-wide unless targeted.
+    explanation: |
+      Follow-up: "How would you find which code redefined `String#to_s` at runtime?" (`TracePoint.new(:c_call)`
+      or `:call` filtering on `method_id`, or `Method#source_location` after the fact).
+    tags: [tracepoint, debugging, profiling]
+    source: https://docs.ruby-lang.org/en/3.3/TracePoint.html
+
+  - slug: ruby-meta-open-marshal-limits
+    kind: open
+    difficulty: middle
+    title: "What does `Marshal` do, what can it not serialise, and when is it unsafe?"
+    body: |
+      Explain `Marshal.dump`/`Marshal.load`, their limitations, and the security guidance.
+    answer: |
+      - `Marshal.dump(obj)` produces a binary string of the object graph (preserving shared
+        references and cycles); `Marshal.load` rebuilds it, allocating objects with `allocate` and
+        restoring ivars without calling `initialize`.
+      - Cannot dump: `Proc`/`Method`/`Binding`, `IO`/`File`/`Socket`, `Thread`, anonymous
+        classes/modules, singleton objects (objects with singleton methods), `MatchData`; you get
+        `TypeError`.
+      - Customise with `marshal_dump`/`marshal_load` (instance methods, preferred) or `_dump`/`_load`.
+      - Format is Ruby-version-specific-ish (major/minor header) and not meant for cross-language
+        or long-term storage; use JSON/MessagePack for that.
+      - Security: `Marshal.load` can instantiate any loaded class and call `marshal_load`/`_load`
+        hooks, so loading untrusted bytes is remote code execution; Rails cookie stores moved from
+        Marshal to JSON serialisers for this reason. `Marshal.load(str, freeze: true)` (3.1+) deep-freezes
+        the result but does not make it safe.
+      - Common legit uses: deep copy (`Marshal.load(Marshal.dump(obj))`), Rails cache stores,
+        `DRb`, Sidekiq-style job args in older stacks.
+    explanation: |
+      Follow-up: "Why does deep copy via Marshal fail for a model with a `Proc` validation?" (procs
+      cannot be dumped). "What is a safer deep copy?" (hand-written `dup` with `initialize_copy`,
+      or `Ractor.make_shareable(obj, copy: true)` for frozen structures).
+    tags: [marshal, serialization, security]
+    source: https://docs.ruby-lang.org/en/3.3/Marshal.html
+
+  - slug: ruby-meta-theory-method-lookup-path
+    kind: theory
+    difficulty: middle
+    title: "The method lookup path"
+    body: |
+      When you call `obj.foo`, Ruby searches, in order:
+
+      1. `obj`'s singleton class (methods from `def obj.foo`, `extend`, `define_singleton_method`),
+         including modules *prepended*/*included* into that singleton class;
+      2. modules prepended to `obj.class`;
+      3. `obj.class` itself;
+      4. modules included into `obj.class` (last included first);
+      5. the same three steps for each superclass up to `BasicObject`;
+      6. if nothing matches, `method_missing` is sent, starting again from step 1.
+
+      `Klass.ancestors` prints steps 2-5 flattened; the singleton class is not listed unless you
+      ask `obj.singleton_class.ancestors`.
+
+      ```ruby
+      module Pre;  def who = "pre";  end
+      module Inc;  def who = "inc";  end
+      class Base;  def who = "base"; end
+      class K < Base
+        prepend Pre
+        include Inc
+        def who = "k"
+      end
+      K.ancestors.first(4)   # => [Pre, K, Inc, Base]
+      k = K.new
+      def k.who = "single"
+      k.who                  # => "single"
+      K.new.who              # => "pre"
+      ```
+
+      `super` without arguments continues the search from the current position in this chain and
+      forwards the same arguments; `super()` forwards none. Method lookup results are cached per
+      call site; defining or removing any method, or including a module, invalidates caches for
+      the affected classes, which is why hot-path metaprogramming at runtime is costly.
+    answer: |
+      **Q:** `K` includes `Inc` and defines its own `who`; which wins, and what one change would
+      make `Inc#who` win without touching `K#who`?
+      **A:** `K#who` wins because the class sits before its included modules. Use `prepend Inc`
+      instead of `include` so the module is searched before the class.
+    explanation: |
+      Interviewers follow with "where do class methods live?" (the class's singleton class, whose
+      superclass is the superclass's singleton class) and "what is `Module#ancestors` of a
+      singleton class?"
+    tags: [method-lookup, ancestors, prepend, singleton-class]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-theory-method-missing-chain
+    kind: theory
+    difficulty: junior
+    title: "What happens when a method is not found"
+    body: |
+      A failed lookup is not an error yet; it is another message.
+
+      ```ruby
+      obj.frobnicate(1)
+      # lookup fails ->  obj.method_missing(:frobnicate, 1)
+      # BasicObject#method_missing  ->  raise NoMethodError
+      ```
+
+      - `BasicObject#method_missing` is the default; it raises `NoMethodError` ("undefined method
+        'frobnicate' for an instance of Foo"). `NoMethodError` is a subclass of `NameError`.
+      - You can override `method_missing(name, *args, **kwargs, &block)` anywhere in the chain. Handle
+        what you recognise and call `super` for the rest.
+      - `respond_to?(:frobnicate)` does **not** call `method_missing`; it calls
+        `respond_to_missing?(:frobnicate, include_private)`, which you must override too.
+      - `Kernel#method`, `public_method` and `Module#instance_method` also use `respond_to_missing?`
+        to decide whether to hand you a `Method` object for a ghost method.
+      - Private methods called with an explicit receiver also end up in `NoMethodError`, with the
+        message "private method ... called".
+
+      ```ruby
+      class Ghost
+        def method_missing(name, *args)
+          name.to_s.start_with?("ghost_") ? "boo" : super
+        end
+
+        def respond_to_missing?(name, include_private = false)
+          name.to_s.start_with?("ghost_") || super
+        end
+      end
+      Ghost.new.ghost_hi            # => "boo"
+      Ghost.new.respond_to?(:ghost_hi)  # => true
+      Ghost.new.other               # NoMethodError
+      ```
+    answer: |
+      **Q:** Why must a `method_missing` override call `super` for unknown names?
+      **A:** So Ruby still raises `NoMethodError` for genuine typos; swallowing every message hides
+      bugs and makes the object appear to respond to everything.
+    explanation: |
+      Related: `const_missing` is the same idea for constants (used by autoloaders), and
+      `Module#method_added` fires for every real definition, which is how some libraries wrap
+      methods automatically.
+    tags: [method_missing, respond_to_missing, nomethoderror]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-meta-theory-included-extend-pattern
+    kind: theory
+    difficulty: junior
+    title: "The `included` + `extend ClassMethods` pattern"
+    body: |
+      `include` adds *instance* methods only. To give a host class both instance and class-level
+      methods from one module, use the `included` hook.
+
+      ```ruby
+      module Trackable
+        def self.included(base)
+          base.extend(ClassMethods)       # class-level macros
+          base.instance_variable_set(:@tracked, [])
+        end
+
+        module ClassMethods
+          def track(*names) = @tracked.concat(names)
+          def tracked = @tracked
+        end
+
+        def changes = self.class.tracked.map { |n| [n, public_send(n)] }
+      end
+
+      class Order
+        include Trackable
+        attr_accessor :total
+        track :total
+      end
+      Order.tracked            # => [:total]
+      ```
+
+      - `self.included(base)` receives the including class (`Order`). `extended(obj)` and
+        `prepended(base)` are the equivalents for `extend` and `prepend`; `inherited(sub)` for
+        subclassing.
+      - State stored with `base.instance_variable_set` lives on the class object (a *class-level
+        instance variable*) and is not shared with other including classes, unlike `@@class_vars`.
+      - `ActiveSupport::Concern` packages exactly this: `included do ... end` runs a block in the host
+        with `class_eval`, and a nested `ClassMethods` module is extended automatically; it also
+        resolves dependencies between concerns.
+      - All hooks are private; define them with `def self.xxx` and call `super` if you expect
+        other modules in the chain to hook too.
+    answer: |
+      **Q:** Why does `include Trackable` alone not make `Order.track` available?
+      **A:** `include` only inserts `Trackable` into the instance lookup chain. Class methods live
+      in `Order`'s singleton class, which is why the hook has to `extend` the class explicitly.
+    explanation: |
+      Interview variant: "implement `included do ... end` yourself" (store the block, run it with
+      `base.class_eval(&block)` inside `included`).
+    tags: [included, extend, concern, hooks]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-meta-theory-everything-is-an-object
+    kind: theory
+    difficulty: junior
+    title: "Classes are objects: `Class.new`, `Module.new`, constants"
+    body: |
+      In Ruby, `class Foo; end` is a statement that (1) creates a `Class` instance and (2) assigns
+      it to the constant `Foo`. Everything you can do in the class keyword form you can do at
+      runtime with ordinary method calls.
+
+      ```ruby
+      Foo = Class.new(StandardError) do      # block is class_eval-ed: self is the new class
+        attr_reader :code
+        def initialize(code) = (@code = code; super("error #{code}"))
+      end
+      Foo.name          # => "Foo" (named when first assigned to a constant)
+      Foo.class         # => Class
+      Class.superclass  # => Module
+      Module.superclass # => Object
+
+      Helpers = Module.new { def self.shout(s) = s.upcase }
+      Object.const_set(:Dynamic, Class.new)     # define constants at runtime
+      Object.const_get("Process::Status")        # look them up by string, nested names ok
+      Foo.instance_methods(false)                # => [:code, :initialize]... reflection
+      ```
+
+      - Because classes are objects they have their own ivars (class-level instance variables),
+        singleton methods (class methods) and can be passed around, stored in hashes, or built in
+        loops (`%w[A B].each { |n| Object.const_set(n, Class.new(Base)) }`).
+      - `Class#new` = `allocate` + `initialize`; you can call `allocate` alone.
+      - `ObjectSpace.each_object(Class)` enumerates every class in the process; `Class#subclasses`
+        (3.1+) lists direct subclasses without `ObjectSpace`.
+      - `Struct.new` and `Data.define` (3.2+) are factories that return classes, which is why you
+        write `Point = Struct.new(:x, :y)`.
+    answer: |
+      **Q:** What does `Class.new.name` return, and when does it change?
+      **A:** `nil`. The class gets a name the first time it is assigned to a constant (including
+      via `const_set`), and keeps it from then on.
+    explanation: |
+      This card underpins questions such as "how does `Struct.new` return something you can
+      subclass?" and "why can you reopen `Integer`?" (it is just another `Class` object you can
+      send `class_eval` to).
+    tags: [object-model, class-new, const_get, struct]
+    source: https://docs.ruby-lang.org/en/3.3/Class.html
+
+  - slug: ruby-meta-theory-eval-family
+    kind: theory
+    difficulty: junior
+    title: "The eval family at a glance"
+    body: |
+      | method | receiver | `self` inside | `def` defines | takes args? | string form? |
+      |---|---|---|---|---|---|
+      | `eval(str, binding)` | Kernel | the binding's `self` | depends on binding | no | string only |
+      | `instance_eval` | any object | the object | singleton methods | no (yields receiver) | yes |
+      | `instance_exec` | any object | the object | singleton methods | yes | no |
+      | `class_eval` / `module_eval` | a Module | the module | instance methods | no | yes |
+      | `class_exec` / `module_exec` | a Module | the module | instance methods | yes | no |
+      | `Binding#eval` | a Binding | binding's `self` | as above | no | string only |
+
+      ```ruby
+      String.class_eval { def shout = upcase + "!" }      # "hi".shout works
+      "hi".instance_eval { @x = 1 }                       # sets ivar on that one string
+      acc = 0
+      [1, 2].each { |n| acc = acc.instance_exec(n) { |m| self + m } }
+      b = binding; z = 5; b.eval("z * 2")                 # => 10
+      ```
+
+      Rules of thumb:
+
+      - Prefer the block forms: nothing is parsed at runtime and syntax errors show at load.
+      - Use the `_exec` forms when the block needs parameters.
+      - String forms can see the surrounding *lexical* constants and produce the fastest methods
+        (no block indirection); the price is eval-grade security risk if any input is untrusted and
+        worse backtraces unless you pass `__FILE__, __LINE__`.
+      - All forms keep local variables from the enclosing scope (they are closures), unlike the
+        `class`/`def` keywords, which open fresh scopes.
+    answer: |
+      **Q:** You need to run a user-supplied block against a configuration object and pass it the
+      current environment name. Which eval-family method, and why?
+      **A:** `config.instance_exec(env, &block)`: it switches `self` to the config object so the
+      DSL methods resolve, and unlike `instance_eval` it can pass `env` as a block argument.
+    explanation: |
+      Follow-up: "What does `instance_eval` pass as the block argument?" (the receiver itself, so
+      `obj.instance_eval { |o| o == self }` is true). "Why does `Kernel#eval` need a `Binding` to
+      see locals?" (strings are compiled fresh; without a binding they run in the current scope only).
+    tags: [eval, instance_eval, class_eval, binding]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-meta-theory-performance-costs
+    kind: theory
+    difficulty: middle
+    title: "What metaprogramming costs at runtime"
+    body: |
+      Metaprogramming is free at load time and expensive when it happens per request or per call.
+
+      **Method cache invalidation.** The VM caches method lookups per call site and globally per
+      class. `define_method`, `remove_method`, `include`/`extend`/`prepend`, `alias_method` and
+      reopening a class all invalidate caches for that class hierarchy. Done once at boot: fine.
+      Done inside a hot loop (e.g. `obj.extend(Mod)` per record, `Class.new` per request): every
+      call site touching those classes goes cold again.
+
+      **Dispatch overhead, roughly from cheapest to dearest:**
+
+      1. `def` / string `class_eval` methods: plain dispatch, inline-cached, YJIT-friendly.
+      2. `define_method` methods: a block call per invocation (small constant overhead, closures keep
+         captured objects alive).
+      3. `send`/`public_send` with a dynamic name: lookup by symbol each call, no inline cache hit.
+      4. `method_missing`: full failed lookup, extra frame, args array; plus `respond_to_missing?`
+         for every `respond_to?`.
+      5. String `eval` at call time: parse + compile every call. Never in a hot path.
+
+      **Other costs**
+
+      - `ObjectSpace.each_object` walks the whole heap and stops the world: debugging only.
+      - `TracePoint`, `set_trace_func` and `binding` calls disable optimisations in their region;
+        `Kernel#binding` also pins all locals (memory).
+      - `instance_variable_set` with dynamic names skips the object-shape fast path when the set of
+        ivars differs per instance, which degrades shapes-based ivar access (3.2+).
+      - `Marshal` deep copies and `eval`-based templating allocate heavily; cache compiled
+        templates (ERB does this via `ERB#src` + `define_method`).
+
+      Rule: generate code once (boot, first call), then run ordinary methods. Measure with
+      `benchmark-ips` before and after; most "slow metaprogramming" is really an allocation problem.
+    answer: |
+      **Q:** A presenter calls `obj.extend(Formatting)` on every object it renders. Why is this slow
+      and what is the fix?
+      **A:** Each `extend` creates/alters a singleton class and invalidates method caches, so every
+      call site stays cold. Include the module in the class once (or wrap with a decorator object).
+    explanation: |
+      Senior follow-up: "How does YJIT change this?" (compiled code depends on cache validity, so
+      invalidation also discards JIT-ed code; stable class shapes matter even more).
+    tags: [performance, method-cache, define_method, method_missing, yjit]
+    source: https://pluralsight.com/blog/software-development/7-deadly-sins-of-ruby-metaprogramming

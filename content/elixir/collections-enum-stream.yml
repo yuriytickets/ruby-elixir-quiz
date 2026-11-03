@@ -1,0 +1,1691 @@
+language: elixir
+topic: collections-enum-stream
+items:
+  - slug: elixir-coll-prepend-vs-append
+    kind: mcq
+    difficulty: junior
+    title: "Which list operation is O(1)?"
+    body: |
+      `list` has one million elements. Which expression runs in constant time?
+    choices:
+      - "`list ++ [x]`"
+      - "`[x | list]`"
+      - "`length(list)`"
+      - "`Enum.at(list, 999_999)`"
+    answer: 1
+    explanation: |
+      Elixir lists are singly linked cons cells. Prepending creates one new cell pointing at the
+      existing list — O(1) and the old list is shared, not copied. `++` must copy its entire left
+      operand to attach a new tail (O(n)), `length/1` walks every cell (there is no cached size; that is
+      why it is called *length* and not *size*), and `Enum.at/2` walks `n` cells. This is why idiomatic
+      code builds lists by prepending and reverses once at the end.
+    tags: [lists, performance]
+    source: https://elixir.hexdocs.pm/List.html
+
+  - slug: elixir-coll-linked-list-model
+    kind: theory
+    difficulty: junior
+    title: "Lists are linked lists: what that buys and costs"
+    body: |
+      A list is a chain of **cons cells**; each cell holds a head value and a pointer to the tail:
+
+      ```elixir
+      [1, 2, 3] == [1 | [2 | [3 | []]]]   # true
+      [h | t] = [1, 2, 3]                   # h = 1, t = [2, 3]
+      hd([1, 2]); tl([1, 2])                # 1, [2]  (raise on [])
+      ```
+
+      Costs follow directly from the shape:
+
+      | operation                     | cost | why                                    |
+      |-------------------------------|------|----------------------------------------|
+      | `[x | list]`                  | O(1) | one new cell, tail shared              |
+      | `hd/1`, `tl/1`, pattern match | O(1) | first cell                             |
+      | `length/1`, `Enum.count/1`    | O(n) | no stored size                         |
+      | `Enum.at/2`, `List.last/1`    | O(n) | walk                                   |
+      | `a ++ b`                      | O(len a) | left side is copied, `b` is shared |
+      | `list -- other`               | O(n*m) | each element of `other` searched (optimised in OTP 22+ but still not cheap) |
+
+      Naming convention: functions called `size` (`tuple_size`, `byte_size`, `map_size`) are O(1);
+      functions called `length` (`length`, `String.length`) are O(n).
+
+      Because the tail is shared, lists are cheap to "update at the front" and perfectly safe to pass
+      around — nothing can mutate a cell. The trade-off is no random access: if you need indexing,
+      use a tuple (fixed size), a map, or `:array`. `[_, _, _ | _]` is an O(1) way to test
+      "at least three elements" instead of `length(l) >= 3`.
+    answer: |
+      **Q:** Why does the Erlang efficiency guide tell you to write `[h | acc]` instead of
+      `acc ++ [h]` in a loop?
+      **A:** `++` copies its left operand, so appending inside a loop copies the growing accumulator
+      every iteration — O(n²) total. Prepending is O(1) per step; reverse once at the end for O(n).
+    explanation: |
+      Follow-ups: "Is `length/1` ever acceptable in a guard?" (yes for short lists; it is a BIF in C,
+      but prefer patterns for hot paths) and "what is an improper list?" (`[1 | 2]`, tail not a list;
+      `length/1` raises on it, patterns do not).
+    tags: [lists, cons, performance]
+    source: https://elixir.hexdocs.pm/lists-and-tuples.html
+
+  - slug: elixir-coll-append-in-loop-quadratic
+    kind: open
+    difficulty: middle
+    title: "Why is this O(n²) and how do you fix it?"
+    body: |
+      ```elixir
+      def doubled(list) do
+        Enum.reduce(list, [], fn x, acc -> acc ++ [x * 2] end)
+      end
+      ```
+      Explain the complexity, give the idiomatic rewrite, and mention the standard-library helpers
+      that make the rewrite shorter.
+    answer: |
+      - `acc ++ [x * 2]` copies the whole left operand (`acc`) every iteration: 1 + 2 + … + n cell
+        copies, i.e. O(n²) time and garbage.
+      - Idiomatic: prepend and reverse once — `Enum.reduce(list, [], &[&1 * 2 | &2]) |> Enum.reverse()`.
+        Each prepend is O(1); one O(n) reverse at the end.
+      - `Enum.reverse/2` reverses onto an existing tail (`Enum.reverse(acc, tail)`), which is handy when
+        you need to glue a suffix on without a second `++`.
+      - Of course the real fix is `Enum.map(list, &(&1 * 2))` — `map` already builds the list in
+        order internally (body recursion). Reach for `reduce` only when `map`/`filter`/`flat_map`
+        do not fit.
+      - Same anti-pattern with strings: `acc <> piece` in a loop copies; use iolists and
+        `IO.iodata_to_binary/1` or `Enum.join/2`.
+    explanation: |
+      Follow-up: "What about `[x * 2] ++ acc`?" Fine — the left operand is one element; the compiler
+      even rewrites it to a cons. "Does the BEAM optimise `++` when the right side is empty?" No;
+      `acc ++ []` still copies `acc`.
+    tags: [lists, performance, reduce]
+    source: https://www.erlang.org/doc/system/commoncaveats.html
+
+  - slug: elixir-coll-tuples-vs-lists
+    kind: theory
+    difficulty: junior
+    title: "Tuples: contiguous, fixed-size, not enumerable"
+    body: |
+      A tuple is a fixed-size block of contiguous memory. Index access is O(1); "updating" copies the
+      tuple (O(n) in the size of the tuple, but elements are shared, not deep-copied):
+
+      ```elixir
+      t = {:ok, "body", 200}
+      elem(t, 2)             #=> 200          O(1)
+      tuple_size(t)          #=> 3            O(1)
+      put_elem(t, 2, 404)    #=> {:ok, "body", 404}   new tuple, old one unchanged
+      Tuple.to_list(t); List.to_tuple([1, 2])
+      ```
+
+      When to use which (the official guide's rule):
+
+      - **Tuple**: a fixed number of elements with positional meaning — `{:ok, value}`,
+        `{:error, reason}`, `{x, y}`, a record. The *shape* is the type.
+      - **List**: a variable-length collection of similar things — `String.split/1` output, a queue of
+        jobs.
+
+      Tuples do **not** implement `Enumerable`: `Enum.map({1, 2}, f)` raises `Protocol.UndefinedError`.
+      That is deliberate; a tuple is a product type, not a collection. Convert with `Tuple.to_list/1`
+      if you really must iterate. Large tuples used as arrays are an anti-pattern because every
+      `put_elem/3` copies the whole thing — `:array` or a map is the answer there.
+
+      Tuples compare element by element and are ordered after numbers and atoms in term order, which
+      is why `{1, :b} < {1, :c}` and `Enum.sort/1` on tuples sorts by first element, then second.
+    answer: |
+      **Q:** Why does `Enum.count({:a, :b, :c})` raise, and what should you call instead?
+      **A:** Tuples are not `Enumerable` — they represent fixed shapes, not collections. Use
+      `tuple_size/1` (O(1)), or `Tuple.to_list/1` if you really need `Enum`.
+    explanation: |
+      Follow-ups: "Is `put_elem/3` O(1)?" — no, it copies the tuple header and pointers (O(n) in tuple
+      size), though the element values are shared. "Why are tagged tuples preferred over exceptions for
+      expected failures?" — they are data, pattern-matchable in `case`/`with`, and cost nothing.
+    tags: [tuples, lists, data-structures]
+    source: https://elixir.hexdocs.pm/lists-and-tuples.html
+
+  - slug: elixir-coll-map-internals
+    kind: open
+    difficulty: senior
+    title: "How are maps implemented on the BEAM, and what follows from it?"
+    body: |
+      Describe the internal representation of maps in Erlang/OTP (small vs large), the complexity of
+      common operations, and the practical consequences for how you write Elixir code.
+    answer: |
+      - Up to **32 keys**, a map is a *flatmap*: a sorted tuple of keys plus a tuple of values. Lookup is
+        a binary/linear scan over at most 32 keys (effectively O(1)); updating an existing key copies
+        only the values tuple, and the **key tuple is shared** between maps with the same keys (so
+        structs, which all share one key set, are memory-cheap).
+      - Above 32 keys it becomes a **HAMT** (hash array mapped trie): O(log n) lookup/insert/delete with
+        structural sharing on update, higher per-map overhead (a 33-key map costs ~10x the words of a
+        32-key one).
+      - Iteration order is **not guaranteed**: small maps iterate in internal key order (for atom keys
+        since OTP 26 that is not alphabetical), large maps in hash order. Never depend on `Map.keys/1`
+        order; sort explicitly.
+      - `map_size/1` is O(1) (it is a `size`). `Map.keys/1`/`values/1`/`to_list/1` are O(n).
+      - Consequences: prefer map literals and `%{m | k: v}` syntax (the compiler batches multi-key
+        matches/updates on small maps); use `:=` style matching (`%{k: v} = m`) to catch typos; create
+        maps with all keys up front so key tuples are shared; `Map.merge/2` with a defaults map beats
+        repeated `Map.put_new/3`; a map with 33 keys may deserve splitting into sub-maps if you hold
+        millions of them.
+      - Keys can be any term, compared with `===` semantics (`1` and `1.0` are different keys).
+    explanation: |
+      Follow-ups: "Why does `%{b: 1, a: 2}` sometimes print as `%{a: 2, b: 1}` and sometimes not?"
+      (small-map key order depends on atom creation order on OTP 26+.) "Difference between `map.key`
+      and `map[:key]`?" (dot raises `KeyError` when missing; bracket returns `nil` through `Access`.)
+    tags: [maps, hamt, internals, performance]
+    source: https://www.erlang.org/doc/system/maps.html
+
+  - slug: elixir-coll-map-update-default
+    kind: mcq
+    difficulty: junior
+    title: "What does `Map.update/4` do with a missing key?"
+    body: |
+      ```elixir
+      m = %{a: 1}
+      Map.update(m, :b, 10, &(&1 * 2))
+      ```
+    choices:
+      - "`%{a: 1, b: 20}` — the default is passed through the function"
+      - "`%{a: 1, b: 10}` — the default is inserted as-is; the function runs only for existing keys"
+      - "`%{a: 1}` — missing keys are ignored"
+      - "Raises `KeyError`; use `Map.update!/3` to insert"
+    answer: 1
+    explanation: |
+      `Map.update(map, key, default, fun)` applies `fun` to the current value **only if the key
+      exists**; otherwise it stores `default` untouched. So counting words with
+      `Map.update(acc, word, 1, &(&1 + 1))` works because the first occurrence inserts `1` directly.
+      People who assume "default then fun" write `Map.update(acc, w, 0, &(&1 + 1))` and get counts
+      off by one. `Map.update!/3` is the strict sibling that raises on a missing key.
+    tags: [maps, update]
+    source: https://elixir.hexdocs.pm/Map.html
+
+  - slug: elixir-coll-code-word-frequencies
+    kind: code
+    difficulty: junior
+    title: "Count word frequencies, case-insensitively"
+    body: |
+      Write `Words.frequencies/1` that takes a sentence and returns a map of lowercase word →
+      count. Split on whitespace, strip the punctuation `.,!?` from word edges, and ignore empty
+      strings.
+
+      ```elixir
+      Words.frequencies("The cat. the CAT, a dog!")
+      #=> %{"the" => 2, "cat" => 2, "a" => 1, "dog" => 1}
+      ```
+
+      Also write `Words.top(sentence, n)` returning the `n` most frequent words as `{word, count}`
+      tuples, highest count first, ties broken alphabetically.
+    starter_code: |
+      defmodule Words do
+        def frequencies(sentence) do
+          # TODO
+        end
+
+        def top(sentence, n) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule WordsFreqTest do
+        use ExUnit.Case
+
+        test "counts case-insensitively and strips punctuation" do
+          assert Words.frequencies("The cat. the CAT, a dog!") ==
+                   %{"the" => 2, "cat" => 2, "a" => 1, "dog" => 1}
+        end
+
+        test "empty and whitespace-only input" do
+          assert Words.frequencies("") == %{}
+          assert Words.frequencies("   ") == %{}
+        end
+
+        test "top n with ties broken alphabetically" do
+          assert Words.top("b a b a c", 2) == [{"a", 2}, {"b", 2}]
+          assert Words.top("b a b a c", 5) == [{"a", 2}, {"b", 2}, {"c", 1}]
+        end
+
+        test "top 0" do
+          assert Words.top("x y", 0) == []
+        end
+      end
+    solution: |
+      defmodule Words do
+        def frequencies(sentence) do
+          sentence
+          |> String.downcase()
+          |> String.split()
+          |> Enum.map(&String.replace(&1, ~r/^[.,!?]+|[.,!?]+$/, ""))
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.frequencies()
+        end
+
+        def top(sentence, n) do
+          sentence
+          |> frequencies()
+          |> Enum.sort_by(fn {word, count} -> {-count, word} end)
+          |> Enum.take(n)
+        end
+      end
+    explanation: |
+      `Enum.frequencies/1` is the stdlib one-liner for the classic `Enum.reduce(words, %{}, &Map.update(&2, &1, 1, fn c -> c + 1 end))`.
+      `String.split/1` with no pattern splits on runs of whitespace and drops empties, so only the
+      edge-punctuation strip needs a `reject` (note `String.trim/2` strips a literal *string*, not a
+      character set, hence the regex). For `top/2`, sorting by the tuple `{-count, word}` gets
+      "descending count, then ascending word" in a single stable sort — a trick interviewers like
+      because it avoids a comparator function. `Enum.map/2` over a map yields `{k, v}` tuples, which is
+      exactly the shape `top/2` returns.
+    tags: [maps, frequencies, sort_by, code]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-keyword-vs-map
+    kind: open
+    difficulty: middle
+    title: "Keyword lists vs maps: when do you use which?"
+    body: |
+      Compare keyword lists and maps. Cover representation, performance, ordering, duplicates,
+      pattern matching and the conventions for function options.
+    answer: |
+      - A keyword list is a plain list of `{atom, value}` tuples: `[a: 1]` is `[{:a, 1}]`. Maps are
+        a hash-based structure keyed by any term.
+      - Lookup: keyword lists are O(n) (`Keyword.get/3` scans); maps are effectively O(1)/O(log n).
+      - Ordering: keyword lists keep insertion order and allow **duplicate keys** (`Keyword.get/2`
+        returns the first, `get_values/2` all). Maps have one value per key and no reliable order.
+      - Pattern matching: matching a keyword list requires exact order and count
+        (`[a: _, b: _]` does not match `[b: 1, a: 2]`), so the docs tell you not to match on them; maps
+        match on a subset of keys in any order (`%{a: a} = map`).
+      - Convention: keyword lists for **options** passed to functions (`String.split(s, ",", trim: true)`
+        — brackets can be dropped when it is the last argument; `Keyword.validate!/2` checks allowed
+        keys, `Keyword.merge/2` for defaults). Maps for **data** — anything you look up, store, pattern
+        match or serialize.
+      - Keyword lists are also what `import ... only:` and Ecto's `order_by`/`where` DSLs use because
+        order and duplicates carry meaning.
+      - `Keyword` functions mirror `Map` functions but are slower; converting with `Map.new/1` loses
+        duplicates and order.
+    explanation: |
+      Follow-ups: "Why not use a map for options?" (readability — `fun(x, trim: true)` — plus
+      duplicates/order are sometimes meaningful; small lists are fast enough.) "What does
+      `Keyword.put/3` do with duplicates?" (removes all existing entries for the key and prepends.)
+    tags: [keyword-lists, maps, options]
+    source: https://elixir.hexdocs.pm/keywords-and-maps.html
+
+  - slug: elixir-coll-keyword-pattern-pitfall
+    kind: mcq
+    difficulty: middle
+    title: "Why does this function clause not match?"
+    body: |
+      ```elixir
+      defmodule Opts do
+        def run(a: a, b: b), do: {a, b}
+      end
+
+      Opts.run(b: 2, a: 1)
+      ```
+    choices:
+      - "`{1, 2}` — keyword lists are matched by key, not position"
+      - "`{2, 1}` — values are bound positionally"
+      - "`FunctionClauseError` — a keyword list pattern requires the same keys in the same order and no extras"
+      - "Compile error: keyword patterns are not allowed in function heads"
+    answer: 2
+    explanation: |
+      `[a: a, b: b]` is sugar for `[{:a, a}, {:b, b}]` — a list pattern with two elements in a fixed
+      order. `[b: 2, a: 1]` is `[{:b, 2}, {:a, 1}]`: first element `{:b, 2}` does not match `{:a, a}`,
+      so no clause matches. This is why the `Keyword` docs advise against pattern matching on keyword
+      lists; use `Keyword.get/3`/`Keyword.fetch!/2`, or accept a map and match `%{a: a, b: b}` (order
+      and extra keys do not matter for map patterns).
+    tags: [keyword-lists, pattern-matching]
+    source: https://elixir.hexdocs.pm/Keyword.html
+
+  - slug: elixir-coll-random-seeding
+    kind: open
+    difficulty: middle
+    title: "`Enum.random/1`, `Enum.shuffle/1` and tests: how do you make randomness deterministic?"
+    body: |
+      A test that uses `Enum.random/1` is flaky. How does randomness work in Elixir, how do you seed
+      it, and what is the clean way to test code that picks random elements?
+    answer: |
+      - `Enum.random/1`, `Enum.shuffle/1`, `Enum.take_random/2` and `:rand.uniform/1` all use the
+        `:rand` module, whose state is **per process** (stored in the process dictionary) and seeded
+        automatically on first use.
+      - `:rand.seed(:exsss, {1, 2, 3})` (or `:rand.seed(:default, {1, 2, 3})`) in the test process makes
+        the sequence reproducible — but only in that process; a GenServer under test has its own
+        state.
+      - `Enum.random/1` on a **range** is O(1) (it picks an integer without materialising the range);
+        on a list it must traverse (reservoir-style / `length` + `Enum.at`), so it is O(n).
+      - Clean testing: inject the choice — pass a `picker` function (`fn list -> Enum.random(list) end`
+        by default, `&hd/1` in tests), or assert properties (`result in candidates`) instead of exact
+        values; or use StreamData for property tests.
+      - `Enum.random/1` raises `Enum.EmptyError` on an empty enumerable; guard for it.
+    explanation: |
+      Follow-up: "Is `:rand` cryptographically secure?" No — use `:crypto.strong_rand_bytes/1` for
+      tokens. "Why did ExUnit print `seed: 12345`?" That seed orders *tests*, it does not seed `:rand`
+      inside them.
+    tags: [random, testing, rand]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-enum-vs-stream-theory
+    kind: theory
+    difficulty: middle
+    title: "Enum is eager, Stream is lazy"
+    body: |
+      Every `Enum` function **traverses its input immediately** and returns a concrete result
+      (usually a list). Chaining them creates an intermediate list per step:
+
+      ```elixir
+      1..1_000_000
+      |> Enum.map(&(&1 * 3))        # 1M-element list allocated
+      |> Enum.filter(&odd?/1)       # 500k-element list allocated
+      |> Enum.take(5)               # finally 5 elements
+      ```
+
+      `Stream` functions return a **`%Stream{}` struct** that only *describes* the computation:
+
+      ```elixir
+      s = 1..1_000_000 |> Stream.map(&(&1 * 3)) |> Stream.filter(&odd?/1)
+      # nothing has run yet; s is %Stream{enum: 1..1000000, funs: [...]}
+      Enum.take(s, 5)   #=> [3, 9, 15, 21, 27]  — only ~10 elements were ever touched
+      ```
+
+      Work happens when an `Enum` function (or `Stream.run/1`, or `Enum.to_list/1`) consumes the
+      stream; elements flow one at a time through every stage, so no intermediate collections exist
+      and the pipeline can stop early.
+
+      When streams pay off:
+
+      - large inputs where intermediate lists would not fit comfortably in memory;
+      - **infinite** sources (`Stream.iterate/2`, `Stream.cycle/1`, `Stream.unfold/2`);
+      - slow or external sources — files (`File.stream!/1`), sockets, paginated APIs via
+        `Stream.resource/3` — where you want to read only as much as needed;
+      - long pipelines where only a prefix is consumed (`take`, `find`, `take_while`).
+
+      When they do not: small collections and short pipelines — each stream stage adds a closure call
+      per element and the final `Enum` step still builds the result; for a list of 100 items
+      `Enum.map |> Enum.filter` is faster and simpler. A stream is re-evaluated every time it is
+      consumed, so side effects inside `Stream.map` run again on each `Enum` call.
+    answer: |
+      **Q:** `Stream.map([1, 2, 3], &IO.inspect/1)` prints nothing in iex. Why, and what prints it?
+      **A:** `Stream.map/2` returns a lazy `%Stream{}`; the function has not been called. Consuming it
+      with `Enum.to_list/1`, `Enum.each/2`, `Stream.run/1` or any other `Enum` function triggers it.
+    explanation: |
+      Interview angles: "What is the time complexity difference?" (none — both O(n); the difference
+      is memory and the ability to stop early) and "Can you `Stream.map` over a `Stream.cycle` and call
+      `Enum.map` on it?" (no — `Enum.map` would never terminate; bound it with `take`).
+    tags: [enum, stream, laziness]
+    source: https://elixir.hexdocs.pm/enumerable-and-streams.html
+
+  - slug: elixir-coll-stream-map-returns
+    kind: mcq
+    difficulty: junior
+    title: "What does `Stream.map/2` return?"
+    body: |
+      ```elixir
+      result = Stream.map([1, 2, 3], &(&1 * 2))
+      ```
+      What is `result`?
+    choices:
+      - "`[2, 4, 6]`"
+      - "A `%Stream{}` struct; nothing has been computed yet"
+      - "A `Task` that computes the list in the background"
+      - "A zero-arity function you call with `result.()`"
+    answer: 1
+    explanation: |
+      `Stream.map/2` (like every `Stream` *transformation*) returns a lazy enumerable — a `%Stream{}`
+      struct holding the source and a list of pending transformations. (Generators such as
+      `Stream.unfold/2` and `Stream.iterate/2` instead return a 2-arity function, which also implements
+      `Enumerable`; either way nothing runs until consumed.) The mapping function runs only
+      when the stream is consumed by an `Enum` function or `Stream.run/1`. `Enum.to_list(result)` gives
+      `[2, 4, 6]`. It is not a `Task` (no process is spawned) and not a plain function, although a stream
+      is conceptually "a function that knows how to reduce itself".
+    tags: [stream, laziness]
+    source: https://elixir.hexdocs.pm/Stream.html
+
+  - slug: elixir-coll-code-fibonacci-stream
+    kind: code
+    difficulty: middle
+    title: "An infinite Fibonacci stream"
+    body: |
+      Write `Fib.stream/0` returning an **infinite** lazy stream of Fibonacci numbers
+      `0, 1, 1, 2, 3, 5, …` (use `Stream.unfold/2` or `Stream.iterate/2`), and
+      `Fib.even_below(limit)` returning the list of even Fibonacci numbers strictly below `limit`.
+
+      ```elixir
+      Fib.stream() |> Enum.take(8)  #=> [0, 1, 1, 2, 3, 5, 8, 13]
+      Fib.even_below(100)           #=> [0, 2, 8, 34]
+      ```
+    starter_code: |
+      defmodule Fib do
+        def stream do
+          # TODO: infinite lazy stream
+        end
+
+        def even_below(limit) do
+          # TODO: use stream/0, stop as soon as values reach limit
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FibStreamTest do
+        use ExUnit.Case
+
+        test "first numbers" do
+          assert Enum.take(Fib.stream(), 8) == [0, 1, 1, 2, 3, 5, 8, 13]
+        end
+
+        test "is lazy and infinite" do
+          refute is_list(Fib.stream())
+          assert Enumerable.impl_for(Fib.stream()) != nil
+          assert Enum.at(Fib.stream(), 50) == 12_586_269_025
+        end
+
+        test "even below limit" do
+          assert Fib.even_below(100) == [0, 2, 8, 34]
+          assert Fib.even_below(1) == [0]
+          assert Fib.even_below(0) == []
+        end
+
+        test "even_below terminates on large limits" do
+          assert List.last(Fib.even_below(4_000_000)) == 3_524_578
+        end
+      end
+    solution: |
+      defmodule Fib do
+        def stream do
+          Stream.unfold({0, 1}, fn {a, b} -> {a, {b, a + b}} end)
+        end
+
+        def even_below(limit) do
+          stream()
+          |> Stream.take_while(&(&1 < limit))
+          |> Enum.filter(&(rem(&1, 2) == 0))
+        end
+      end
+    explanation: |
+      `Stream.unfold(acc, fun)` emits `value` and carries `next_acc` from each `{value, next_acc}`;
+      returning `nil` would end the stream, which we never do, so the stream is infinite. (Unlike
+      `Stream.map/2`, `unfold` returns a 2-arity function rather than a `%Stream{}`; functions of arity 2
+      implement `Enumerable`, so it composes the same way.)
+      `Stream.iterate({0, 1}, fn {a, b} -> {b, a + b} end) |> Stream.map(&elem(&1, 0))` is the other
+      common shape. The important part of `even_below/1` is `Stream.take_while/2` **before** the eager
+      `Enum.filter/2`: filtering an infinite stream eagerly never returns. `Enum.at/2` on a stream walks
+      only as far as needed.
+    tags: [stream, unfold, infinite, code]
+    source: https://elixir.hexdocs.pm/Stream.html
+
+  - slug: elixir-coll-stream-iterate-take
+    kind: mcq
+    difficulty: middle
+    title: "What does this stream pipeline evaluate to?"
+    body: |
+      ```elixir
+      Stream.iterate(1, &(&1 * 2))
+      |> Stream.map(&(&1 + 1))
+      |> Stream.drop(1)
+      |> Enum.take(4)
+      ```
+    choices:
+      - "`[2, 3, 5, 9]`"
+      - "`[3, 5, 9, 17]`"
+      - "`[2, 4, 8, 16]`"
+      - "It never terminates because `Stream.iterate/2` is infinite"
+    answer: 1
+    explanation: |
+      `Stream.iterate(1, &(&1 * 2))` yields `1, 2, 4, 8, 16, …` lazily. `Stream.map` turns that into
+      `2, 3, 5, 9, 17, …`, `Stream.drop(1)` skips the `2`, and `Enum.take(4)` pulls exactly four
+      elements then halts: `[3, 5, 9, 17]`. Termination is guaranteed because `take` is bounded and every
+      stage is lazy; only an eager stage on the infinite part (`Enum.map` before the `take`) would hang.
+    tags: [stream, iterate, take]
+    source: https://elixir.hexdocs.pm/Stream.html
+
+  - slug: elixir-coll-stream-resource
+    kind: open
+    difficulty: senior
+    title: "Explain `Stream.resource/3` and when you reach for it"
+    body: |
+      Describe the three callbacks of `Stream.resource/3`, the contract of the middle one, how
+      cleanup is guaranteed, and give two realistic use cases.
+    answer: |
+      - `Stream.resource(start_fun, next_fun, after_fun)`:
+        `start_fun/0` opens the resource and returns the initial accumulator (a file handle, a DB
+        cursor, a page number); `next_fun/1` receives the accumulator and returns `{[elements], acc}`
+        (a list, possibly empty, of emitted elements) or `{:halt, acc}` to finish; `after_fun/1` closes
+        the resource.
+      - Nothing runs until the stream is consumed; `start_fun` is invoked at the beginning of **each**
+        enumeration, so a resource stream can be enumerated twice.
+      - `after_fun` is called when `next_fun` halts, when the consumer stops early (`Enum.take/2`,
+        `Stream.take_while/2`), and when an exception bubbles through the enumeration — so handles are
+        not leaked. (It is not called if the process is killed from outside; use a supervisor/`Task`.)
+      - Use cases: paginated HTTP APIs (`acc` = next cursor; emit a page; halt on empty page),
+        reading a file in chunks (`File.stream!/1` is built on it), `Ecto` `Repo.stream/2`-like cursors,
+        tailing a socket, consuming a queue until empty.
+      - Compare: `Stream.unfold/2` is the pure version (no setup/teardown); `Stream.iterate/2` for
+        `f(f(x))` sequences; `Stream.repeatedly/1` for side-effecting generators without state.
+    explanation: |
+      Follow-up: "How do you emit elements one by one without buffering a page?" — return
+      `{[one], acc}`; the list is the batch size. "What if `next_fun` returns `{[], acc}` forever?" —
+      the stream spins; make sure you halt. "Why not a GenServer?" — a stream composes with
+      `Enum`/`Flow` and has no process to supervise.
+    tags: [stream, resource, laziness]
+    source: https://elixir.hexdocs.pm/enumerable-and-streams.html
+
+  - slug: elixir-coll-reduce-family
+    kind: open
+    difficulty: middle
+    title: "`reduce`, `reduce_while`, `map_reduce`, `flat_map_reduce`: pick the right one"
+    body: |
+      Describe what each of `Enum.reduce/3`, `Enum.reduce_while/3`, `Enum.map_reduce/3` and
+      `Enum.flat_map_reduce/3` does, and give a situation where each is the natural choice.
+    answer: |
+      - `reduce(enum, acc, fn x, acc -> acc end)`: fold everything into one accumulator. Natural for
+        sums, building a map, "most Enum functions could be written with it". `reduce/2` uses the first
+        element as the initial accumulator (raises on empty).
+      - `reduce_while(enum, acc, fn x, acc -> {:cont, acc} | {:halt, acc} end)`: same, but can stop
+        early — e.g. "sum until the total exceeds a budget", "find the first failing validation and
+        return `{:error, _}`". Returns the accumulator from `:halt` or the final one.
+      - `map_reduce(enum, acc, fn x, acc -> {mapped, acc} end)` returns `{mapped_list, final_acc}`:
+        one pass that both transforms each element and carries state — numbering lines, running totals,
+        assigning ids from a counter.
+      - `flat_map_reduce(enum, acc, fn x, acc -> {[..], acc} | {:halt, acc} end)` returns
+        `{flattened_list, acc}`: each element can emit zero or many outputs **and** it can halt —
+        tokenizers, pagination that stops, expanding events into rows until a limit.
+      - All four are tail-recursive and O(n); `reduce_while` and `flat_map_reduce` are the only ones
+        that can short-circuit.
+    explanation: |
+      Follow-ups: "Rewrite `Enum.find/2` with `reduce_while`." "What does `Enum.scan/3` add?" (it keeps
+      every intermediate accumulator). Common mistake: returning a bare value from the `reduce_while`
+      function instead of a `{:cont, _}` tuple, which raises.
+    tags: [reduce, reduce_while, map_reduce]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-code-running-totals
+    kind: code
+    difficulty: middle
+    title: "Running totals and a numbered report in one pass"
+    body: |
+      Write a module `Ledger` with:
+
+      - `running_totals(amounts)` — list of cumulative sums: `[10, -3, 5]` → `[10, 7, 12]`
+      - `numbered(amounts)` — `{lines, total}` where each line is `"<n>. <amount> (<running>)"`
+        numbered from 1 and `total` is the final sum, computed in a **single pass** with
+        `Enum.map_reduce/3`.
+
+      ```elixir
+      Ledger.numbered([10, -3])
+      #=> {["1. 10 (10)", "2. -3 (7)"], 7}
+      ```
+    starter_code: |
+      defmodule Ledger do
+        def running_totals(amounts) do
+          # TODO (hint: Enum.scan/2)
+        end
+
+        def numbered(amounts) do
+          # TODO (hint: Enum.map_reduce/3 with a {index, running} accumulator)
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LedgerTotalsTest do
+        use ExUnit.Case
+
+        test "running totals" do
+          assert Ledger.running_totals([10, -3, 5]) == [10, 7, 12]
+          assert Ledger.running_totals([]) == []
+          assert Ledger.running_totals([4]) == [4]
+        end
+
+        test "numbered lines with total" do
+          assert Ledger.numbered([10, -3]) == {["1. 10 (10)", "2. -3 (7)"], 7}
+        end
+
+        test "numbered on empty list" do
+          assert Ledger.numbered([]) == {[], 0}
+        end
+
+        test "numbered keeps order for many items" do
+          {lines, total} = Ledger.numbered(List.duplicate(1, 5))
+          assert total == 5
+          assert List.last(lines) == "5. 1 (5)"
+        end
+      end
+    solution: |
+      defmodule Ledger do
+        def running_totals(amounts), do: Enum.scan(amounts, &(&1 + &2))
+
+        def numbered(amounts) do
+          {lines, {_n, total}} =
+            Enum.map_reduce(amounts, {1, 0}, fn amount, {n, running} ->
+              running = running + amount
+              {"#{n}. #{amount} (#{running})", {n + 1, running}}
+            end)
+
+          {lines, total}
+        end
+      end
+    explanation: |
+      `Enum.scan/2` is "reduce that keeps every intermediate accumulator" — exactly a running total;
+      with `scan/3` you can supply an initial value. `Enum.map_reduce/3` returns `{mapped, acc}`, so a
+      tuple accumulator `{index, running}` lets one traversal both number the lines and carry the sum;
+      the alternative `Enum.with_index/2` + `Enum.scan` would be two passes and two intermediate lists.
+      Note that the function must return `{element, acc}` — forgetting the tuple is the classic error.
+    tags: [scan, map_reduce, code]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-any-all-empty
+    kind: mcq
+    difficulty: junior
+    title: "`Enum.any?/1` and `Enum.all?/1` on an empty list"
+    body: |
+      ```elixir
+      {Enum.any?([]), Enum.all?([])}
+      ```
+    choices:
+      - "`{false, false}`"
+      - "`{false, true}`"
+      - "`{true, true}`"
+      - "`{nil, nil}`"
+    answer: 1
+    explanation: |
+      These follow the mathematical conventions (vacuous truth): "does *any* element satisfy the
+      predicate?" is `false` when there are no elements, and "do *all* elements satisfy it?" is `true`
+      because no counter-example exists. The same holds for `any?/2` and `all?/2` with a function. This
+      matters in validations: `Enum.all?(rules, &valid?/1)` passes for an empty rule list, which is
+      usually what you want but is a classic source of "why did this pass with no data" bugs.
+      `Enum.empty?/1` is the explicit check.
+    tags: [enum, predicates]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-enum-at-negative
+    kind: mcq
+    difficulty: junior
+    title: "What do these `Enum.at` and `Enum.take` calls return?"
+    body: |
+      ```elixir
+      list = [1, 2, 3, 4]
+      {Enum.at(list, -1), Enum.at(list, 9), Enum.take(list, -2), Enum.drop(list, -1)}
+      ```
+    choices:
+      - "`{4, nil, [3, 4], [1, 2, 3]}`"
+      - "`{nil, nil, [], [1, 2, 3, 4]}`"
+      - "`{4, 4, [1, 2], [2, 3, 4]}`"
+      - "Raises `ArgumentError`: negative indexes are not allowed on lists"
+    answer: 0
+    explanation: |
+      Negative positions count from the end throughout `Enum`: `at(list, -1)` is the last element,
+      `take(list, -2)` the last two, `drop(list, -1)` everything but the last. Out-of-bounds `at/3`
+      returns the default (`nil` unless you pass one), never raises — use `Enum.fetch!/2` if you want an
+      error. Remember that all of these are O(n) on lists (negative ones need the length first), so an
+      `Enum.at` inside a loop is a hidden O(n²).
+    tags: [enum, indexing]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-sort-dates-module
+    kind: mcq
+    difficulty: middle
+    title: "Why is `Enum.sort/1` wrong for dates, and what is right?"
+    body: |
+      ```elixir
+      dates = [~D[2024-01-02], ~D[2023-05-05], ~D[2023-01-10]]
+      Enum.sort(dates)
+      #=> [~D[2024-01-02], ~D[2023-05-05], ~D[2023-01-10]]   # not chronological!
+      ```
+      Which explanation and fix are correct?
+    choices:
+      - "`Date` structs are not comparable at all; `Enum.sort/1` leaves the list unchanged. Fix: `Enum.map(&Date.to_string/1)` first"
+      - "Structs are compared as maps using term order (keys compared in internal order, so `day` wins over `year`). Fix: `Enum.sort(dates, Date)` or `{:desc, Date}`"
+      - "`Enum.sort/1` is unstable, so equal years are shuffled. Fix: `Enum.sort_by(dates, & &1.year)`"
+      - "The sigil creates dates in UTC and sorting is timezone-aware. Fix: use `~U` sigils"
+    answer: 1
+    explanation: |
+      `Enum.sort/1` uses the `<=` term order. A `Date` is a struct, i.e. a map, and maps compare by size
+      first and then key by key in the map's internal key order — for `Date` that means `day`/`month`
+      are compared before `year`, giving the nonsense order shown (the compiler even warns about
+      comparing structs with `<`/`>`). Any module with `compare/2` returning `:lt | :eq | :gt` can be
+      passed as a sorter: `Enum.sort(dates, Date)`, `Enum.sort(dates, {:desc, Date})`, and likewise
+      `Enum.sort_by(users, & &1.inserted_at, {:desc, DateTime})`, `Enum.min_by(list, &..., Date)`.
+      Same trap with `DateTime`, `Decimal` and `Version`.
+    tags: [sort, date, structs]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-code-group-by-length
+    kind: code
+    difficulty: middle
+    title: "Group words by length and summarize"
+    body: |
+      Write `Grouper.by_length/1` that returns a map from word length to the **sorted** list of
+      distinct words of that length, and `Grouper.summary/1` returning `[{length, count}]` sorted by
+      length ascending.
+
+      ```elixir
+      Grouper.by_length(["bb", "a", "cc", "bb", "d"])
+      #=> %{1 => ["a", "d"], 2 => ["bb", "cc"]}
+      Grouper.summary(["bb", "a", "cc", "bb", "d"])
+      #=> [{1, 2}, {2, 2}]
+      ```
+    starter_code: |
+      defmodule Grouper do
+        def by_length(words) do
+          # TODO: Enum.group_by/3 then sort + uniq each group
+        end
+
+        def summary(words) do
+          # TODO: [{length, distinct_count}] ascending by length
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule GrouperByLengthTest do
+        use ExUnit.Case
+
+        @words ["bb", "a", "cc", "bb", "d"]
+
+        test "groups distinct sorted words" do
+          assert Grouper.by_length(@words) == %{1 => ["a", "d"], 2 => ["bb", "cc"]}
+        end
+
+        test "summary sorted by length" do
+          assert Grouper.summary(@words) == [{1, 2}, {2, 2}]
+          assert Grouper.summary(["zzz", "a", "zzz"]) == [{1, 1}, {3, 1}]
+        end
+
+        test "empty input" do
+          assert Grouper.by_length([]) == %{}
+          assert Grouper.summary([]) == []
+        end
+
+        test "unicode length, not byte size" do
+          assert Grouper.by_length(["é", "ab"]) == %{1 => ["é"], 2 => ["ab"]}
+        end
+      end
+    solution: |
+      defmodule Grouper do
+        def by_length(words) do
+          words
+          |> Enum.group_by(&String.length/1)
+          |> Map.new(fn {len, ws} -> {len, ws |> Enum.uniq() |> Enum.sort()} end)
+        end
+
+        def summary(words) do
+          words
+          |> by_length()
+          |> Enum.map(fn {len, ws} -> {len, length(ws)} end)
+          |> Enum.sort()
+        end
+      end
+    explanation: |
+      `Enum.group_by(enum, key_fun)` builds `%{key => [elements]}`, preserving encounter order inside
+      each group (it prepends and reverses internally). `Map.new/2` is the idiomatic way to transform
+      every value of a map in one pass (`Enum.map` would give a list of tuples). For the summary,
+      `Enum.map` over a map yields `{k, v}` tuples and `Enum.sort/1` on 2-tuples sorts by the first
+      element — no `sort_by` needed. `String.length/1` counts graphemes, which is why `"é"` has length 1.
+    tags: [group_by, map_new, code]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-sort-by-stability
+    kind: open
+    difficulty: middle
+    title: "`Enum.sort_by/3`: stability, sorters and the `{:desc, Module}` form"
+    body: |
+      Explain how `Enum.sort_by/3` differs from `Enum.sort/2` with a comparator, whether it is stable,
+      and how you sort a list of users by `inserted_at` newest-first.
+    answer: |
+      - `sort_by(enum, mapper, sorter \\ :asc)` computes `mapper.(x)` **once per element** (Schwartzian
+        transform) and sorts by those keys; `sort(enum, fn a, b -> ... end)` calls the comparator
+        O(n log n) times on the raw elements — expensive if the key is costly (e.g. `String.downcase`).
+      - Both are **stable** as long as the sorter returns `true` for equal keys (`:asc`, `:desc`, `<=`,
+        `>=` do; a `<` comparator does not). Equal elements keep input order, which lets you chain
+        sorts: sort by secondary key first, then by primary.
+      - Sorters: `:asc`, `:desc`, a 2-arity function, a module with `compare/2`, or `{:asc | :desc, Module}`.
+        `Enum.sort_by(users, & &1.inserted_at, {:desc, DateTime})` is the correct newest-first; plain
+        `:desc` would compare structs structurally and be wrong.
+      - Multi-key sort with one pass: map to a tuple — `sort_by(& {&1.priority, &1.name})`; negate
+        numbers for a descending component (`{-score, name}`).
+      - Related: `Enum.min_by/max_by/min_max_by` accept the same module sorter; `Enum.sort/1` on mixed
+        types never raises (term order: number < atom < reference < fun < port < pid < tuple < map < list < bitstring).
+    explanation: |
+      Follow-up: "Is `List.keysort/2` different?" It sorts tuples by position and is stable too; `sort_by`
+      is more general. Mistake: using `Enum.sort_by(list, &(-&1.date))` — you cannot negate a struct.
+    tags: [sort_by, stability, date]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-each-returns-ok
+    kind: mcq
+    difficulty: junior
+    title: "What is the value of `result`?"
+    body: |
+      ```elixir
+      result = Enum.each([1, 2, 3], fn x -> x * 10 end)
+      ```
+    choices:
+      - "`[10, 20, 30]`"
+      - "`:ok`"
+      - "`30` — the last value"
+      - "`nil`"
+    answer: 1
+    explanation: |
+      `Enum.each/2` exists for side effects (printing, sending messages, writing); it discards every
+      return value and returns `:ok`. If you need the transformed list use `Enum.map/2`. A pipeline
+      ending in `|> Enum.each(&IO.puts/1)` therefore evaluates to `:ok`, which is why you cannot keep
+      piping after it. The same "returns `:ok`" rule applies to `Stream.run/1`.
+    tags: [enum, each, side-effects]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-uniq-dedup-difference
+    kind: open
+    difficulty: middle
+    title: "`Enum.uniq`, `Enum.uniq_by` and `Enum.dedup`: what is the difference?"
+    body: |
+      What does each of `Enum.uniq/1`, `Enum.uniq_by/2`, `Enum.dedup/1` and `Enum.dedup_by/2` return
+      for `[1, 1, 2, 1, 2.0]`, how do they compare elements, and what are their complexities?
+    answer: |
+      - `uniq/1` removes **all** duplicates anywhere in the list, keeping the first occurrence:
+        `[1, 2, 2.0]`. Elements are compared with `===`, so `2` and `2.0` are different. It keeps a
+        map of seen values, so it is O(n) with O(n) memory.
+      - `uniq_by/2` does the same but compares the result of a function: `uniq_by(users, & &1.email)`
+        keeps the first user per email.
+      - `dedup/1` collapses only **consecutive** duplicates: `[1, 2, 1, 2.0]`. Single pass, O(1) extra
+        memory, no map of seen values — ideal for sorted input or run-length style data.
+      - `dedup_by/2` is the consecutive version with a key function.
+      - Pick `dedup` after a sort when you only need distinct values and want to avoid the extra map, or
+        when "adjacent repeats" is the actual semantic (collapsing repeated log lines).
+      - `MapSet.new/1` is the alternative when order does not matter and you need membership checks
+        afterwards; `Enum.frequencies/1` when you need counts.
+    explanation: |
+      Follow-up: "Does `uniq` preserve order?" Yes, first occurrence wins. "Why `===` and not `==`?"
+      Maps and `MapSet` also use strict equality for keys; `1 == 1.0` is true but they are different
+      terms, and collections must agree on identity.
+    tags: [uniq, dedup, equality]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-code-chunk-windows-runs
+    kind: code
+    difficulty: middle
+    title: "Sliding windows and runs with `chunk_every` / `chunk_by`"
+    body: |
+      Write `Chunker.windows(list, n)` returning all contiguous windows of size `n` (no partial
+      windows) and `Chunker.runs(list)` splitting the list into runs of equal consecutive elements.
+
+      ```elixir
+      Chunker.windows([1, 2, 3, 4], 2)  #=> [[1, 2], [2, 3], [3, 4]]
+      Chunker.windows([1, 2], 3)        #=> []
+      Chunker.runs([1, 1, 2, 3, 3, 3])  #=> [[1, 1], [2], [3, 3, 3]]
+      ```
+    starter_code: |
+      defmodule Chunker do
+        def windows(list, n) do
+          # TODO: Enum.chunk_every/4 with step 1 and :discard
+        end
+
+        def runs(list) do
+          # TODO: Enum.chunk_by/2
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ChunkerTest do
+        use ExUnit.Case
+
+        test "sliding windows" do
+          assert Chunker.windows([1, 2, 3, 4], 2) == [[1, 2], [2, 3], [3, 4]]
+          assert Chunker.windows([1, 2, 3], 3) == [[1, 2, 3]]
+        end
+
+        test "no partial windows" do
+          assert Chunker.windows([1, 2], 3) == []
+          assert Chunker.windows([], 1) == []
+        end
+
+        test "runs of equal elements" do
+          assert Chunker.runs([1, 1, 2, 3, 3, 3]) == [[1, 1], [2], [3, 3, 3]]
+          assert Chunker.runs([:a, :b, :a]) == [[:a], [:b], [:a]]
+          assert Chunker.runs([]) == []
+        end
+
+        test "moving average built on windows" do
+          avgs = Chunker.windows([1, 2, 3, 4], 2) |> Enum.map(&(Enum.sum(&1) / 2))
+          assert avgs == [1.5, 2.5, 3.5]
+        end
+      end
+    solution: |
+      defmodule Chunker do
+        def windows(list, n), do: Enum.chunk_every(list, n, 1, :discard)
+
+        def runs(list), do: Enum.chunk_by(list, & &1)
+      end
+    explanation: |
+      `Enum.chunk_every(enum, count, step, leftover)`: `count` is the window size, `step` how far to
+      advance (1 = sliding, `count` = tumbling, the default), and `leftover` is either `:discard` or a
+      list used to pad the last chunk (`[]` keeps a shorter last chunk). `Enum.chunk_by/2` starts a new
+      chunk whenever the key function's result changes, so `& &1` (identity) groups equal neighbours —
+      the building block for run-length encoding. Both are available in `Stream` too for large inputs.
+    tags: [chunk_every, chunk_by, code]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-comprehensions-vs-enum
+    kind: theory
+    difficulty: middle
+    title: "Comprehensions (`for`) vs `Enum`: generators, filters, `into:` and `reduce:`"
+    body: |
+      A `for` comprehension is syntax sugar over `Enum`/`Stream`-style traversal with three parts:
+      **generators** (`x <- enum`, with pattern matching that silently skips non-matching elements),
+      **filters** (boolean expressions), and a body. Multiple generators nest like loops:
+
+      ```elixir
+      for x <- [1, 2, 3], y <- [1, 2], x > y, do: {x, y}
+      #=> [{2, 1}, {3, 1}, {3, 2}]            # Enum.flat_map + filter + map in one place
+
+      for {:ok, v} <- [{:ok, 1}, :error, {:ok, 2}], do: v   #=> [1, 2]  pattern filters
+      for <<c <- "abc">>, do: c                             #=> [97, 98, 99]  bitstring generator
+      for x <- 1..3, into: %{}, do: {x, x * x}              #=> %{1 => 1, 2 => 4, 3 => 9}
+      for x <- 1..5, reduce: 0 do acc -> acc + x end        #=> 15  (Elixir 1.8+)
+      for x <- [1, 1, 2], uniq: true, do: x                 #=> [1, 2]
+      ```
+
+      Rules of thumb:
+
+      - Use `for` when you have **several generators** or a generator plus filters: the `Enum`
+        equivalent (`flat_map` inside `flat_map` with `filter`) reads worse.
+      - Use `Enum` for single-step transforms (`Enum.map`, `Enum.filter`) and whenever you need an
+        accumulator-returning function (`reduce`, `map_reduce`) — `for ... reduce:` exists but is less
+        common.
+      - `into:` accepts any `Collectable` (map, `MapSet`, binary via `<<>>`, an `IO.Stream`) and
+        replaces `Enum.into/2`.
+      - Variables bound inside `for` are not visible outside (it is an expression, not a loop).
+      - Performance is the same as the `Enum` version: it compiles to recursion over the generators;
+        the result list is built in order.
+    answer: |
+      **Q:** Why does `for {:ok, v} <- results, do: v` not raise when `results` contains `:error`?
+      **A:** A generator pattern acts as a filter: elements that do not match are skipped silently.
+      Use `Enum.map/2` with a `case` (or a strict pattern in a `fn`) if you want a mismatch to raise.
+    explanation: |
+      Follow-up: "Can `for` be lazy?" No — it is eager. For lazy pipelines use `Stream`. "What does
+      `for x <- a, y <- b` cost?" O(|a| * |b|); the body runs once per pair.
+    tags: [comprehensions, for, enum]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-coll-build-maps-idioms
+    kind: open
+    difficulty: middle
+    title: "Idiomatic ways to build a map from a collection"
+    body: |
+      Show at least four ways to turn `users` (a list of `%{id: _, name: _}` maps) into
+      `%{id => name}` and discuss when each is preferable. What does `Enum.map` over a map return?
+    answer: |
+      - `Map.new(users, &{&1.id, &1.name})` — the idiom: one pass, a transform returning `{k, v}`,
+        last duplicate wins. Preferred when the mapping is one expression.
+      - `Enum.into(users, %{}, &{&1.id, &1.name})` — same via `Collectable`; useful when the target is
+        not a map (`MapSet.new()`, an existing map to extend).
+      - `for u <- users, into: %{}, do: {u.id, u.name}` — nicest with filters or several generators.
+      - `Enum.reduce(users, %{}, fn u, acc -> Map.put(acc, u.id, u.name) end)` — when you need
+        conditional logic, `Map.update/4` (aggregation), or to stop early (`reduce_while`).
+      - `Enum.group_by(users, & &1.id, & &1.name)` gives `%{id => [names]}` — the multi-value version;
+        `Enum.frequencies_by/2` for counts.
+      - `Enum.map(map, fn {k, v} -> ... end)` returns a **list of tuples**, not a map (printed as a
+        keyword list if the keys are atoms) — pipe it into `Map.new/1` or use `Map.new/2` directly.
+        `Map.filter/2`, `Map.reject/2` (1.13+) keep a map a map.
+    explanation: |
+      Follow-up: "Which of these handles duplicate ids by raising?" None — write the `reduce` with
+      `Map.put_new/3` plus a check, or use `Map.new/2` and compare `map_size/1` with `length/1`.
+      Senior nuance: `Map.new/2` is implemented with `:maps.from_list/1` and is the fastest option.
+    tags: [maps, map_new, enum_into]
+    source: https://elixir.hexdocs.pm/Map.html
+
+  - slug: elixir-coll-enum-map-on-map
+    kind: mcq
+    difficulty: junior
+    title: "What does `Enum.map/2` over a map return?"
+    body: |
+      ```elixir
+      Enum.map(%{a: 1, b: 2}, fn {k, v} -> {k, v * 10} end)
+      ```
+    choices:
+      - "`%{a: 10, b: 20}`"
+      - "`[a: 10, b: 20]` — a list of tuples (a keyword list here), not a map"
+      - "`[10, 20]`"
+      - "Raises `Protocol.UndefinedError`: maps are not Enumerable"
+    answer: 1
+    explanation: |
+      Maps are `Enumerable` and enumerate as `{key, value}` tuples, but `Enum.map/2` **always returns a
+      list**: here `[{:a, 10}, {:b, 20}]`, which Elixir prints as `[a: 10, b: 20]` because every key is
+      an atom. To get a map back use `Map.new(map, fun)`, `Enum.into(..., %{})` or
+      `for {k, v} <- map, into: %{}`. This confusion (and `Enum.filter` on a map) is one of the most
+      common bugs in beginner Elixir code.
+    tags: [maps, enum, map]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-access-behaviour
+    kind: theory
+    difficulty: middle
+    title: "The `Access` behaviour and composable paths with `get_in` / `update_in`"
+    body: |
+      `data[key]` is not special syntax for maps: it calls `Access.get/3`, and `Access` is a
+      **behaviour** with `fetch/2`, `get_and_update/3` and `pop/2` implemented by maps and keyword
+      lists. `nil[key]` returns `nil`, which is why `user[:address][:city]` never raises.
+
+      Structs do **not** implement `Access` (`user[:name]` raises `UndefinedFunctionError`); use
+      `user.name` (raises `KeyError` if missing — the assertive choice) or `Map.get/2`.
+
+      `get_in/2`, `put_in/3`, `update_in/3`, `pop_in/2` and `get_and_update_in/3` walk a **path**.
+      A path element can be a key or a 3-arity accessor function; `Access` ships several:
+
+      ```elixir
+      data = %{users: [%{name: "ann", tags: ["a"]}, %{name: "bo", tags: []}]}
+
+      get_in(data, [:users, Access.all(), :name])              #=> ["ann", "bo"]
+      get_in(data, [:users, Access.at(-1), :name])             #=> "bo"
+      get_in(data, [:users, Access.filter(&(&1.tags != [])), :name])   #=> ["ann"]
+      update_in(data, [:users, Access.all(), :name], &String.upcase/1)
+      get_in(%User{}, [Access.key(:name, "n/a")])             #=> works on structs; key!/1 raises
+      get_in(data, [:users, Access.find(&(&1.name == "bo")), :tags])   #=> []   (1.17+)
+      get_in({:ok, 5}, [Access.elem(1)])                       #=> 5
+      ```
+
+      `get_and_update_in(data, path, fn old -> {old, new} end)` returns `{old_values, new_data}`
+      in one traversal; returning `:pop` removes the element. `Kernel.get_in/1` with the
+      `get_in(data.users[0].name)` macro form (1.17+) supports `.` and `[]` mixes.
+
+      Paths are just lists, so you can build them dynamically (`[:users, Access.at(i), field]`).
+      Accessors on lists are O(n); `Access.all()` on a non-list raises.
+    answer: |
+      **Q:** Why does `get_in(%User{profile: %{city: "X"}}, [:profile, :city])` raise?
+      **A:** The first step applies `Access.fetch/2` to a struct, and structs do not implement
+      `Access`. Use `Access.key(:profile)` (or `Access.key!/1`) as the first path element, or
+      `user.profile[:city]`.
+    explanation: |
+      Follow-ups: "Why is `Access` a behaviour and not a protocol?" — `nil[key]` and keyword lists
+      (plain lists) need handling without protocol dispatch cost on every bracket, and it was designed
+      so that `data[key]` stays cheap. "What does `put_in/3` do with a missing intermediate key?" —
+      raises `ArgumentError` unless you use `Access.key(k, %{})` to create defaults.
+    tags: [access, get_in, update_in]
+    source: https://elixir.hexdocs.pm/Access.html
+
+  - slug: elixir-coll-code-nested-update-access
+    kind: code
+    difficulty: senior
+    title: "Nested updates with `Access` accessors"
+    body: |
+      A team is `%{name: "core", members: [%{name: "ann", salary: 100, active: true}, ...]}`.
+      Write:
+
+      - `Team.raise_salary(team, pct)` — increases every **active** member's salary by `pct` percent
+        (integer arithmetic, `div/2`), returns the updated team
+      - `Team.names(team)` — list of all member names
+      - `Team.deactivate(team, name)` — sets `active: false` for the member with that name
+        (use `Access.filter/1`)
+
+      ```elixir
+      Team.raise_salary(team, 10) |> Team.names()   #=> ["ann", "bo"]
+      ```
+    starter_code: |
+      defmodule Team do
+        def raise_salary(team, pct) do
+          # TODO: update_in with Access.all()/Access.filter and :salary
+        end
+
+        def names(team) do
+          # TODO: get_in with Access.all()
+        end
+
+        def deactivate(team, name) do
+          # TODO: Access.filter/1 then :active
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TeamAccessTest do
+        use ExUnit.Case
+
+        @team %{
+          name: "core",
+          members: [
+            %{name: "ann", salary: 100, active: true},
+            %{name: "bo", salary: 200, active: false},
+            %{name: "cy", salary: 50, active: true}
+          ]
+        }
+
+        test "names" do
+          assert Team.names(@team) == ["ann", "bo", "cy"]
+          assert Team.names(%{members: []}) == []
+        end
+
+        test "raise only active members" do
+          salaries = Team.raise_salary(@team, 10) |> get_in([:members, Access.all(), :salary])
+          assert salaries == [110, 200, 55]
+        end
+
+        test "other fields untouched" do
+          assert Team.raise_salary(@team, 10).name == "core"
+          assert Team.raise_salary(@team, 0) == @team
+        end
+
+        test "deactivate by name" do
+          t = Team.deactivate(@team, "ann")
+          assert get_in(t, [:members, Access.all(), :active]) == [false, false, true]
+          assert Team.deactivate(@team, "nobody") == @team
+        end
+      end
+    solution: |
+      defmodule Team do
+        def raise_salary(team, pct) do
+          update_in(team, [:members, Access.filter(& &1.active), :salary], fn s ->
+            s + div(s * pct, 100)
+          end)
+        end
+
+        def names(team), do: get_in(team, [:members, Access.all(), :name])
+
+        def deactivate(team, name) do
+          put_in(team, [:members, Access.filter(&(&1.name == name)), :active], false)
+        end
+      end
+    explanation: |
+      `Access.all/0` and `Access.filter/1` are accessors that fan out over a list: the rest of the path
+      is applied to every (matching) element and the list is rebuilt in order with the others untouched.
+      `update_in/3` and `put_in/3` therefore replace a hand-written `Enum.map` + `if` + `Map.update!`.
+      When no element matches, the update function is never called and the data is returned unchanged
+      (`deactivate("nobody")`). Paths are plain lists, so you could build them dynamically from user
+      input; a senior candidate also notes that each accessor on a list is O(n), so this is for
+      readability, not for hot loops.
+    tags: [access, update_in, get_in, code]
+    source: https://elixir.hexdocs.pm/Access.html
+
+  - slug: elixir-coll-get-in-access-all
+    kind: mcq
+    difficulty: middle
+    title: "What does this `get_in` call return?"
+    body: |
+      ```elixir
+      data = %{a: [%{b: 1}, %{b: 2}, %{c: 3}]}
+      get_in(data, [:a, Access.all(), :b])
+      ```
+    choices:
+      - "`[1, 2]`"
+      - "`[1, 2, nil]`"
+      - "Raises `KeyError` because the third map has no `:b`"
+      - "`%{b: [1, 2]}`"
+    answer: 1
+    explanation: |
+      `Access.all()` applies the rest of the path to **every** element and returns one result per
+      element, so the list keeps its length: `[1, 2, nil]`. Missing keys yield `nil` because the path
+      uses `Access.fetch/2`-style lookup (`map[:b]` semantics), not `map.b`. Use `Access.key!(:b)` if a
+      missing key should raise, or `Access.filter(&Map.has_key?(&1, :b))` to skip such elements. The
+      map-of-lists shape in the last option is what nobody gets: accessors never regroup data.
+    tags: [access, get_in]
+    source: https://elixir.hexdocs.pm/Access.html
+
+  - slug: elixir-coll-foldl-foldr-reduce
+    kind: open
+    difficulty: senior
+    title: "`List.foldl` vs `List.foldr` vs `Enum.reduce`: order, cost and when it matters"
+    body: |
+      ```elixir
+      List.foldl([1, 2, 3], [], fn x, acc -> [x | acc] end)
+      List.foldr([1, 2, 3], [], fn x, acc -> [x | acc] end)
+      ```
+      What does each return, how do they differ from `Enum.reduce/3`, and why would you ever use
+      `foldr`?
+    answer: |
+      - `foldl` (fold *left*) processes elements front to back: `[3, 2, 1]` here. `Enum.reduce/3` is a
+        left fold that works on any `Enumerable` (`List.foldl` is list-only and delegates to
+        `:lists.foldl`).
+      - `foldr` (fold *right*) processes back to front: `[1, 2, 3]` — it rebuilds a list in original
+        order with O(1) prepends, no final `reverse`. The accumulator sees the *last* element first.
+      - Cost: `foldl` is tail-recursive (constant stack). `foldr` is body-recursive on the BEAM — it
+        recurses to the end first — so it uses stack proportional to the list length; fine for normal
+        lists, and per the Erlang efficiency guide the difference is small, but it cannot process an
+        infinite stream and it is not `Stream`-able.
+      - Semantics differ for non-associative operations: `foldl([1,2,3], 0, &(&1 - &2))` vs `foldr`
+        give different results (`2` vs `-2` with `x - acc`), so "which end do I start from" is the real
+        question.
+      - Use `foldr` when you want to build an output list in order in one pass (e.g. implementing
+        `map`/`filter` by hand, right-to-left parsers); use `foldl`/`Enum.reduce` for everything else,
+        especially aggregations and anything that might be large or lazy.
+    explanation: |
+      Follow-up: "How does `Enum.map/2` keep order without `reverse`?" — it is implemented with body
+      recursion (`[f.(h) | map(t, f)]`). "What is `Enum.reduce/2` (no initial acc)?" — uses the first
+      element as the accumulator; raises `Enum.EmptyError` on `[]`.
+    tags: [foldl, foldr, reduce, recursion]
+    source: https://elixir.hexdocs.pm/List.html
+
+  - slug: elixir-coll-list-keyfind-keystore
+    kind: mcq
+    difficulty: junior
+    title: "What does `List.keyfind/3` return here?"
+    body: |
+      ```elixir
+      pairs = [{:a, 1}, {:b, 2}, {:a, 3}]
+      {List.keyfind(pairs, :a, 0), List.keyfind(pairs, 2, 1), List.keyfind(pairs, :z, 0)}
+      ```
+    choices:
+      - "`{[{:a, 1}, {:a, 3}], {:b, 2}, nil}`"
+      - "`{{:a, 1}, {:b, 2}, nil}`"
+      - "`{1, :b, nil}`"
+      - "`{{:a, 1}, nil, :error}`"
+    answer: 1
+    explanation: |
+      `List.keyfind(list, key, position, default \\ nil)` returns the **first whole tuple** whose
+      element at `position` (0-based) equals `key`: `{:a, 1}` for key `:a` at position 0, `{:b, 2}` for
+      key `2` at position 1, and the default `nil` when nothing matches (`keyfind!/3` raises instead).
+      It does not collect all matches (that is `Enum.filter`) and it does not unwrap the value. The
+      sibling `List.keystore/4` replaces the first matching tuple or appends a new one — the pair is the
+      basis of `Keyword` and of Erlang's `:lists.keyfind/3`, which works on tuples of any size.
+    tags: [list, keyfind, tuples]
+    source: https://elixir.hexdocs.pm/List.html
+
+  - slug: elixir-coll-code-keyword-options
+    kind: code
+    difficulty: middle
+    title: "Pagination with validated keyword options"
+    body: |
+      Write `Pager.page(list, opts \\ [])` that returns one page of `list`. Options: `:page`
+      (1-based, default 1) and `:per_page` (default 2). Unknown options must raise `ArgumentError`
+      (use `Keyword.validate!/2`).
+
+      ```elixir
+      Pager.page([1, 2, 3, 4, 5])                      #=> [1, 2]
+      Pager.page([1, 2, 3, 4, 5], page: 3)             #=> [5]
+      Pager.page([1, 2, 3, 4, 5], per_page: 4, page: 2) #=> [5]
+      Pager.page([1, 2], size: 1)                      #=> ** (ArgumentError)
+      ```
+    starter_code: |
+      defmodule Pager do
+        def page(list, opts \\ []) do
+          # TODO: validate opts, then take the requested slice
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PagerOptsTest do
+        use ExUnit.Case
+
+        @list [1, 2, 3, 4, 5]
+
+        test "defaults" do
+          assert Pager.page(@list) == [1, 2]
+        end
+
+        test "options in any order" do
+          assert Pager.page(@list, page: 3) == [5]
+          assert Pager.page(@list, per_page: 4, page: 2) == [5]
+          assert Pager.page(@list, page: 2, per_page: 4) == [5]
+        end
+
+        test "out of range page is empty" do
+          assert Pager.page(@list, page: 9) == []
+        end
+
+        test "unknown option raises" do
+          assert_raise ArgumentError, fn -> Pager.page(@list, size: 1) end
+        end
+      end
+    solution: |
+      defmodule Pager do
+        def page(list, opts \\ []) do
+          opts = Keyword.validate!(opts, page: 1, per_page: 2)
+          per_page = opts[:per_page]
+          Enum.slice(list, (opts[:page] - 1) * per_page, per_page)
+        end
+      end
+    explanation: |
+      Options are passed as a trailing keyword list (brackets optional at the call site), and the
+      callee must not pattern match on it — order is caller-defined. `Keyword.validate!/2` (1.13+)
+      merges defaults and raises on unknown keys, replacing the older `Keyword.get(opts, :page, 1)`
+      per option plus a manual check; `Keyword.merge/2` + `Keyword.fetch!/2` is the pre-1.13 way.
+      `Enum.slice/3` returns `[]` when the start is out of bounds, so no special-casing is needed.
+    tags: [keyword-lists, options, slice, code]
+    source: https://elixir.hexdocs.pm/Keyword.html
+
+  - slug: elixir-coll-range-member-constant
+    kind: mcq
+    difficulty: senior
+    title: "How expensive is membership on a huge range?"
+    body: |
+      ```elixir
+      r = 1..1_000_000_000//3
+      {500 in r, 502 in r, Enum.count(r), Enum.random(r)}
+      ```
+      What is the cost of these four operations?
+    choices:
+      - "All O(n): the range is expanded to a list of a billion integers first"
+      - "`in` is O(1), `Enum.count/1` is O(1), `Enum.random/1` is O(1) — ranges answer from their bounds and step; nothing is materialised"
+      - "`in` is O(1) but `Enum.count/1` and `Enum.random/1` traverse the range"
+      - "It raises: ranges with a step are not Enumerable"
+    answer: 1
+    explanation: |
+      A range is a three-field struct `%Range{first, last, step}`. Its `Enumerable` implementation
+      overrides `member?/2` (arithmetic on bounds and step: `502 in 1..1_000_000_000//3` is `false`
+      because `(502 - 1)` is not divisible by 3), `count/1` (closed formula) and `slice/1` (computes
+      elements positionally), so `Enum.at/2`, `Enum.random/1` and `Enum.slice/2` are O(1) too. Only
+      `Enum.to_list/1`, `Enum.map/2` and friends traverse. In guards `in` on a literal range compiles to
+      integer comparisons. This is why `x in 1..100` is a free validation and why ranges are the right
+      source for `Stream` pipelines.
+    tags: [range, enumerable, performance]
+    source: https://elixir.hexdocs.pm/Range.html
+
+  - slug: elixir-coll-array-queue-ets
+    kind: open
+    difficulty: senior
+    title: "When lists and maps are not enough: `:array`, `:queue`, `:ets`"
+    body: |
+      Give three situations where a plain list or map is the wrong structure in Elixir, and name the
+      Erlang-provided alternative for each with its complexity characteristics.
+    answer: |
+      - **FIFO queue** (jobs, BFS frontier): a list has O(1) push at one end but O(n) at the other.
+        `:queue` (two lists, amortised O(1) `in/2` and `out/1`, O(n) `len/1`); opaque term, pattern
+        match on `{:empty, q}` / `{{:value, x}, q}`. Elixir has no wrapper; call it directly.
+      - **Dense integer-indexed, randomly updated data** (grid, DP table): tuples copy on every
+        `put_elem/3` and lists are O(n) to index. `:array` — functional, zero-based, grows automatically,
+        default value for unset slots, O(log n) get/set with a tree of tuples. A map with integer keys
+        is the simpler alternative up to moderate sizes.
+      - **Large shared mutable state read by many processes** (caches, counters, registries): a map
+        inside a GenServer makes that process a bottleneck and copies data on every message.
+        `:ets` — in-memory tables (`:set`, `:ordered_set`, `:bag`), owned by a process, O(1) (hash) or
+        O(log n) (ordered) access, readable concurrently without message passing, `update_counter/3`
+        atomic increments, `read_concurrency`/`write_concurrency` options. Lives until the owner dies.
+      - Also: `:gb_trees`/`:gb_sets` for ordered maps/sets with O(log n) min/max, `:ordsets` for tiny
+        sorted sets, `:persistent_term` for read-mostly global config, `MapSet` for membership on
+        arbitrary terms.
+    explanation: |
+      Follow-up: "Why not keep the cache in a GenServer map?" — serialization through one mailbox and
+      copying of large terms on every reply; ETS lets readers bypass the process. "What happens to an
+      ETS table when its owner crashes?" — it is deleted unless `heir` is set; put the owner under a
+      supervisor and recreate on restart.
+    tags: [queue, array, ets, data-structures]
+    source: https://www.erlang.org/doc/apps/stdlib/queue.html
+
+  - slug: elixir-coll-binary-vs-list-performance
+    kind: theory
+    difficulty: senior
+    title: "Binaries vs lists vs iodata: how strings behave in memory"
+    body: |
+      An Elixir string is a **binary** — a contiguous byte sequence, UTF-8 encoded. A charlist
+      (`~c"abc"`) is a linked list of code points. The two have opposite cost profiles:
+
+      | operation                 | binary                       | list                         |
+      |---------------------------|------------------------------|------------------------------|
+      | `byte_size/1`             | O(1)                         | `length/1` is O(n)           |
+      | `String.length/1`         | O(n) (graphemes)             | O(n)                         |
+      | random byte access        | O(1) (`binary_part/3`)       | O(n)                         |
+      | prepend one element       | copy (O(n))                  | O(1)                         |
+      | `a <> b`                  | copies `a` and `b` into new  | `a ++ b` copies `a`          |
+      | memory per element        | 1 byte (+ header)            | 2 words (16 bytes on 64-bit) |
+
+      Runtime details that matter:
+
+      - Binaries up to 64 bytes are **heap binaries** stored inside the process heap and copied on
+        send. Larger ones are **refc binaries** stored off-heap and shared by reference between
+        processes — cheap to send, but a tiny sub-binary (`binary_part`, pattern match) keeps the whole
+        large binary alive, a classic memory leak in long-lived processes (`:binary.copy/1` fixes it).
+      - Building a string with `acc <> piece` in a loop is O(n²). Build **iodata** instead — nested
+        lists of binaries/bytes — and call `IO.iodata_to_binary/1` once (or hand the iolist to
+        `IO.write`/`:gen_tcp.send`, which accept iodata directly, zero copies). Phoenix templates and
+        `Jason.encode_to_iodata!/1` work this way.
+      - Pattern matching on binaries (`<<"GET ", rest::binary>>`) is O(1) and does not copy; the
+        compiler optimises sequential matches (`match_context`) in recursive parsers.
+      - `Enum` functions do not work on binaries (not `Enumerable`); use `String.graphemes/1`,
+        `:binary.bin_to_list/1`, or binary comprehensions `for <<c <- s>>`.
+    answer: |
+      **Q:** Why does `Enum.reduce(lines, "", &(&2 <> &1 <> "\n"))` get slow on a 50 MB file, and
+      what do you write instead?
+      **A:** Each `<>` copies the whole accumulator — quadratic. Accumulate an iolist
+      (`[acc, line, "\n"]` or prepend and reverse) and convert once with `IO.iodata_to_binary/1`,
+      or stream to the destination with `IO.binwrite`, which accepts iodata.
+    explanation: |
+      Follow-ups: "What is a sub-binary?" (a reference into another binary; no copy). "When is a
+      charlist still needed?" (some Erlang APIs: `:file`, `:io`, `:httpc`). "Why 64 bytes?" (the
+      refc threshold — small binaries are cheaper to copy than to reference-count).
+    tags: [binaries, iodata, performance, memory]
+    source: https://www.erlang.org/doc/system/listhandling.html
+
+  - slug: elixir-coll-code-inventory-merge
+    kind: code
+    difficulty: middle
+    title: "Merge inventories with `Map.merge/3` and rank them"
+    body: |
+      Inventories are maps of `sku => quantity`. Write a module `Inventory` with:
+
+      - `combine(a, b)` — merges two inventories, **adding** quantities for SKUs present in both
+      - `total(inv)` — sum of all quantities
+      - `top(inv, n)` — the `n` SKUs with the highest quantity as `{sku, qty}` tuples, highest first,
+        ties by SKU ascending
+      - `low(inv, threshold)` — sorted list of SKUs with quantity strictly below `threshold`
+
+      ```elixir
+      Inventory.combine(%{"a" => 1, "b" => 2}, %{"b" => 3, "c" => 4})
+      #=> %{"a" => 1, "b" => 5, "c" => 4}
+      ```
+    starter_code: |
+      defmodule Inventory do
+        def combine(a, b) do
+          # TODO: Map.merge/3 with a conflict function
+        end
+
+        def total(inv), do: nil     # TODO
+        def top(inv, n), do: nil    # TODO
+        def low(inv, threshold), do: nil  # TODO
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule InventoryMergeTest do
+        use ExUnit.Case
+
+        @a %{"a" => 1, "b" => 2}
+        @b %{"b" => 3, "c" => 4}
+
+        test "combine adds overlapping quantities" do
+          assert Inventory.combine(@a, @b) == %{"a" => 1, "b" => 5, "c" => 4}
+          assert Inventory.combine(%{}, @b) == @b
+        end
+
+        test "total" do
+          assert Inventory.total(Inventory.combine(@a, @b)) == 10
+          assert Inventory.total(%{}) == 0
+        end
+
+        test "top n with ties by sku" do
+          inv = %{"x" => 5, "y" => 5, "z" => 9, "w" => 1}
+          assert Inventory.top(inv, 3) == [{"z", 9}, {"x", 5}, {"y", 5}]
+          assert Inventory.top(inv, 0) == []
+        end
+
+        test "low stock" do
+          assert Inventory.low(%{"x" => 5, "y" => 0, "z" => 2}, 3) == ["y", "z"]
+          assert Inventory.low(%{"x" => 5}, 5) == []
+        end
+      end
+    solution: |
+      defmodule Inventory do
+        def combine(a, b), do: Map.merge(a, b, fn _sku, qa, qb -> qa + qb end)
+
+        def total(inv), do: inv |> Map.values() |> Enum.sum()
+
+        def top(inv, n) do
+          inv
+          |> Enum.sort_by(fn {sku, qty} -> {-qty, sku} end)
+          |> Enum.take(n)
+        end
+
+        def low(inv, threshold) do
+          Enum.sort(for {sku, qty} <- inv, qty < threshold, do: sku)
+        end
+      end
+    explanation: |
+      `Map.merge/3` takes a conflict function `(key, v1, v2)` called only for keys in both maps — the
+      two-arity `Map.merge/2` would silently let the right side win. `Enum.sum/1` over `Map.values/1`
+      is clearer than a `reduce`. Sorting map entries by `{-qty, sku}` encodes "descending quantity,
+      ascending SKU" in one key without a comparator. For `low/2` a comprehension with a filter reads
+      better than `Enum.filter` + `Enum.map`; beware that `for ..., do: sku |> Enum.sort()` pipes `sku`,
+      not the comprehension — wrap the `for` in parentheses or in the outer call as done here.
+    tags: [maps, merge, sort_by, code]
+    source: https://elixir.hexdocs.pm/Map.html
+
+  - slug: elixir-coll-code-split-with-extremes
+    kind: code
+    difficulty: middle
+    title: "Partition students and find extremes in one pass each"
+    body: |
+      Students are `%{name: String.t(), score: integer()}`. Write `Grades.partition(students, pass)`
+      returning `{passed, failed}` (score >= pass passes, original order kept) using
+      `Enum.split_with/2`, and `Grades.extremes(students)` returning `{lowest_name, highest_name}`
+      using `Enum.min_max_by/2`; return `nil` for an empty list.
+
+      ```elixir
+      Grades.partition([%{name: "a", score: 7}, %{name: "b", score: 3}], 5)
+      #=> {[%{name: "a", score: 7}], [%{name: "b", score: 3}]}
+      Grades.extremes([%{name: "a", score: 7}, %{name: "b", score: 3}])  #=> {"b", "a"}
+      ```
+    starter_code: |
+      defmodule Grades do
+        def partition(students, pass) do
+          # TODO: Enum.split_with/2
+        end
+
+        def extremes(students) do
+          # TODO: Enum.min_max_by/2 (handle the empty list)
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule GradesSplitTest do
+        use ExUnit.Case
+
+        @s [%{name: "a", score: 7}, %{name: "b", score: 3}, %{name: "c", score: 5}]
+
+        test "partition keeps order" do
+          {passed, failed} = Grades.partition(@s, 5)
+          assert Enum.map(passed, & &1.name) == ["a", "c"]
+          assert Enum.map(failed, & &1.name) == ["b"]
+        end
+
+        test "partition edge cases" do
+          assert Grades.partition([], 5) == {[], []}
+          assert Grades.partition(@s, 100) == {[], @s}
+        end
+
+        test "extremes" do
+          assert Grades.extremes(@s) == {"b", "a"}
+          assert Grades.extremes([%{name: "solo", score: 1}]) == {"solo", "solo"}
+        end
+
+        test "extremes of empty list" do
+          assert Grades.extremes([]) == nil
+        end
+      end
+    solution: |
+      defmodule Grades do
+        def partition(students, pass), do: Enum.split_with(students, &(&1.score >= pass))
+
+        def extremes([]), do: nil
+
+        def extremes(students) do
+          {lo, hi} = Enum.min_max_by(students, & &1.score)
+          {lo.name, hi.name}
+        end
+      end
+    explanation: |
+      `Enum.split_with/2` walks the list once and returns `{truthy, falsy}` with original order
+      preserved — one pass instead of a `filter` plus a `reject`. `Enum.min_max_by/2` likewise finds
+      both extremes in a single traversal and, like `min_by`/`max_by`, returns the first element on
+      ties. It raises `Enum.EmptyError` on `[]`, which is why the empty clause comes first (the
+      4-arity `min_max_by(enum, fun, sorter, empty_fallback)` is the alternative). `Enum.split/2`
+      (by count) and `Enum.split_while/2` are the positional cousins.
+    tags: [split_with, min_max_by, code]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-mapset-basics
+    kind: theory
+    difficulty: junior
+    title: "`MapSet`: sets on top of maps"
+    body: |
+      `MapSet` is Elixir's set type, implemented on top of maps (Erlang `:sets` version 2), so it
+      inherits map performance: membership, insert and delete are effectively O(1) for small sets and
+      O(log n) for large ones, elements are compared with `===`, and **no ordering** is guaranteed.
+
+      ```elixir
+      s = MapSet.new([3, 1, 2, 3])          #=> MapSet.new([1, 2, 3])
+      MapSet.member?(s, 2)                   #=> true          (also: 2 in s)
+      MapSet.put(s, 4); MapSet.delete(s, 1)
+      MapSet.union(s, MapSet.new([9]))
+      MapSet.intersection(s, MapSet.new([2, 3, 4]))   #=> MapSet.new([2, 3])
+      MapSet.difference(s, MapSet.new([1]))
+      MapSet.subset?(MapSet.new([1]), s)     #=> true
+      MapSet.disjoint?(s, MapSet.new([7]))   #=> true
+      MapSet.size(s)                         #=> 3  (O(1))
+      Enum.into([1, 2], MapSet.new())        # Collectable
+      Enum.map(s, &(&1 * 2))                 # Enumerable → returns a list!
+      MapSet.to_list(s) |> Enum.sort()
+      ```
+
+      Use it when the question is "is X in the collection?" asked many times (a list `in` is O(n) per
+      check), for de-duplication when order is irrelevant, and for set algebra (permissions, tags,
+      diffing two id lists). Do not reach for it when you need order (`Enum.uniq/1` keeps first
+      occurrence), counts (`Enum.frequencies/1`) or key → value (`Map`).
+
+      Two sets with the same elements are `==` regardless of insertion order; the printed order is
+      the internal map order, not insertion order. Pattern matching on a `MapSet`'s internals is
+      not supported — treat it as opaque and use the API.
+    answer: |
+      **Q:** `ids` has 100k elements and `wanted` has 1k; `Enum.filter(ids, &(&1 in wanted))` is slow.
+      Why, and what is the fix?
+      **A:** `in` on a list is O(n), so the filter is O(100k × 1k). Convert once:
+      `wanted = MapSet.new(wanted)` and then `&MapSet.member?(wanted, &1)` — O(1)-ish per check.
+    explanation: |
+      Follow-up: "What does `Enum.map/2` over a `MapSet` return?" A list; use `MapSet.new/2` to map and
+      keep a set. "Is `MapSet` serialisable to JSON?" Not by default — convert with `MapSet.to_list/1`.
+    tags: [mapset, sets]
+    source: https://elixir.hexdocs.pm/MapSet.html
+
+  - slug: elixir-coll-zip-truncates
+    kind: mcq
+    difficulty: junior
+    title: "What does `Enum.zip/2` do with lists of different lengths?"
+    body: |
+      ```elixir
+      Enum.zip([1, 2, 3], [:a, :b])
+      ```
+    choices:
+      - "`[{1, :a}, {2, :b}, {3, nil}]`"
+      - "`[{1, :a}, {2, :b}]` — zipping stops at the shortest enumerable"
+      - "Raises `ArgumentError`: enumerables must have the same length"
+      - "`[{1, :a}, {2, :b}, {3, :a}]` — the shorter list cycles"
+    answer: 1
+    explanation: |
+      `Enum.zip/2` (and `zip/1` for a list of enumerables) pairs elements positionally and stops as
+      soon as any input is exhausted; nothing is padded or raised. `Enum.zip_with/3` applies a function
+      to each pair instead of building tuples (`Enum.zip_with([1, 2], [10, 20], &+/2)` → `[11, 22]`),
+      and `Enum.unzip/1` reverses the operation on a list of 2-tuples. If you need padding, pad the
+      shorter list yourself (or use `Stream.concat/2` with `Stream.cycle([nil])` and `Enum.take`).
+      `Enum.with_index/2` is "zip with `0..`"; its second argument can be an offset (`with_index(1)`).
+    tags: [zip, enum]
+    source: https://elixir.hexdocs.pm/Enum.html
+
+  - slug: elixir-coll-find-vs-filter
+    kind: open
+    difficulty: middle
+    title: "`Enum.find`, `Enum.filter`, `Enum.find_value`, `Enum.find_index`: which stops early?"
+    body: |
+      A colleague writes `Enum.filter(users, &(&1.id == id)) |> List.first()` to find one user.
+      Critique it and explain the `Enum` search functions and their behaviour on no match.
+    answer: |
+      - `Enum.filter/2` always traverses the **whole** collection and builds a list of every match;
+        `List.first/1` then throws all but one away — O(n) work and allocation for a single result.
+      - `Enum.find(enum, default \\ nil, fun)` stops at the first element for which `fun` is truthy
+        and returns the element; returns `default` (`nil`) otherwise. Correct and O(k) where `k` is
+        the position of the match.
+      - `Enum.find_value/3` returns the **value the function returned** (first truthy) — useful when you
+        want a derived value: `Enum.find_value(parsers, &(&1.parse(input)))`.
+      - `Enum.find_index/2` returns the position or `nil`.
+      - `Enum.any?/2` is the boolean version (also short-circuits); `Enum.all?/2` stops at the first
+        falsy element.
+      - If the collection is already a map keyed by id, `Map.get/2` is O(1) — the real fix may be the
+        data structure, not the function.
+      - For streams and lazy sources, `find` is what makes "read until the first matching line" cheap.
+    explanation: |
+      Follow-up: "What does `Enum.find(list, 0, &(&1 > 10))` return for `[1, 2]`?" — `0`, the default
+      is the second argument. Mistake: using `Enum.filter` + `hd/1`, which raises on no match instead
+      of returning `nil`.
+    tags: [find, filter, early-termination]
+    source: https://elixir.hexdocs.pm/Enum.html

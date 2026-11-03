@@ -1,0 +1,1725 @@
+language: ruby
+topic: concurrency
+items:
+  - slug: ruby-conc-gvl-theory
+    kind: theory
+    difficulty: middle
+    title: "The GVL: what it protects and what it does not"
+    body: |
+      CRuby (MRI) has a **Global VM Lock** (GVL, often still called the GIL). Only one thread
+      can execute Ruby code at a time, even on a 16-core machine. Threads are real OS threads,
+      but they take turns holding the lock; the VM forces a switch after a time slice
+      (roughly 100ms) or when a thread blocks.
+
+      What the GVL **does** protect: the interpreter's own data structures. You will never
+      corrupt the VM, segfault, or get a torn pointer because two threads touched the same
+      object. A single VM instruction is effectively atomic.
+
+      What the GVL **does not** protect: your program's invariants. A Ruby-level operation
+      such as `@count += 1` is several instructions (read, add, write), and a thread switch
+      can happen between them:
+
+      ```ruby
+      count = 0
+      threads = 4.times.map { Thread.new { 100_000.times { count += 1 } } }
+      threads.each(&:join)
+      count # often < 400_000 on MRI
+      ```
+
+      The GVL is **released** while a thread is blocked on IO (`read`, `sleep`, socket
+      calls, `Process.wait`) and by C extensions that opt in via `rb_thread_call_without_gvl`
+      (e.g. database drivers, `Digest`, `Zlib`). That is why threads speed up IO-bound work
+      but not pure-Ruby CPU work.
+
+      Only CRuby has a GVL. JRuby and TruffleRuby run Ruby threads in parallel.
+    answer: |
+      **Q:** A colleague says "Ruby has a GIL, so I don't need a Mutex around my hash update." What is wrong with that?
+      **A:** The GVL makes individual VM instructions atomic, not Ruby-level operations. A read-modify-write such as `h[k] += 1` spans several instructions, so a thread switch can interleave two updates and lose one. You still need a `Mutex` (or a thread-safe structure) for compound operations.
+    explanation: |
+      Interviewers want two things here: (1) you know the GVL is about interpreter integrity, not
+      application correctness, and (2) you know *when it is released* (blocking IO, some C
+      extensions), because that is what makes threads worthwhile for web servers and job
+      workers. Bonus points for mentioning that JRuby/TruffleRuby have no GVL and that
+      `Ractor` is CRuby's route to parallelism.
+    tags: [gvl, gil, threads]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-threads-processes-fibers-theory
+    kind: theory
+    difficulty: junior
+    title: "Threads vs processes vs fibers"
+    body: |
+      Ruby gives you three units of concurrency, each with a different cost and scheduling model.
+
+      | | Thread | Process (`fork`) | Fiber |
+      |---|---|---|---|
+      | Memory | shares the heap | own copy (copy-on-write) | shares the heap |
+      | Scheduled by | OS, preemptive (under the GVL) | OS, truly parallel | you, cooperative |
+      | Parallel Ruby code? | no (GVL) | yes | no |
+      | Creation cost | OS thread (~MBs of stack) | expensive (fork) | cheap (KBs) |
+      | Failure isolation | one crash can take the process | isolated | none |
+
+      ```ruby
+      t = Thread.new { expensive_io }   # preempted by the VM
+      t.join
+
+      pid = fork { cpu_heavy }          # separate process, separate GVL
+      Process.wait(pid)
+
+      f = Fiber.new { Fiber.yield 1; 2 } # runs only when resumed
+      f.resume # => 1
+      f.resume # => 2
+      ```
+
+      Rules of thumb: threads for IO-bound work (HTTP calls, DB queries), processes for
+      CPU-bound work on MRI, fibers when you want thousands of cheap concurrent tasks driven
+      by an event loop (the Fiber scheduler / `async` gem).
+    answer: |
+      **Q:** You need to resize 10,000 images in a Ruby script on an 8-core box. Threads or processes, and why?
+      **A:** Processes (e.g. `fork` or the `parallel` gem with `in_processes:`). Resizing is CPU-bound Ruby/C work; under the GVL threads would run it one at a time. Each forked worker has its own GVL and can occupy a core. (If the resizing happens in a C extension that releases the GVL, threads can also work.)
+    explanation: |
+      The classic follow-up is "what about fibers?" Fibers do not help CPU-bound work at all;
+      they never run in parallel and only switch when you tell them to. They shine for IO
+      multiplexing because they are much cheaper than threads and have no preemption races.
+    tags: [threads, processes, fibers]
+    source: https://docs.ruby-lang.org/en/3.3/Fiber.html
+
+  - slug: ruby-conc-gvl-cpu-bound-mcq
+    kind: mcq
+    difficulty: junior
+    title: "CPU-bound work split across four threads"
+    body: |
+      On a 4-core machine running CRuby 3.3, this takes about 4 seconds when run in a single thread:
+
+      ```ruby
+      def crunch = 10_000_000.times.sum { |i| i * i }
+      ```
+
+      You change it to run four `crunch` calls in four threads and `join` them. Roughly how long does it take now?
+    choices:
+      - "About 1 second: each thread runs on its own core."
+      - "About 16 seconds: the GVL serialises the threads, so four calls take four times as long as one."
+      - "About 4 seconds: the threads overlap because `times` is implemented in C."
+      - "It depends on `Thread.abort_on_exception`."
+    answer: 1
+    explanation: |
+      Four calls of pure-Ruby CPU work are four times the work, and the GVL lets only one thread
+      run Ruby code at a time, so you get roughly 4 x 4 = 16 seconds (often slightly worse due
+      to thread switching). Choice C is the tempting one: `Integer#times` is in C, but C code
+      only runs in parallel if it explicitly releases the GVL, and the block body is Ruby anyway.
+      To actually get 4x you would fork processes or use Ractors.
+    tags: [gvl, cpu-bound]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-gvl-io-bound
+    kind: open
+    difficulty: junior
+    title: "When do Ruby threads actually make things faster?"
+    body: |
+      An interviewer asks: "If only one thread can run Ruby code at a time, why does Puma use
+      threads at all? When do threads make a Ruby program faster?"
+    answer: |
+      - Threads help when the work is **IO-bound**: waiting on sockets, databases, files, HTTP,
+        `sleep`. While a thread is blocked in a system call the VM releases the GVL, so another
+        thread runs Ruby code in the meantime.
+      - A web request that spends 80% of its time waiting on Postgres and Redis leaves the GVL
+        free most of the time, so 5 Puma threads can serve roughly 5 requests concurrently.
+      - Threads do **not** help pure-Ruby CPU work (parsing, rendering, number crunching); for
+        that you want more processes (Puma workers, `fork`) or Ractors.
+      - Some C extensions (pg, mysql2, zlib, digest, some JSON parsers) also release the GVL
+        during their heavy work, so they overlap with Ruby threads.
+      - Threads are cheaper than processes in memory because they share the heap; processes
+        give true parallelism and isolation at the cost of copying memory.
+    explanation: |
+      Follow-ups: "How would you tell whether a given endpoint is IO- or CPU-bound?" (measure with
+      `stackprof` in wall vs cpu mode, or look at DB/external time in APM). "What is the risk of
+      adding more Puma threads?" (more memory per thread, higher GVL contention and latency
+      variance, and the DB pool must be at least as large as the thread count).
+    tags: [gvl, io-bound, puma]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-thread-value-mcq
+    kind: mcq
+    difficulty: junior
+    title: "What does this print?"
+    body: |
+      ```ruby
+      Thread.report_on_exception = false
+      t = Thread.new { raise ArgumentError, "boom" }
+      begin
+        puts t.value
+      rescue => e
+        puts "rescued #{e.class}"
+      end
+      ```
+    choices:
+      - "It prints `nil`: the thread died, so `value` is nil."
+      - "It prints nothing: the exception is swallowed because `report_on_exception` is false."
+      - "It raises `ThreadError` because you cannot read the value of a dead thread."
+      - "It prints `rescued ArgumentError`: `value` joins the thread and re-raises its exception in the caller."
+    answer: 3
+    explanation: |
+      `Thread#value` calls `join` and then returns the block's result. If the thread terminated
+      with an exception, `join`/`value` re-raise that exception in the thread that called them,
+      which is exactly how you propagate failures out of worker threads. `report_on_exception`
+      only controls whether a message is printed to `$stderr` when the thread dies; it does not
+      swallow or store anything. Without `join`/`value`, the exception would be silently lost
+      (apart from that stderr report).
+    tags: [thread, value, exceptions]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-array-push-thread-safe-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Is this code thread-safe on CRuby?"
+    body: |
+      ```ruby
+      results = []
+      threads = 10.times.map do |i|
+        Thread.new { 1000.times { results << i } }
+      end
+      threads.each(&:join)
+      results.size
+      ```
+    choices:
+      - "Yes. `Array#<<` is implemented in C, so each push is atomic under the GVL and `results.size` is always 10_000."
+      - "No. `Array` is not thread-safe; you may get a corrupted array or a crash."
+      - "It happens to work on CRuby because the GVL is not released inside `Array#<<`, but Ruby makes no guarantee: `Array` and `Hash` are not thread-safe, and JRuby/TruffleRuby can lose elements or raise."
+      - "No. `results` is not visible to the threads because blocks get a copy of local variables."
+    answer: 2
+    explanation: |
+      Core `Array` and `Hash` are documented as *not* thread-safe. On CRuby a single `<<` is a C
+      function that does not release the GVL, so in practice this particular snippet gives
+      10_000, but that is an implementation detail: it breaks the moment you do a compound
+      operation (`results[i] += 1`, `hash[k] ||= []`) and it breaks outright on JRuby, where
+      concurrent `<<` on an `ArrayList`-backed array can raise or drop elements. Use a `Mutex`,
+      a `Queue`, or `Concurrent::Array`/`Concurrent::Map` if the code must be portable and
+      correct. Choice D is wrong: blocks close over variables by reference.
+    tags: [array, thread-safety, gvl]
+    source: https://github.com/ruby-concurrency/concurrent-ruby
+
+  - slug: ruby-conc-code-mutex-counter
+    kind: code
+    difficulty: junior
+    title: "Thread-safe counter with Mutex"
+    body: |
+      Implement a class `Counter` with:
+
+      - `increment` — adds 1 to the count
+      - `value` — returns the current count
+
+      Both must be safe to call from many threads at once: after 10 threads each call
+      `increment` 1000 times, `value` must be exactly 10_000. Use `Mutex#synchronize`.
+
+      ```ruby
+      c = Counter.new
+      c.increment
+      c.increment
+      c.value # => 2
+      ```
+    starter_code: |
+      class Counter
+        def initialize
+          @count = 0
+          # TODO: add a Mutex
+        end
+
+        def increment
+          # your code here
+        end
+
+        def value
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class CounterTest < Minitest::Test
+        def test_single_thread
+          c = Counter.new
+          3.times { c.increment }
+          assert_equal 3, c.value
+        end
+
+        def test_starts_at_zero
+          assert_equal 0, Counter.new.value
+        end
+
+        def test_many_threads
+          c = Counter.new
+          threads = 10.times.map do
+            Thread.new { 1000.times { c.increment; Thread.pass if rand < 0.01 } }
+          end
+          threads.each(&:join)
+          assert_equal 10_000, c.value
+        end
+      end
+    solution: |
+      class Counter
+        def initialize
+          @count = 0
+          @mutex = Mutex.new
+        end
+
+        def increment
+          @mutex.synchronize { @count += 1 }
+        end
+
+        def value
+          @mutex.synchronize { @count }
+        end
+      end
+    explanation: |
+      `@count += 1` is a read, an add and a write; without the lock a thread switch between the
+      read and the write makes two threads write the same value and an increment is lost. The
+      test sprinkles `Thread.pass` to invite exactly that interleaving. `synchronize` acquires
+      the lock, runs the block and releases it in an `ensure`, so an exception inside cannot
+      leave the mutex locked. Reading inside the lock too is good hygiene: it guarantees you see
+      a value from a completed increment, which matters on implementations without a GVL.
+    tags: [mutex, race-condition, counter]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Mutex.html
+
+  - slug: ruby-conc-mutex-recursive-lock-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Nested synchronize on the same Mutex"
+    body: |
+      ```ruby
+      class Account
+        def initialize = (@lock = Mutex.new; @balance = 0)
+
+        def deposit(n)
+          @lock.synchronize { @balance += n }
+        end
+
+        def deposit_twice(n)
+          @lock.synchronize { deposit(n); deposit(n) }
+        end
+      end
+
+      Account.new.deposit_twice(5)
+      ```
+
+      What happens?
+    choices:
+      - "Balance becomes 10; Ruby's Mutex is reentrant for the owning thread."
+      - "The thread blocks forever waiting for a lock it already holds (a classic self-deadlock)."
+      - "It raises `ThreadError: deadlock; recursive locking` because `Mutex#lock` detects that the current thread already owns it."
+      - "It raises `Mutex::OwnerError`."
+    answer: 2
+    explanation: |
+      `Thread::Mutex` is **not** reentrant. Locking a mutex the current thread already holds
+      raises `ThreadError` immediately ("deadlock; recursive locking") rather than hanging, which
+      is Ruby being helpful. If you genuinely need a lock that the same thread can take again
+      (public method calling another public method that also locks), use `Monitor` from the
+      `monitor` stdlib, which counts re-entries by the owning thread/fiber. The more common fix
+      is to restructure: have the public methods lock and delegate to private unlocked helpers.
+    tags: [mutex, monitor, deadlock]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Mutex.html
+
+  - slug: ruby-conc-deadlock-explain
+    kind: open
+    difficulty: middle
+    title: "Explain this deadlock and how to prevent it"
+    body: |
+      ```ruby
+      a = Mutex.new
+      b = Mutex.new
+
+      t1 = Thread.new { a.synchronize { sleep 0.01; b.synchronize { :t1 } } }
+      t2 = Thread.new { b.synchronize { sleep 0.01; a.synchronize { :t2 } } }
+      [t1, t2].each(&:join)
+      ```
+
+      What does Ruby do here, why, and how would you prevent this class of bug in a real codebase?
+    answer: |
+      - `t1` holds `a` and waits for `b`; `t2` holds `b` and waits for `a`. Neither can proceed:
+        a circular wait, the textbook deadlock.
+      - Because the main thread is blocked in `join` and every thread is blocked, CRuby's deadlock
+        detector notices that no thread can ever run and raises `fatal: No live threads left.
+        Deadlock?` in the main thread, with a dump of each thread's state and backtrace.
+      - Prevention: **consistent lock ordering** (always acquire `a` before `b` everywhere), ideally
+        enforced by taking one coarse lock instead of two.
+      - Keep critical sections tiny and never call out to unknown code (callbacks, IO, other
+        objects' locked methods) while holding a lock.
+      - Use `Mutex#try_lock` or `lock` with a timeout pattern where ordering cannot be guaranteed,
+        and prefer higher-level structures (`Queue`, `Concurrent::Map`) that encapsulate locking.
+      - For diagnosis in production: `Thread.list.map(&:backtrace)` (Sidekiq's `TTIN` signal does this).
+    explanation: |
+      Follow-ups interviewers like: "Does the detector always fire?" No: if any thread is in
+      `sleep` with a timeout, waiting on IO, or spinning, the VM does not consider the process
+      deadlocked, so a real deadlock inside a Puma worker just hangs that request. "What about
+      `Mutex#lock` on a mutex you already own?" That raises `ThreadError` instead (not
+      reentrant); `Monitor` is reentrant.
+    tags: [deadlock, mutex, lock-ordering]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Mutex.html
+
+  - slug: ruby-conc-queue-producer-consumer-theory
+    kind: theory
+    difficulty: junior
+    title: "Queue and SizedQueue: the producer/consumer pattern"
+    body: |
+      `Thread::Queue` is the one core collection that **is** thread-safe. It is a FIFO with
+      blocking `pop`: a consumer thread sleeps until a producer pushes something, without any
+      Mutex or busy loop on your side.
+
+      ```ruby
+      queue = Queue.new
+
+      consumers = 3.times.map do
+        Thread.new do
+          while (job = queue.pop)   # blocks; returns nil once queue is closed and empty
+            process(job)
+          end
+        end
+      end
+
+      urls.each { |u| queue << u }
+      queue.close                   # no more work; consumers drain and exit
+      consumers.each(&:join)
+      ```
+
+      Key behaviours:
+
+      - `pop` blocks when empty; `pop(true)` raises `ThreadError` instead; `pop(timeout: 2)` returns `nil` after 2s.
+      - `close` makes further `push` raise `ClosedQueueError`; `pop` keeps returning queued items,
+        then `nil`. That `nil` is the idiomatic shutdown signal (older code pushed a `:done` sentinel).
+      - `SizedQueue.new(max)` adds **backpressure**: `push` blocks when the queue holds `max` items,
+        so a fast producer cannot fill memory faster than consumers drain it.
+      - `Queue` is also Fiber-scheduler aware, so the same code works inside `async`.
+    answer: |
+      **Q:** Why prefer `SizedQueue` over `Queue` when a producer reads a 10GB file line by line and workers process the lines?
+      **A:** With an unbounded `Queue` the producer reads far faster than the workers and the whole file ends up buffered in memory. A `SizedQueue` blocks the producer once `max` lines are queued, bounding memory and naturally pacing the producer to the consumers' throughput.
+    explanation: |
+      Interviewers use `Queue` questions to see whether you reach for the right primitive. If a
+      candidate builds producer/consumer out of a `Mutex`, an `Array` and `sleep 0.1` polling,
+      that is a red flag. Know `close` (Ruby 2.3+) and `timeout:` (Ruby 3.2+).
+    tags: [queue, sized-queue, producer-consumer]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Queue.html
+
+  - slug: ruby-conc-queue-close-pop-mcq
+    kind: mcq
+    difficulty: middle
+    title: "What does this print?"
+    body: |
+      ```ruby
+      q = Queue.new
+      q << 1
+      q << 2
+      q.close
+      out = []
+      3.times { out << q.pop }
+      p out
+      q << 3
+      ```
+    choices:
+      - "`[1, 2, nil]` and then `ClosedQueueError` on the final push."
+      - "`[1, 2]` and the third `pop` blocks forever."
+      - "`[1, 2, nil]` and the final push is silently ignored."
+      - "The third `pop` raises `ThreadError: queue empty`."
+    answer: 0
+    explanation: |
+      After `close`, `pop` still drains whatever is queued, then returns `nil` immediately
+      instead of blocking; that is the whole point of `close` as a shutdown signal for
+      `while (item = q.pop)` loops. Pushing to a closed queue raises `ClosedQueueError` (a
+      subclass of `StopIteration`, so it also terminates a `loop do ... end`). `ThreadError` is
+      only raised by the non-blocking form `pop(true)` on an empty queue.
+    tags: [queue, close]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Queue.html
+
+  - slug: ruby-conc-code-worker-pool-queue
+    kind: code
+    difficulty: middle
+    title: "Run jobs on a fixed pool of worker threads"
+    body: |
+      Implement `process_in_pool(jobs, workers:)`.
+
+      - `jobs` is an array of callables (lambdas/procs) that take no arguments.
+      - Start at most `workers` threads. Each thread repeatedly pulls a job from a shared
+        `Queue` and runs it until no jobs remain.
+      - Return an array of results **in the same order as `jobs`**, regardless of which
+        thread ran which job or when it finished.
+      - `process_in_pool([], workers: 4)` returns `[]`.
+
+      ```ruby
+      jobs = [-> { 1 }, -> { 2 }, -> { 3 }]
+      process_in_pool(jobs, workers: 2) # => [1, 2, 3]
+      ```
+
+      Hint: push `[index, job]` pairs onto the queue, `close` it, and have each worker loop
+      with `while (pair = queue.pop)`.
+    starter_code: |
+      def process_in_pool(jobs, workers: 4)
+        queue = Queue.new
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class PoolTest < Minitest::Test
+        def test_results_in_order
+          jobs = (1..10).map { |i| -> { Thread.pass; i * i } }
+          assert_equal (1..10).map { |i| i * i }, process_in_pool(jobs, workers: 3)
+        end
+
+        def test_more_workers_than_jobs
+          assert_equal [:a, :b], process_in_pool([-> { :a }, -> { :b }], workers: 8)
+        end
+
+        def test_empty
+          assert_equal [], process_in_pool([], workers: 2)
+        end
+
+        def test_uses_at_most_workers_threads
+          max_seen = 0
+          lock = Mutex.new
+          current = 0
+          jobs = 20.times.map do
+            -> {
+              lock.synchronize { current += 1; max_seen = [max_seen, current].max }
+              Thread.pass
+              lock.synchronize { current -= 1 }
+              :ok
+            }
+          end
+          process_in_pool(jobs, workers: 2)
+          assert_operator max_seen, :<=, 2
+        end
+      end
+    solution: |
+      def process_in_pool(jobs, workers: 4)
+        queue = Queue.new
+        jobs.each_with_index { |job, i| queue << [i, job] }
+        queue.close
+
+        results = Array.new(jobs.size)
+        threads = Array.new(workers) do
+          Thread.new do
+            while (pair = queue.pop)
+              i, job = pair
+              results[i] = job.call
+            end
+          end
+        end
+        threads.each(&:join)
+        results
+      end
+    explanation: |
+      This is the minimal thread pool: a closed `Queue` as the work list, N workers that loop
+      on `pop` until it returns `nil`, and index-tagged jobs so results land in the right slot
+      without any sorting. Writing to distinct indexes of a pre-sized `Array` from several
+      threads is safe on CRuby (and the writes never race with each other because each index
+      is written once). If a job raises, the worker thread dies and `join` re-raises in the
+      caller; a production pool would rescue per job and store the error instead. This is
+      exactly the shape of `Concurrent::FixedThreadPool`, Sidekiq's processor threads and
+      Puma's thread pool.
+    tags: [queue, thread-pool, join]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Queue.html
+
+  - slug: ruby-conc-condition-variable-why
+    kind: open
+    difficulty: senior
+    title: "ConditionVariable: why wait in a loop?"
+    body: |
+      Here is a bounded buffer written with `Mutex` + `ConditionVariable`:
+
+      ```ruby
+      def pop
+        @mutex.synchronize do
+          @not_empty.wait(@mutex) if @items.empty?   # (A)
+          @items.shift
+        end
+      end
+      ```
+
+      A reviewer asks you to change line (A) from `if` to `while`. Explain what
+      `ConditionVariable#wait` does, why `while` is required, and the difference between
+      `signal` and `broadcast`.
+    answer: |
+      - `wait(mutex)` atomically releases the mutex and sleeps the thread; when woken it
+        re-acquires the mutex before returning. That atomicity is why you must hold the mutex
+        when calling it: it prevents the "lost wakeup" where a `signal` fires between your
+        check and your sleep.
+      - Waking up does **not** mean the condition is true. Another consumer may have taken the
+        item between the signal and your re-acquiring the lock, and spurious wakeups are allowed
+        by the implementation. So the predicate must be re-checked: `while @items.empty?`.
+      - `signal` wakes one waiting thread; `broadcast` wakes all of them. Use `broadcast` when
+        the state change can satisfy several waiters or waiters wait on different predicates
+        (e.g. one CV used for both "not empty" and "not full"); otherwise some may sleep forever.
+      - With `if`, a woken consumer can call `shift` on an empty array and return `nil`.
+      - In practice reach for `Queue`/`SizedQueue` first; they implement precisely this. Write
+        CVs by hand only for custom predicates (latches, barriers, "wait until size >= n").
+    explanation: |
+      This is a senior-level screen for whether you have actually written or debugged a CV.
+      Follow-ups: "What if you forget the mutex when calling `signal`?" (allowed, but you can
+      signal before the waiter has checked the predicate and lose the wakeup unless the waiter
+      re-checks under the lock). "Does `wait` accept a timeout?" Yes, `wait(mutex, seconds)`;
+      after a timeout the predicate is still re-checked by the loop.
+    tags: [condition-variable, mutex, producer-consumer]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/ConditionVariable.html
+
+  - slug: ruby-conc-code-countdown-latch
+    kind: code
+    difficulty: senior
+    title: "CountDownLatch with Mutex and ConditionVariable"
+    body: |
+      Implement `CountDownLatch`:
+
+      - `CountDownLatch.new(count)`
+      - `count_down` — decrements the count (never below zero)
+      - `wait` — blocks until the count reaches zero; returns immediately if it already is
+      - `count` — current count
+
+      Use `Mutex` and `ConditionVariable` (no polling, no `sleep`). Remember to re-check the
+      predicate in a loop around `wait`.
+
+      ```ruby
+      latch = CountDownLatch.new(2)
+      Thread.new { do_work; latch.count_down }
+      Thread.new { do_work; latch.count_down }
+      latch.wait   # returns once both threads have counted down
+      ```
+    starter_code: |
+      class CountDownLatch
+        def initialize(count)
+          @count = count
+          @mutex = Mutex.new
+          @cond = ConditionVariable.new
+        end
+
+        def count_down
+          # your code here
+        end
+
+        def wait
+          # your code here
+        end
+
+        def count
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class CountDownLatchTest < Minitest::Test
+        def test_waits_for_all_workers
+          latch = CountDownLatch.new(3)
+          results = Queue.new
+          3.times do |i|
+            Thread.new { results << i; latch.count_down }
+          end
+          latch.wait
+          assert_equal 3, results.size
+          assert_equal 0, latch.count
+        end
+
+        def test_zero_latch_does_not_block
+          latch = CountDownLatch.new(0)
+          latch.wait
+          assert_equal 0, latch.count
+        end
+
+        def test_waiter_thread_released
+          latch = CountDownLatch.new(2)
+          waiter = Thread.new { latch.wait; :released }
+          Thread.pass until waiter.status == "sleep"
+          latch.count_down
+          assert_equal 1, latch.count
+          latch.count_down
+          assert_equal :released, waiter.value
+        end
+
+        def test_never_goes_negative
+          latch = CountDownLatch.new(1)
+          latch.count_down
+          latch.count_down
+          assert_equal 0, latch.count
+        end
+      end
+    solution: |
+      class CountDownLatch
+        def initialize(count)
+          @count = count
+          @mutex = Mutex.new
+          @cond = ConditionVariable.new
+        end
+
+        def count_down
+          @mutex.synchronize do
+            @count -= 1 if @count > 0
+            @cond.broadcast if @count.zero?
+          end
+        end
+
+        def wait
+          @mutex.synchronize do
+            @cond.wait(@mutex) while @count > 0
+          end
+          nil
+        end
+
+        def count
+          @mutex.synchronize { @count }
+        end
+      end
+    explanation: |
+      The two things that trip people up: (1) every read and write of `@count` happens under the
+      mutex, including the `while` predicate, so a `count_down` cannot sneak in between the check
+      and the `wait`; (2) `broadcast`, not `signal`, because any number of threads may be
+      waiting on the latch and all of them should be released. The waiter test spins on
+      `Thread.pass until waiter.status == "sleep"` to make sure the waiter is really parked in
+      `wait` before counting down, which exercises the wake-up path deterministically.
+    tags: [condition-variable, mutex, latch]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/ConditionVariable.html
+
+  - slug: ruby-conc-thread-local-fiber-local-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Thread#[] inside a Fiber"
+    body: |
+      ```ruby
+      Thread.current[:a] = 1
+      Thread.current.thread_variable_set(:b, 2)
+
+      Fiber.new do
+        p [Thread.current[:a], Thread.current.thread_variable_get(:b)]
+      end.resume
+      ```
+    choices:
+      - "`[1, 2]`: both are stored on the current thread."
+      - "`[nil, 2]`: `Thread#[]` is fiber-local, `thread_variable_get` is truly thread-local."
+      - "`[1, nil]`: thread variables are not inherited by fibers."
+      - "`[nil, nil]`: a new Fiber starts with an empty environment."
+    answer: 1
+    explanation: |
+      Despite its name, `Thread#[]`/`Thread#[]=` storage is **fiber-local**: each fiber (including
+      the one `Enumerator#next` creates under the hood) gets its own set. `thread_variable_get`/
+      `thread_variable_set` (Ruby 2.0+) are the real thread-locals shared across all fibers of
+      that thread. This matters in Rails: `ActiveSupport::CurrentAttributes` and the older
+      `Thread.current[:request_id]` pattern are fiber-local, which is why code running under
+      a Fiber scheduler (`async`/Falcon) sees them reset per task. Ruby 3.2 added `Fiber[]`
+      (fiber storage) which *is* inherited by child fibers, as a cleaner alternative.
+    tags: [thread-local, fiber-local, thread-current]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-report-on-exception-mcq
+    kind: mcq
+    difficulty: junior
+    title: "An exception in a thread nobody joins"
+    body: |
+      ```ruby
+      Thread.new { raise "worker failed" }
+      sleep 0.1
+      puts "main continues"
+      ```
+
+      With default settings on Ruby 3.3, what happens?
+    choices:
+      - "The main thread is killed by `RuntimeError: worker failed`."
+      - "A warning with the exception and backtrace is printed to stderr (`report_on_exception` is true by default), the thread dies, and `main continues` is printed."
+      - "Nothing is printed except `main continues`; the exception is stored until someone calls `join`."
+      - "Ruby raises `fatal: No live threads left. Deadlock?`."
+    answer: 1
+    explanation: |
+      Since Ruby 2.5 `Thread.report_on_exception` defaults to `true`, so a thread that dies from
+      an unhandled exception prints `#<Thread:...> terminated with exception (report_on_exception
+      is true):` plus the backtrace to `$stderr`, then the rest of the program carries on. The
+      exception is also *kept* and re-raised if you later `join` or `value` the thread, so C is
+      half right but wrong about the output. Choice A describes `Thread.abort_on_exception =
+      true` (or the per-thread `t.abort_on_exception = true`), which re-raises in the main thread
+      immediately; some teams enable it in development to make silent worker failures loud.
+    tags: [report-on-exception, abort-on-exception]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-thread-status-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Thread#status after termination"
+    body: |
+      ```ruby
+      Thread.report_on_exception = false
+      ok   = Thread.new { 1 }
+      bad  = Thread.new { raise "x" }
+      zzz  = Thread.new { sleep }
+      ok.join
+      bad.join rescue nil
+      Thread.pass until zzz.status == "sleep"
+      p [ok.status, bad.status, zzz.status]
+      ```
+    choices:
+      - "`[false, nil, \"sleep\"]`"
+      - "`[nil, false, \"sleep\"]`"
+      - "`[\"dead\", \"dead\", \"sleep\"]`"
+      - "`[false, false, \"run\"]`"
+    answer: 0
+    explanation: |
+      `Thread#status` returns `"run"` for a running thread, `"sleep"` for one blocked in
+      `sleep`/IO/`Mutex#lock`/`Queue#pop`, `"aborting"` while being killed, **`false`** when it
+      terminated normally and **`nil`** when it terminated because of an exception. The
+      `false`/`nil` distinction is a classic gotcha; `Thread#alive?` is the readable way to ask
+      "is it still running". Sidekiq's `TTIN` handler and the deadlock detector print these
+      statuses next to each thread's backtrace.
+    tags: [thread-status]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-or-equals-atomic-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Memoization with ||= under threads"
+    body: |
+      ```ruby
+      class Config
+        def self.settings
+          @settings ||= load_from_disk   # slow, returns a new Hash each call
+        end
+      end
+      ```
+
+      Several Puma threads call `Config.settings` at the same moment on a cold process. Which statement is correct?
+    choices:
+      - "It is safe: `||=` is a single VM instruction and therefore atomic under the GVL."
+      - "It is safe on CRuby but not on JRuby, because only CRuby has a GVL."
+      - "It raises `ThreadError` because instance variables cannot be assigned from multiple threads."
+      - "It is not atomic on any implementation: several threads can see `nil`, each call `load_from_disk`, and the last write wins. Here that only wastes work; it becomes a bug when the initializer has side effects or must return one shared instance."
+    answer: 3
+    explanation: |
+      `@x ||= expr` compiles to roughly: read `@x`; if falsy, evaluate `expr`, write `@x`. A
+      thread switch can happen anywhere in there (the GVL is released on a timer tick, and
+      `load_from_disk` does IO which releases it for sure). Two threads both see `nil`, both run
+      the loader and both assign. For an idempotent, pure loader that is merely wasteful; for a
+      connection pool, a singleton or a counter it is a real race. Fix with a `Mutex` around
+      the check-and-set (double-checked locking), or compute eagerly at boot, or use
+      `Concurrent::Map#compute_if_absent` / `Concurrent::Delay`.
+    tags: [memoization, race-condition, atomicity]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-code-lazy-memoize-mutex
+    kind: code
+    difficulty: middle
+    title: "Compute-once lazy value under concurrency"
+    body: |
+      Implement `Lazy`, a thread-safe memoized value:
+
+      - `Lazy.new { ... }` takes a block to compute the value.
+      - `value` runs the block **at most once** even when many threads call `value`
+        concurrently, and returns the same result to everyone.
+      - The block may legitimately return `nil` or `false`; it must still only run once.
+
+      ```ruby
+      calls = 0
+      l = Lazy.new { calls += 1; 42 }
+      l.value # => 42
+      l.value # => 42
+      calls   # => 1
+      ```
+    starter_code: |
+      class Lazy
+        def initialize(&block)
+          @block = block
+          @mutex = Mutex.new
+          # your code here
+        end
+
+        def value
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class LazyTest < Minitest::Test
+        def test_computes_once
+          calls = 0
+          l = Lazy.new { calls += 1; 42 }
+          assert_equal 42, l.value
+          assert_equal 42, l.value
+          assert_equal 1, calls
+        end
+
+        def test_handles_nil_and_false
+          calls = 0
+          l = Lazy.new { calls += 1; nil }
+          assert_nil l.value
+          assert_nil l.value
+          assert_equal 1, calls
+
+          f = Lazy.new { calls += 1; false }
+          assert_equal false, f.value
+          assert_equal false, f.value
+          assert_equal 2, calls
+        end
+
+        def test_once_under_concurrency
+          calls = 0
+          l = Lazy.new { calls += 1; Thread.pass; :result }
+          threads = 20.times.map { Thread.new { l.value } }
+          assert_equal [:result] * 20, threads.map(&:value)
+          assert_equal 1, calls
+        end
+      end
+    solution: |
+      class Lazy
+        def initialize(&block)
+          @block = block
+          @mutex = Mutex.new
+          @computed = false
+          @value = nil
+        end
+
+        def value
+          return @value if @computed
+          @mutex.synchronize do
+            unless @computed
+              @value = @block.call
+              @computed = true
+            end
+          end
+          @value
+        end
+      end
+    explanation: |
+      Two ideas: a separate `@computed` flag (so `nil`/`false` results are remembered, which
+      `@value ||=` cannot do) and **double-checked locking**: the cheap unlocked read on the
+      fast path, then re-checking inside the mutex so that only the first thread through the
+      lock runs the block. The order inside the lock matters: assign `@value` before flipping
+      `@computed`, otherwise a reader on the fast path could see `@computed == true` with a stale
+      `@value`. On CRuby the GVL makes that ordering sufficient; on JRuby you would use an
+      `AtomicBoolean`/`volatile`-style field, which is what `Concurrent::Delay` does for you.
+    tags: [memoization, mutex, double-checked-locking]
+    source: https://github.com/ruby-concurrency/concurrent-ruby
+
+  - slug: ruby-conc-monitor-vs-mutex
+    kind: open
+    difficulty: middle
+    title: "Monitor vs Mutex: when would you choose each?"
+    body: |
+      Ruby ships both `Thread::Mutex` and `Monitor` (from the `monitor` stdlib). Explain the
+      difference and when you would reach for `Monitor` or `MonitorMixin`.
+    answer: |
+      - `Mutex` is a plain non-reentrant lock: a thread that already holds it and calls `lock`
+        again gets `ThreadError` (recursive locking).
+      - `Monitor` is a **reentrant** mutex: it records the owner and a count, so the owning thread
+        can `synchronize` nested any number of times; the lock is released when the outermost
+        block exits.
+      - `MonitorMixin` lets you `include` that behaviour into any object (`mon_synchronize`,
+        `mon_enter`/`mon_exit`) and `new_cond` gives you a `ConditionVariable` bound to the monitor.
+      - Use `Monitor` when public synchronized methods call each other (a cache whose `fetch`
+        calls `write`) or when callbacks might re-enter the object. ActiveRecord's connection pool
+        and `ActiveSupport::Cache::MemoryStore` use `Monitor` for exactly this reason.
+      - Costs: slightly slower than `Mutex`, and reentrancy can hide poor design; a `Mutex` with
+        private unlocked helpers is often cleaner.
+      - Both are Fiber-scheduler aware and both release the lock if the block raises.
+    explanation: |
+      A good follow-up: "Does reentrancy protect you from deadlocks?" No. Reentrancy only covers
+      the *same* thread re-locking the *same* monitor; two threads taking two monitors in opposite
+      orders still deadlock. Also note `Monitor` is per-fiber-aware in 3.x: a fiber that holds the
+      monitor and yields to another fiber in the same thread does not implicitly let that fiber in.
+    tags: [monitor, mutex, reentrant]
+    source: https://docs.ruby-lang.org/en/3.3/Monitor.html
+
+  - slug: ruby-conc-code-registry-monitor
+    kind: code
+    difficulty: middle
+    title: "Reentrant locking with Monitor"
+    body: |
+      Implement a thread-safe `Registry` using `Monitor` (`require "monitor"`):
+
+      - `register(name, value)` — stores the value; raises `ArgumentError` if `name` is already registered
+      - `registered?(name)` — true if the name exists
+      - `size` — number of entries
+
+      Every public method must take the lock, and `register` must call `registered?` **inside its
+      own locked section** (that is why a plain `Mutex` would raise `ThreadError` here).
+
+      ```ruby
+      r = Registry.new
+      r.register(:db, "postgres")
+      r.registered?(:db)          # => true
+      r.register(:db, "mysql")    # raises ArgumentError
+      ```
+    starter_code: |
+      require "monitor"
+
+      class Registry
+        def initialize
+          @items = {}
+          @lock = Monitor.new
+        end
+
+        def register(name, value)
+          # your code here (must call registered? while holding the lock)
+        end
+
+        def registered?(name)
+          # your code here
+        end
+
+        def size
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class RegistryTest < Minitest::Test
+        def test_register_and_query
+          r = Registry.new
+          r.register(:db, "postgres")
+          assert r.registered?(:db)
+          refute r.registered?(:cache)
+          assert_equal 1, r.size
+        end
+
+        def test_duplicate_raises
+          r = Registry.new
+          r.register(:db, 1)
+          assert_raises(ArgumentError) { r.register(:db, 2) }
+          assert_equal 1, r.size
+        end
+
+        def test_concurrent_registration
+          r = Registry.new
+          threads = 8.times.map do |t|
+            Thread.new { 50.times { |i| r.register("#{t}-#{i}", i); Thread.pass if i % 7 == 0 } }
+          end
+          threads.each(&:join)
+          assert_equal 400, r.size
+        end
+
+        def test_uses_monitor_reentrantly
+          r = Registry.new
+          lock = r.instance_variable_get(:@lock)
+          assert_kind_of Monitor, lock
+          lock.synchronize { r.register(:nested, 1) }
+          assert r.registered?(:nested)
+        end
+      end
+    solution: |
+      require "monitor"
+
+      class Registry
+        def initialize
+          @items = {}
+          @lock = Monitor.new
+        end
+
+        def register(name, value)
+          @lock.synchronize do
+            raise ArgumentError, "already registered: #{name}" if registered?(name)
+            @items[name] = value
+          end
+        end
+
+        def registered?(name)
+          @lock.synchronize { @items.key?(name) }
+        end
+
+        def size
+          @lock.synchronize { @items.size }
+        end
+      end
+    explanation: |
+      `register` holds the monitor and calls `registered?`, which takes it again. With a `Mutex`
+      the second `synchronize` raises `ThreadError: deadlock; recursive locking`; `Monitor` tracks
+      the owner and a nesting count so the same thread can re-enter. The check-then-insert must be
+      inside one locked section, otherwise two threads could both pass the `registered?` check and
+      both insert (a time-of-check/time-of-use race). The last test calls `register` while already
+      holding the lock from outside, which only works because the lock is reentrant.
+    tags: [monitor, reentrant, thread-safety]
+    source: https://docs.ruby-lang.org/en/3.3/Monitor.html
+
+  - slug: ruby-conc-fiber-resume-dead-mcq
+    kind: mcq
+    difficulty: junior
+    title: "What does this print?"
+    body: |
+      ```ruby
+      f = Fiber.new do |x|
+        y = Fiber.yield x * 2
+        y + 1
+      end
+
+      p f.resume(10)
+      p f.resume(5)
+      p f.alive?
+      p f.resume
+      ```
+    choices:
+      - "`20`, `6`, `false`, then `FiberError` (dead fiber called)"
+      - "`20`, `11`, `true`, then `nil`"
+      - "`10`, `6`, `false`, then `nil`"
+      - "`20`, `6`, `true`, then `FiberError`"
+    answer: 0
+    explanation: |
+      The first `resume(10)` starts the block with `x = 10` and runs to `Fiber.yield 20`, so
+      `resume` returns 20. The second `resume(5)` makes that `Fiber.yield` expression evaluate to
+      5, so `y = 5` and the block finishes returning 6, which is what `resume` returns. The fiber
+      is now finished: `alive?` is `false` and resuming it again raises `FiberError: attempt to
+      resume a terminated fiber`. Values flow both ways: arguments to `resume` become the result
+      of `Fiber.yield`, and arguments to `Fiber.yield` (or the block's final value) become the
+      result of `resume`.
+    tags: [fiber, resume, yield]
+    source: https://docs.ruby-lang.org/en/3.3/Fiber.html
+
+  - slug: ruby-conc-code-fiber-generator
+    kind: code
+    difficulty: junior
+    title: "Fibonacci generator with a Fiber"
+    body: |
+      Implement `fib_generator`, which returns a `Fiber`. Each `resume` yields the next Fibonacci
+      number, starting from 0, forever:
+
+      ```ruby
+      g = fib_generator
+      g.resume # => 0
+      g.resume # => 1
+      g.resume # => 1
+      g.resume # => 2
+      ```
+
+      Two generators must be independent of each other. Do not precompute an array; produce
+      values lazily with `Fiber.yield`.
+    starter_code: |
+      def fib_generator
+        Fiber.new do
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FibGeneratorTest < Minitest::Test
+        def test_first_ten
+          g = fib_generator
+          assert_equal [0, 1, 1, 2, 3, 5, 8, 13, 21, 34], 10.times.map { g.resume }
+        end
+
+        def test_independent_generators
+          a = fib_generator
+          b = fib_generator
+          5.times { a.resume }
+          assert_equal 0, b.resume
+          assert_equal 5, a.resume
+        end
+
+        def test_stays_alive
+          g = fib_generator
+          100.times { g.resume }
+          assert g.alive?
+          assert_equal 354224848179261915075, g.resume
+        end
+      end
+    solution: |
+      def fib_generator
+        Fiber.new do
+          a, b = 0, 1
+          loop do
+            Fiber.yield a
+            a, b = b, a + b
+          end
+        end
+      end
+    explanation: |
+      A fiber keeps its own stack, so the local variables `a` and `b` survive between `resume`
+      calls without any explicit state object; that is what makes fibers a natural fit for
+      generators and coroutines. This is also how `Enumerator` implements external iteration:
+      `Enumerator.new { |y| ... }.next` runs the block in a fiber and `y << value` is a
+      `Fiber.yield`. An infinite `loop do` is fine because the fiber only runs when resumed.
+    tags: [fiber, generator]
+    source: https://docs.ruby-lang.org/en/3.3/Fiber.html
+
+  - slug: ruby-conc-enumerator-fibers
+    kind: open
+    difficulty: middle
+    title: "Why is Enumerator#next so much slower than each?"
+    body: |
+      ```ruby
+      e = [1, 2, 3].each
+      e.next # => 1
+      e.next # => 2
+      ```
+
+      A teammate replaced an `each` loop over a large array with `loop { e.next }` and the code
+      became several times slower. Explain what `Enumerator#next` does under the hood and the
+      other caveats of external iteration.
+    answer: |
+      - Internal iteration (`each`, `map`) just yields to a block: one method call per element.
+      - External iteration (`next`, `peek`, `rewind`) must suspend the producer between elements,
+        so `Enumerator` runs the underlying `each` inside a **Fiber** and each `next` is a fiber
+        switch (`resume`/`Fiber.yield`), with its own stack, which costs far more than a block call.
+      - Caveats documented for `next`: the stack trace inside the enumerator only shows the fiber's
+        frames; fiber-local variables (`Thread#[]`) are not visible inside; the enumerator cannot be
+        used across threads (`FiberError` if resumed from another thread); exceptions inside the
+        `each` propagate out of `next`, and `StopIteration` marks the end.
+      - Use `next` only when you genuinely need pull semantics (merging two sorted streams,
+        parsers, interleaving). Otherwise use `each`, `lazy`, `each_slice`, or `with_index`.
+    explanation: |
+      Interviewers ask this to see if you know that "an Enumerator is a Fiber" and can reason about
+      cost. Follow-up: "Is `Enumerator::Lazy` also fiber-based?" No: `lazy` chains blocks internally
+      (`map`/`select` become nested yielders) and only `next`/`peek` create a fiber. `first(n)` on a
+      lazy enumerator uses internal iteration and is cheap.
+    tags: [enumerator, fiber, external-iteration]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html
+
+  - slug: ruby-conc-fiber-scheduler-theory
+    kind: theory
+    difficulty: senior
+    title: "The Fiber scheduler and the async gem"
+    body: |
+      Ruby 3.0 added a hook interface, `Fiber.set_scheduler`, that turns fibers into a basis for
+      **event-driven IO without callbacks**. When a scheduler is set on a thread, every fiber
+      created with `Fiber.new` (default `blocking: false`) or `Fiber.schedule` is non-blocking:
+      when it hits a blocking operation the VM calls a scheduler hook instead of blocking the thread.
+
+      Hooks the scheduler implements: `io_wait`, `io_read`/`io_write`, `kernel_sleep`,
+      `block`/`unblock` (used by `Mutex`, `Queue`, `ConditionVariable`, `Thread#join`),
+      `process_wait`, `address_resolve`, `timeout_after`. Ruby's own `IO`, `Net::HTTP`,
+      `sleep`, `Mutex`, `Queue` and most DB drivers that use Ruby IO cooperate automatically.
+
+      The `async` gem is the production scheduler:
+
+      ```ruby
+      require "async"
+      require "net/http"
+
+      Async do |task|
+        urls.each do |url|
+          task.async { Net::HTTP.get(URI(url)) }   # 1000 of these cost ~KBs each
+        end
+      end  # waits for all child tasks
+      ```
+
+      All fibers run on one thread, so there are no data races between them: a switch only
+      happens at a blocking call. The cost is that one CPU-heavy fiber stalls every other fiber
+      on that thread, and a C extension that blocks without going through Ruby IO (an old DB
+      driver, `system`) blocks the whole reactor. Falcon is the web server built on this model.
+    answer: |
+      **Q:** You have 5,000 idle WebSocket connections. Why is the fiber scheduler a better fit than 5,000 threads?
+      **A:** Each thread costs an OS thread plus a ~1MB stack and the GVL contention of being scheduled; 5,000 fibers cost a few KB each and only run when their socket is readable, with no locks needed between them because switches only happen at IO. The scheduler multiplexes all of them over one `io_wait` loop.
+    explanation: |
+      Key things to say: it is a *hook interface* in core, not an event loop; `async` (or
+      `io-event`) provides the loop; existing blocking-style code becomes non-blocking without
+      rewriting because `IO`, `Net::HTTP`, `sleep`, `Queue` etc. call the hooks. Know the
+      limitation: CPU-bound work and GVL-blocking C extensions defeat it, and `Thread#[]`
+      fiber-locals reset per task (use `Fiber[]` storage, Ruby 3.2+).
+    tags: [fiber-scheduler, async, non-blocking]
+    source: https://docs.ruby-lang.org/en/3.3/fiber_md.html
+
+  - slug: ruby-conc-ractor-theory
+    kind: theory
+    difficulty: senior
+    title: "Ractor: the actor model and shareable objects"
+    body: |
+      `Ractor` (Ruby 3.0+) is CRuby's path to **parallel** Ruby code. Each Ractor has its own
+      GVL (per-Ractor lock), so Ractors run truly in parallel on multiple cores, and they are
+      isolated: a Ractor cannot read another Ractor's mutable objects.
+
+      ```ruby
+      workers = 4.times.map do
+        Ractor.new do
+          loop { Ractor.yield(heavy(Ractor.receive)) }   # receive -> compute -> yield
+        end
+      end
+      workers.each_with_index { |r, i| r.send(chunks[i]) }   # push: copies the message
+      results = workers.map(&:take)                          # pull: blocks until yielded
+      ```
+
+      Rules:
+
+      - The block cannot capture outer locals (`ArgumentError: can not isolate a Proc`).
+        Pass data as arguments or messages.
+      - **Shareable objects** can be referenced from any Ractor: immediates (Integer, Symbol,
+        `nil`/`true`/`false`), frozen Strings/Regexps, *deeply* frozen objects, classes and
+        modules, Ractors themselves. `Ractor.make_shareable(obj)` deep-freezes. Everything else
+        is unshareable; sending one **copies** it (`send`) or **moves** it (`send(obj, move:
+        true)`, after which the sender gets `Ractor::MovedError` on use).
+      - Non-main Ractors cannot touch global variables, class variables, or constants that hold
+        unshareable objects (`Ractor::IsolationError`).
+      - `send`/`receive` is push with an unbounded inbox; `yield`/`take` is pull and rendezvous.
+        Exceptions propagate to `take` as `Ractor::RemoteError` (`cause` has the original).
+
+      Ractors are still experimental (a warning prints on first `Ractor.new`), many gems are not
+      Ractor-safe, and each Ractor costs more than a thread. They are the tool for CPU-parallel
+      pure-Ruby work in one process; for everything else, threads, fibers or `fork` remain simpler.
+    answer: |
+      **Q:** Why does `Ractor.new { puts CONFIG[:host] }` raise `Ractor::IsolationError` when `CONFIG = { host: "x" }`?
+      **A:** The Hash is mutable, so it is unshareable, and a non-main Ractor may not read a constant that references an unshareable object. Make it shareable with `CONFIG = Ractor.make_shareable({ host: "x" })` (deep-freeze) or the `# shareable_constant_value: literal` magic comment.
+    explanation: |
+      Interviewers rarely expect production Ractor experience, but they do expect you to explain
+      *why* Ractors can be parallel when threads cannot (per-Ractor GVL + no shared mutable state)
+      and what "shareable" means. Mention that the method cache was rewritten per-class in 3.0
+      specifically so Ractors would not fight over a global cache.
+    tags: [ractor, actor-model, shareable]
+    source: https://docs.ruby-lang.org/en/3.3/ractor_md.html
+
+  - slug: ruby-conc-ractor-shareable-mcq
+    kind: mcq
+    difficulty: senior
+    title: "Which object can be passed to another Ractor without copying?"
+    body: |
+      Each of these is sent with `ractor.send(obj)`. Which one is **shareable** (referenced
+      directly, not deep-copied)?
+    choices:
+      - "`[1, [2, 3]].freeze`"
+      - "`{ name: \"app\" }`"
+      - "`[\"a\".freeze, \"b\".freeze].freeze`"
+      - "`\"a-string\"` (unfrozen literal)"
+    answer: 2
+    explanation: |
+      Shareability is transitive: an object is shareable only if it is frozen *and* everything it
+      references is shareable. Choice C is a frozen Array of frozen Strings, so every reachable
+      object is immutable and the Ractor can read it directly. Choice A is the trap: the outer
+      array is frozen but the nested `[2, 3]` is not, so the whole graph is unshareable and
+      `send` deep-copies it. B is an unfrozen Hash and D an unfrozen String, both copied as well.
+      `Ractor.shareable?(obj)` answers this at runtime and `Ractor.make_shareable(obj)` deep-freezes
+      the graph for you (use `copy: true` if you want to keep the original mutable).
+    tags: [ractor, shareable, frozen]
+    source: https://docs.ruby-lang.org/en/3.3/ractor_md.html
+
+  - slug: ruby-conc-ractor-vs-threads-when
+    kind: open
+    difficulty: senior
+    title: "Threads, Ractors or fork for a CPU-heavy batch job?"
+    body: |
+      You need to parse and transform 2 million JSON documents in a nightly job on an 8-core
+      server, in pure Ruby. Compare threads, Ractors and forked processes for this job, and say
+      which you would pick today and why.
+    answer: |
+      - **Threads**: no gain. The transform is CPU-bound Ruby, so the GVL serialises it; 8 threads
+        take as long as 1 (slightly longer). Only the JSON parsing in C would overlap, and
+        `JSON.parse` does not release the GVL.
+      - **Ractors**: true parallelism in one process, but every document must be sent as a
+        message (copied) or be shareable (deep-frozen), the worker block cannot touch outer
+        state, many gems are not Ractor-safe, and it still prints an experimental warning. Great
+        for self-contained pure computation; risky for code that touches ActiveRecord, loggers,
+        or global config.
+      - **fork** (`Process.fork`, or `parallel` gem `in_processes: Etc.nprocessors`): each child
+        has its own GVL and inherits the parent's memory copy-on-write, so loading the app once
+        and forking is cheap. Results come back via pipes/Marshal, which is the only real cost.
+        Downsides: more RSS as pages diverge, must reconnect DB connections after fork.
+      - Pick: **fork** today for a batch job. Boring, every gem works, and the OS gives real
+        isolation. Ractors become the answer when the work is pure and the ecosystem catches up.
+    explanation: |
+      Strong candidates mention `Etc.nprocessors` for sizing, `Process.wait`/`waitall` to reap
+      children, and that forked workers must not share the parent's DB socket (call
+      `ActiveRecord::Base.establish_connection` or let Rails' `after_fork` hooks handle it).
+      Follow-up: "what changes if the per-document work is mostly an HTTP call?" Then it is
+      IO-bound and 50 threads or `async` fibers win on memory.
+    tags: [ractor, fork, threads, cpu-bound]
+    source: https://github.com/grosser/parallel
+
+  - slug: ruby-conc-fork-cow-theory
+    kind: theory
+    difficulty: middle
+    title: "fork, copy-on-write and Process.wait"
+    body: |
+      `fork` duplicates the current process. The child gets a copy of the whole address space,
+      but the kernel implements it lazily with **copy-on-write (COW)**: parent and child share
+      the same physical pages until one of them writes to a page, at which point only that page
+      is copied. Forking a 500MB Rails app is therefore cheap, and that is how Unicorn, Puma
+      (cluster mode), Sidekiq Enterprise and Resque get N workers from one boot.
+
+      ```ruby
+      pid = fork do          # child: returns nil from fork, runs the block
+        do_work
+        exit!(0)             # exit! skips at_exit handlers inherited from the parent
+      end
+      Process.wait(pid)      # parent: reap the child, sets $? (Process::Status)
+      $?.success?
+      ```
+
+      Things that bite:
+
+      - Only the **calling thread** survives in the child; other threads simply vanish mid-flight
+        (a `Mutex` held by one of them stays locked forever). Fork before starting threads.
+      - Open sockets and DB connections are shared file descriptors: both processes writing to one
+        Postgres connection corrupts the protocol. Reconnect in the child (Rails does this via
+        `ActiveRecord` fork hooks since 7.1 / server `after_fork` hooks).
+      - Ruby's GC *writes* to objects (mark bits) which would undo COW; since Ruby 2.0 mark bits
+        live in a separate bitmap so pages stay shared. `GC.compact` and `Process.warmup` (3.3)
+        before forking improve sharing further.
+      - Forgetting `Process.wait`/`detach` leaves zombies. `Process.waitall` reaps everything.
+    answer: |
+      **Q:** Why do preforking servers boot the app and *then* fork, rather than forking first and booting in each worker?
+      **A:** Copy-on-write. Booting once builds the Rails constant tree, gem code and YJIT state in the parent; children share those pages for free and only pay for pages they write. Forking first would duplicate the boot work N times and share nothing.
+    explanation: |
+      Follow-ups: "Why does RSS of each worker still grow over time?" Pages diverge as each worker
+      allocates and the GC touches objects, so measure shared vs private memory (`smem`, PSS) rather
+      than RSS. "What does `Process.warmup` do?" (3.3) Runs a full GC, compacts and tells the
+      allocator to release memory, intended to be called right before forking workers.
+    tags: [fork, copy-on-write, process-wait]
+    source: https://docs.ruby-lang.org/en/3.3/Process.html
+
+  - slug: ruby-conc-fork-threads-mcq
+    kind: mcq
+    difficulty: senior
+    title: "A background thread and fork"
+    body: |
+      ```ruby
+      q = Queue.new
+      Thread.new { loop { q << :tick; sleep 0.01 } }
+      sleep 0.05
+      pid = fork { sleep 0.05; puts q.size }
+      Process.wait(pid)
+      ```
+
+      What does the child print, approximately?
+    choices:
+      - "About 5: the child's copy of the queue is frozen at the moment of `fork` because only the forking thread exists in the child."
+      - "About 10: the ticker thread keeps running in the child."
+      - "0: a `Queue` cannot be copied across `fork`."
+      - "It raises `ThreadError` because threads cannot be forked."
+    answer: 0
+    explanation: |
+      `fork` copies memory (the queue with its ~5 items) but only the **calling thread** exists in
+      the child; the ticker thread is not recreated, so nothing pushes in the child and `q.size`
+      stays at whatever it was at fork time. The parent keeps ticking. This is the root cause of a
+      whole family of production bugs: a connection-pool reaper thread, a `Timeout` thread, a
+      Sentry/Datadog flusher thread or a `Concurrent::TimerTask` started before `fork` silently
+      stops working in the children. Libraries handle this with `Process._fork` hooks (3.1+) or
+      server `after_fork`/`before_fork` callbacks to restart their threads.
+    tags: [fork, threads]
+    source: https://docs.ruby-lang.org/en/3.3/Process.html
+
+  - slug: ruby-conc-timeout-danger-mcq
+    kind: mcq
+    difficulty: senior
+    title: "Why is Timeout.timeout considered dangerous?"
+    body: |
+      ```ruby
+      Timeout.timeout(2) do
+        conn = pool.checkout
+        conn.query(sql)
+        pool.checkin(conn)
+      end
+      ```
+
+      Why do experienced Rubyists (and the Sidekiq wiki) warn against wrapping arbitrary code in `Timeout.timeout`?
+    choices:
+      - "It only works with pure-Ruby code; C extensions ignore it entirely, so the query will never be interrupted."
+      - "It spawns a watchdog thread that raises an exception *into* the block's thread at an arbitrary point, so the block can be interrupted between `checkout` and `checkin` (or inside `ensure`, or mid-protocol in a socket), leaking connections and corrupting state."
+      - "It uses `sleep`, which releases the GVL, so the timer is unreliable under load."
+      - "It raises `Timeout::Error`, which inherits from `Exception`, so it cannot be rescued."
+    answer: 1
+    explanation: |
+      `Timeout.timeout` is implemented by a separate timer thread that calls `Thread#raise` on
+      the caller when the deadline passes. An asynchronous exception can land on *any* line of
+      Ruby code, including inside the library's own `ensure` blocks, in the middle of writing a
+      network frame, or after `checkout` but before the pool bookkeeping, which is how you get
+      leaked connections and "pool exhausted" errors long after the timeout. It does not
+      interrupt a C call until it returns to Ruby (so A is partly true but not the main point).
+      Prefer the deadline the underlying library offers: `Net::HTTP#read_timeout`, `pg`'s
+      `statement_timeout`, Redis `timeout:`, `IO#wait_readable(sec)`, `Queue#pop(timeout:)`.
+      `Timeout::Error` is a `RuntimeError`, so D is false.
+    tags: [timeout, thread-raise, async-exceptions]
+    source: https://docs.ruby-lang.org/en/3.3/Timeout.html
+
+  - slug: ruby-conc-puma-vs-unicorn
+    kind: open
+    difficulty: middle
+    title: "Puma threads vs Unicorn processes"
+    body: |
+      Compare Puma and Unicorn as application servers for a Rails app. What is the concurrency
+      model of each, and how would you configure Puma's workers and threads for a 4-core, 8GB
+      box?
+    answer: |
+      - **Unicorn**: preforking, one process per request slot, single-threaded. A slow request
+        blocks that worker entirely; the master kills workers that exceed a timeout. Simple,
+        every gem is safe, but memory scales linearly with workers (each ~300-500MB for a big app).
+      - **Puma**: hybrid. `workers N` forks N processes (cluster mode, copy-on-write) and each runs
+        `threads min, max` worker threads plus a reactor thread that buffers slow clients. Threads
+        share the heap, so N workers x T threads serves N*T concurrent requests for roughly N
+        workers' worth of memory.
+      - Because of the GVL, threads in one worker overlap only during IO (DB, Redis, HTTP). For a
+        typical Rails app spending 50-80% in IO, 3-5 threads per worker is the sweet spot; more
+        adds latency variance and memory with little throughput.
+      - For 4 cores / 8GB: `workers 4` (one per core, or `Etc.nprocessors`), `threads 3, 3` (or 5),
+        `preload_app!` so COW sharing works, DB pool = threads (`RAILS_MAX_THREADS`), plus
+        `MALLOC_ARENA_MAX=2` or jemalloc to curb fragmentation from the threads.
+    explanation: |
+      Follow-ups: "Why must your code be thread-safe for Puma but not Unicorn?" (threads share
+      class-level state; a memoized `@@cache` or a non-thread-safe gem corrupts under Puma).
+      "What does the reactor do?" (reads request bodies from slow clients so worker threads are
+      not held hostage, which is why Unicorn needs nginx in front and Puma can face the internet).
+    tags: [puma, unicorn, threads, processes]
+    source: https://github.com/puma/puma/blob/master/docs/architecture.md
+
+  - slug: ruby-conc-puma-pool-size-mcq
+    kind: mcq
+    difficulty: middle
+    title: "ConnectionTimeoutError under load"
+    body: |
+      Puma runs with `workers 2` and `threads 5, 5`. `database.yml` has `pool: 3`. Under load
+      you see intermittent `ActiveRecord::ConnectionTimeoutError: could not obtain a connection
+      from the pool within 5.000 seconds`. What is the root cause?
+    choices:
+      - "The pool is shared across both workers, so 10 threads compete for 3 connections."
+      - "Postgres `max_connections` is too low; raise it and the error disappears."
+      - "Puma's reactor thread also needs a connection, so the pool must be threads + 1."
+      - "Each worker process has its own pool of 3, but 5 threads per worker can need a connection at the same time; two of them wait and time out after `checkout_timeout`."
+    answer: 3
+    explanation: |
+      The ActiveRecord pool lives in each process (forked workers do not share it), and each
+      thread that touches the DB checks out one connection for the duration of the request. With 5
+      threads and 3 connections, the 4th and 5th concurrent requests block in `checkout` until a
+      connection is returned or `checkout_timeout` (default 5s) expires. Rule: `pool >= threads`
+      per process; Rails' default `pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>` encodes
+      exactly that. Then total DB connections = workers x pool (x dynos), which is where Postgres
+      `max_connections` and PgBouncer come in, but that is a different error (`PG::ConnectionBad`).
+      Sidekiq follows the same rule: pool >= concurrency.
+    tags: [activerecord, connection-pool, puma]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/ConnectionAdapters/ConnectionPool.html
+
+  - slug: ruby-conc-sidekiq-thread-safety
+    kind: open
+    difficulty: middle
+    title: "What makes a Sidekiq job thread-safe?"
+    body: |
+      Sidekiq runs jobs on 10 (or 25) threads in one process. A new team member asks what they
+      need to watch out for when writing job code. What do you tell them?
+    answer: |
+      - Keep state in locals and instance variables of the job instance (a new instance per
+        job); avoid class variables, class-level `@ivars`, constants holding mutable Hashes, and
+        global mutable config. These are shared by all threads at once.
+      - Any shared cache or counter needs a `Mutex`/`Monitor`, `Concurrent::Map`, or
+        `Concurrent::AtomicFixnum`; `@cache ||= {}` and `hash[k] += 1` are races.
+      - Use thread-safe gems only; many older gems (e.g. ones with global connection objects) are
+        not. Load all code at boot so `require` does not run concurrently inside jobs.
+      - Size pools to concurrency: ActiveRecord `pool >= concurrency`, Redis/HTTP client pools too,
+        otherwise jobs fail with checkout timeouts.
+      - Put timeouts on network calls using the client's own options, not `Timeout.timeout`,
+        which can leave threads and connections in a broken state.
+      - Memory: many threads fragment glibc's heap; set `MALLOC_ARENA_MAX=2` or use jemalloc.
+      - Debug a hung process with `kill -TTIN <pid>`: Sidekiq dumps every thread's backtrace.
+    explanation: |
+      Interviewers also like: "Why is `Thread.current[:x]` not a safe place for per-job state?"
+      It is per thread and threads are reused, so stale values leak into the next job unless you
+      clear them (Rails' `CurrentAttributes` resets per job for exactly this reason). And "jobs
+      must be idempotent" is a different axis (at-least-once delivery), not thread safety.
+    tags: [sidekiq, thread-safety, connection-pool]
+    source: https://github.com/sidekiq/sidekiq/wiki/Problems-and-Troubleshooting
+
+  - slug: ruby-conc-gvl-release-c-ext
+    kind: open
+    difficulty: senior
+    title: "When exactly is the GVL released?"
+    body: |
+      "Ruby threads can't run in parallel" is only approximately true. Explain precisely when
+      CRuby releases the GVL, how a C extension can run in parallel with Ruby code, and why that
+      matters when you pick a database driver or a JSON library.
+    answer: |
+      - The VM releases the GVL (1) when a thread **blocks**: `IO#read`/`write`, `select`,
+        `sleep`, `Process.wait`, `Mutex#lock` contention, `Queue#pop` waiting; (2) on the
+        **timer tick** (~100ms) to give other runnable threads a turn; (3) when a C extension
+        explicitly calls `rb_thread_call_without_gvl` around work that does not touch Ruby objects.
+      - Inside that region the C code runs truly in parallel with Ruby threads, but it must not
+        allocate Ruby objects or call Ruby APIs; it reacquires the GVL to hand results back.
+      - Drivers that do this: `pg` (while waiting for the server), `mysql2`, `Digest`, `Zlib`,
+        `OpenSSL`, `bcrypt`. Pure-Ruby parsing (`JSON.parse` in the json ext holds the GVL while
+        building objects) does not overlap, so a request that spends 200ms building a huge JSON
+        response blocks every other Puma thread in that worker for 200ms.
+      - Practical effect: thread count helps in proportion to the fraction of time spent with the
+        GVL released. Measure GVL contention with the `gvl_tools`/`gvltools` instrumentation
+        (`GVL_INSTRUMENTATION_API` in 3.2+) before adding threads.
+      - Ractors get around this by giving each Ractor its own lock; JRuby/TruffleRuby have none.
+    explanation: |
+      Follow-up: "Why can a C extension that holds the GVL freeze the whole process?" Because the
+      timer tick cannot preempt native code; a 5s `sleep` implemented in C without releasing the
+      GVL stalls every thread, and so does an old ImageMagick binding. "What is
+      `Thread.pass`?" A hint to release the GVL and let another thread run; useful in tests to
+      provoke interleavings, not for correctness.
+    tags: [gvl, c-extensions, io]
+    source: https://blog.saeloun.com/2026/03/11/ruby-concurrency-beyond-fibers/
+
+  - slug: ruby-conc-concurrent-ruby-abstractions
+    kind: open
+    difficulty: middle
+    title: "What does concurrent-ruby give you over Thread and Mutex?"
+    body: |
+      Rails depends on `concurrent-ruby`. Name the abstractions you would reach for and the
+      problem each one solves, instead of hand-rolling with `Thread.new` and `Mutex`.
+    answer: |
+      - `Concurrent::Map`: a thread-safe hash with atomic `compute_if_absent`, `fetch_or_store`,
+        `put_if_absent`; solves the `@cache[k] ||= ...` race. Faster than a Mutex-wrapped Hash
+        under contention. (`Concurrent::Hash`/`Array` are the simpler locked versions.)
+      - `Concurrent::AtomicFixnum` / `AtomicBoolean` / `AtomicReference`: lock-free counters and
+        flags with `increment`, `compare_and_set`, `update { }`; for metrics and "run once" guards.
+      - Thread pools (`FixedThreadPool`, `CachedThreadPool`, `ThreadPoolExecutor` with a bounded
+        queue and fallback policy): bounded concurrency instead of `Thread.new` per task.
+      - `Concurrent::Promises.future { }` (the modern API; `Future`/`Promise` are deprecated):
+        composable async values with `.then`, `.zip`, `.value!`, exception propagation, running
+        on a pool. `Concurrent::Delay` for thread-safe lazy initialization.
+      - `Concurrent::TimerTask`, `ScheduledTask`: periodic/delayed work; `Semaphore`, `CountDownLatch`,
+        `CyclicBarrier`, `ReadWriteLock`, `ReentrantReadWriteLock`.
+      - Same semantics on MRI, JRuby and TruffleRuby, which hand-rolled GVL-reliant code lacks.
+    explanation: |
+      A sharp follow-up: "Rails uses `Concurrent::Map` where?" The class loader/`ActiveSupport::
+      Dependencies` interlock, `ActiveSupport::Cache` local stores, Zeitwerk-adjacent registries,
+      and `ActiveRecord` attribute method caches. Knowing that `Future`/`Promise` are deprecated in
+      favour of `Promises` shows you read the current README.
+    tags: [concurrent-ruby, atomic, thread-pool]
+    source: https://github.com/ruby-concurrency/concurrent-ruby
+
+  - slug: ruby-conc-thread-pool-design
+    kind: open
+    difficulty: middle
+    title: "Why not Thread.new per task?"
+    body: |
+      A script does `urls.map { |u| Thread.new { fetch(u) } }.each(&:join)` for 20,000 URLs
+      and the box falls over. Explain why, and how you would design a bounded version. How
+      would you choose the size?
+    answer: |
+      - 20,000 OS threads means 20,000 stacks (CRuby reserves ~1MB VM stack + native stack
+        each), 20,000 sockets, and 20,000 threads fighting for the GVL and the DNS resolver;
+        memory and file-descriptor limits (`ulimit -n`) blow up first, then latency collapses.
+      - Design: a **thread pool**: a `Queue` of work items, N long-lived worker threads looping
+        on `pop`, `close` the queue when done, collect results via a second `Queue` or
+        index-tagged slots. Or `Concurrent::FixedThreadPool`, or the `parallel` gem
+        (`Parallel.map(urls, in_threads: 50)`), or `async` fibers for pure IO.
+      - Add backpressure with `SizedQueue` if producers are faster than consumers, and per-request
+        timeouts via the HTTP client so a stuck socket does not pin a worker.
+      - Sizing: for IO-bound work the sweet spot is well above core count (tens), bounded by the
+        remote service's rate limits and your DB/HTTP pool sizes; for CPU-bound work threads do
+        not help on MRI, use `Etc.nprocessors` processes instead. Measure throughput while
+        increasing N; stop when latency rises without more throughput.
+    explanation: |
+      Interviewers want the structural answer (queue + fixed workers) and awareness of limits
+      (GVL, fds, remote rate limits). Mentioning that `Thread.new` also carries a thread-creation
+      cost that Ruby 3.3's M:N scheduler reduces is a nice touch but not required.
+    tags: [thread-pool, queue, sizing]
+    source: https://github.com/grosser/parallel
+
+  - slug: ruby-conc-debug-hung-threads
+    kind: open
+    difficulty: senior
+    title: "Debugging a hung multithreaded Ruby process"
+    body: |
+      A Sidekiq process stops picking up jobs but is still alive. You cannot attach a debugger
+      in production. How do you find out what each thread is doing, using only what Ruby
+      and Sidekiq give you?
+    answer: |
+      - Send `kill -TTIN <pid>`: Sidekiq's handler iterates `Thread.list` and logs each thread's
+        `status`, `name` and `backtrace`, which is usually enough to see every worker blocked in
+        `Mutex#lock`, `Queue#pop`, a socket `read`, or a C extension.
+      - Do the same by hand in any app: `Thread.list.each { |t| warn t.inspect, *t.backtrace }`
+        from a signal trap. `Thread#backtrace_locations` returns `Thread::Backtrace::Location`
+        objects with `path`, `lineno`, `label`, instead of strings, which is nicer to filter.
+      - `Thread#status`: `"sleep"` for every thread means they are all waiting on something
+        (lock, IO, queue); look for the one holding the lock (`mutex.owned?`/`locked?`).
+      - For the current thread, `Thread.each_caller_location { |loc| ... }` (3.2+) walks frames
+        lazily without building the whole array, handy in instrumentation that samples deep stacks.
+      - If nothing is in Ruby at all (all threads in a C extension), use `rbspy`/`gdb` for native
+        frames, and check whether `Timeout.timeout` or `fork` killed a helper thread.
+      - Typical culprits: a lock held across a network call, `Timeout` leaving a pool connection
+        checked out, all threads waiting on a pool that is smaller than concurrency.
+    explanation: |
+      Also acceptable: Ruby's deadlock detector only fires when the *main* thread is blocked in
+      `join`/`Queue#pop` and no thread can ever run; a Sidekiq process with a heartbeat thread
+      never trips it, which is why `TTIN` dumps exist. Tools to name: `rbspy` (sampling, no
+      restart), `sigdump` gem, `gvl_tools`.
+    tags: [debugging, backtrace, thread-list]
+    source: https://docs.ruby-lang.org/en/3.3/Thread/Backtrace/Location.html
+
+  - slug: ruby-conc-code-parallel-map
+    kind: code
+    difficulty: junior
+    title: "parallel_map with one thread per item"
+    body: |
+      Implement `parallel_map(items) { |item| ... }`:
+
+      - Runs the block for every item in its own `Thread`.
+      - Returns the results **in the original order**.
+      - If any block raises, `parallel_map` raises that same exception in the caller (after all
+        threads have been started).
+
+      ```ruby
+      parallel_map([1, 2, 3]) { |x| x * 10 } # => [10, 20, 30]
+      ```
+
+      Hint: `Thread#value` joins the thread and returns the block's result, or re-raises.
+    starter_code: |
+      def parallel_map(items, &block)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class ParallelMapTest < Minitest::Test
+        def test_preserves_order
+          out = parallel_map([3, 1, 2]) { |x| Thread.pass; x * 10 }
+          assert_equal [30, 10, 20], out
+        end
+
+        def test_runs_in_threads
+          main = Thread.current
+          threads = parallel_map([1, 2]) { Thread.current }
+          assert_equal 2, threads.uniq.size
+          refute_includes threads, main
+        end
+
+        def test_propagates_exception
+          Thread.report_on_exception = false
+          err = assert_raises(ArgumentError) do
+            parallel_map([1, 2]) { |x| raise ArgumentError, "bad #{x}" if x == 2; x }
+          end
+          assert_equal "bad 2", err.message
+        end
+
+        def test_empty
+          assert_equal [], parallel_map([]) { |x| x }
+        end
+      end
+    solution: |
+      def parallel_map(items, &block)
+        items.map { |item| Thread.new(item, &block) }.map(&:value)
+      end
+    explanation: |
+      Two `map`s, not one: the first starts every thread *before* the second starts joining, so
+      the work really overlaps. `items.map { |i| Thread.new { block.call(i) }.value }` would start
+      one thread, wait for it, then start the next, which is sequential. Passing `item` as an
+      argument to `Thread.new` (rather than closing over a loop variable) is the safe idiom.
+      `value` re-raises the thread's exception in the caller, giving you error propagation for
+      free. This pattern is fine for a handful of items; for thousands use a bounded pool.
+    tags: [thread, value, join]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-conc-mn-threads-theory
+    kind: theory
+    difficulty: senior
+    title: "M:N threads in Ruby 3.3"
+    body: |
+      Until 3.3, CRuby threads were strictly **1:1**: every `Thread.new` created a native
+      (pthread) thread, and the GVL decided which of them ran Ruby code. Native threads are
+      expensive to create and to context-switch, which hurts programs that spin up many
+      short-lived threads.
+
+      Ruby 3.3 added an **M:N scheduler**: M Ruby threads are multiplexed onto N native
+      threads (N defaults to `RUBY_MAX_CPU`, 8). A Ruby thread that blocks in IO is parked and
+      its native thread picks up another Ruby thread, so you can have thousands of Ruby threads
+      backed by a handful of OS threads, much like Go's goroutines or the Fiber scheduler, but
+      with preemption and the familiar `Thread` API.
+
+      ```sh
+      RUBY_MN_THREADS=1 ruby server.rb     # opt in on the main Ractor
+      RUBY_MAX_CPU=4 RUBY_MN_THREADS=1 ruby server.rb
+      ```
+
+      It is **off by default** on the main Ractor because some C extensions assume a Ruby thread
+      is pinned to one native thread (thread-local storage, locks held across calls). Non-main
+      Ractors always use M:N. The feature does not change the GVL: Ruby code still runs one
+      thread at a time per Ractor. What changes is the cost of *having* many threads, not the
+      parallelism of running them.
+
+      Related 3.3 improvements: `Thread.each_caller_location`, interruptible
+      `Socket.getaddrinfo`, and `Process.warmup` for preforking servers.
+    answer: |
+      **Q:** Does enabling `RUBY_MN_THREADS=1` make a CPU-bound multi-threaded script faster?
+      **A:** No. M:N changes how Ruby threads map onto OS threads, not the GVL; Ruby code in one Ractor still executes one thread at a time. It reduces creation and switching overhead and lets many blocked threads coexist cheaply. For CPU parallelism you still need Ractors or processes.
+    explanation: |
+      Interviewers who ask about 3.3 want to hear: M:N is opt-in, exists because of C-extension
+      compatibility, and is orthogonal to the GVL. Being able to contrast it with the Fiber
+      scheduler (cooperative, no preemption, same cheapness) is the senior-level answer.
+    tags: [mn-threads, ruby-3-3, scheduler]
+    source: https://www.ruby-lang.org/en/news/2023/12/25/ruby-3-3-0-released/

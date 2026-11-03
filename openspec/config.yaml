@@ -1,0 +1,15 @@
+schema: spec-driven
+
+context: |
+  Project: ruby-elixir-quiz — a personal interview-prep service for Ruby and Elixir positions.
+  Tech stack: Ruby 3.3, Sinatra, Sequel, PostgreSQL 16, ERB views, Minitest. Elixir 1.19 (OTP 27) only used
+  to execute Elixir code-task submissions locally.
+  Content lives in versioned YAML files under content/<lang>/<topic>.yml and is seeded into Postgres.
+  Keep the app minimal: no JS framework, no background jobs, no auth (single local user).
+  Conventions: conventional commits, snake_case, 2-space indent, tests under test/.
+
+rules:
+  proposal:
+    - Include "Non-goals" and "Success criteria" sections
+  tasks:
+    - Each task must be verifiable with a command or a visible behavior

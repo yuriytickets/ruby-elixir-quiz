@@ -1,0 +1,1629 @@
+language: ruby
+topic: collections-and-enumerable
+items:
+  - slug: ruby-enum-array-hash-set-complexity
+    kind: theory
+    difficulty: middle
+    title: "Array vs Hash vs Set: internals and complexity"
+    body: |
+      Interviewers like to ask which collection to reach for and *why*. The answer is about the
+      underlying data structure.
+
+      - `Array` is a contiguous, growable buffer of `VALUE` pointers. Index access `a[i]` is O(1),
+        `push`/`pop` are amortized O(1), but `include?`, `delete`, `index` and `unshift`/`shift`
+        on large arrays are O(n) (MRI optimises `shift` with a shared-buffer trick, but
+        `insert`/`delete_at` in the middle still move elements). Small arrays are "embedded"
+        in the object slot (up to 3 elements on 64-bit), avoiding a heap allocation.
+      - `Hash` is an open-addressing hash table (`st_table`). Lookup, insert and delete are O(1)
+        average, driven by `#hash` and `#eql?` of the key. Hashes with up to 8 entries are stored
+        as a flat "ar_table" and scanned linearly, which is faster than hashing for tiny sizes.
+        Since Ruby 1.9 a Hash also keeps **insertion order**.
+      - `Set` (stdlib `require "set"`, autoloaded since 3.2) is a thin wrapper around a Hash whose
+        values are `true`: O(1) membership and dedup, plus set algebra (`|`, `&`, `-`, `^`).
+
+      ```ruby
+      ids = (1..1_000_000).to_a
+      ids.include?(999_999)        # O(n) scan
+      Set.new(ids).include?(999_999) # O(1) after an O(n) build
+      ```
+
+      Rule of thumb: Array when order and index matter; Hash when you look things up by key;
+      Set when you only care about membership and uniqueness.
+    answer: |
+      **Q:** You call `list.include?(x)` inside a loop over another list of size n. What is the
+      total complexity and what do you change?
+
+      **A:** O(n * m): each `include?` is a linear scan. Convert `list` to a `Set` (or a Hash) once,
+      O(m), and then each membership check is O(1), giving O(n + m) overall.
+    explanation: |
+      The follow-up interviewers probe: "what makes an object a good hash key?" The answer is a
+      stable `#hash` consistent with `#eql?`; mutating a key after insertion breaks lookup until
+      you call `Hash#rehash`. Also mention that `Set` equality uses `eql?`/`hash`, not `==`.
+    tags: [array, hash, set, complexity]
+    source: https://docs.ruby-lang.org/en/3.3/Set.html
+
+  - slug: ruby-enum-hash-ordering-guarantee
+    kind: mcq
+    difficulty: junior
+    title: "What order does a Hash iterate in?"
+    body: |
+      ```ruby
+      h = { b: 1, a: 2 }
+      h[:c] = 3
+      h[:b] = 10
+      h.delete(:a)
+      h[:a] = 4
+      p h.keys
+      ```
+
+      What is printed?
+    choices:
+      - "`[:a, :b, :c]` - hashes iterate in sorted key order"
+      - "`[:b, :c, :a]` - insertion order; updating `:b` keeps its position, re-adding `:a` appends it"
+      - "`[:b, :a, :c]` - updating a key moves it to the end"
+      - "Unspecified; iteration order of a Hash is an implementation detail"
+    answer: 1
+    explanation: |
+      Since Ruby 1.9 a Hash presents entries in the order they were **created**. Updating a value does
+      not move the entry, but deleting and re-inserting a key puts it at the end. The "unspecified"
+      answer was true in Ruby 1.8 and is still what people coming from Python < 3.7 or Java expect, so
+      interviewers use it as the distractor. Sorted order is never implied; use `sort` / `sort_by`
+      if you need it.
+    tags: [hash, ordering]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-hash-default-shared
+    kind: mcq
+    difficulty: middle
+    title: "The shared default object pitfall"
+    body: |
+      ```ruby
+      groups = Hash.new([])
+      groups[:odd]  << 1
+      groups[:even] << 2
+      p groups
+      p groups[:anything]
+      ```
+
+      What is printed?
+    choices:
+      - "`{:odd=>[1], :even=>[2]}` then `[]`"
+      - "`{}` then `[1, 2]`"
+      - "`{:odd=>[1, 2], :even=>[1, 2]}` then `[]`"
+      - "`{}` then `[]`"
+    answer: 1
+    explanation: |
+      `Hash.new([])` stores **one** array as the default value. `groups[:odd]` returns that same
+      object without assigning it, so `<< 1` mutates the shared default, and the hash itself stays
+      empty. Every later miss returns the now-polluted `[1, 2]`. RuboCop flags this as
+      `Lint/SharedMutableDefault`. The fix is the block form, which runs per miss and assigns:
+      `Hash.new { |h, k| h[k] = [] }`. The first choice is what people *expect*; the third is what you
+      get if you also wrote `groups[:odd] = groups[:odd] << 1`.
+    tags: [hash, default, pitfall]
+    source: https://rubydoc.info/gems/rubocop/RuboCop/Cop/Lint/SharedMutableDefault
+
+  - slug: ruby-enum-hash-default-proc-no-assign
+    kind: mcq
+    difficulty: middle
+    title: "Default proc that forgets to assign"
+    body: |
+      ```ruby
+      counts = Hash.new { |h, k| 0 }
+      counts[:a] += 1
+      counts[:b]
+      p counts
+      p counts.size
+      ```
+
+      What is printed?
+    choices:
+      - "`{:a=>1, :b=>0}` then `2`"
+      - "`{:a=>1}` then `1`"
+      - "`{}` then `0`"
+      - "`{:a=>1, :b=>nil}` then `2`"
+    answer: 1
+    explanation: |
+      The default proc only computes a value; it does not store anything unless you write `h[k] = ...`
+      inside it. `counts[:a] += 1` expands to `counts[:a] = counts[:a] + 1`, so `:a` is assigned
+      explicitly. `counts[:b]` merely returns `0` and leaves the hash untouched. For counters
+      `Hash.new(0)` is fine (Integers are immutable, so sharing is harmless); the block-with-assignment
+      form matters only when the default is mutable or expensive to build (memoisation).
+    tags: [hash, default_proc]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-fetch-vs-brackets-vs-dig
+    kind: open
+    difficulty: junior
+    title: "`Hash#[]` vs `fetch` vs `dig`"
+    body: |
+      Explain the difference between `h[:k]`, `h.fetch(:k)` and `h.dig(:a, :b, :c)`. When do you
+      choose each one in application code?
+    answer: |
+      - `h[:k]` returns the value, or the hash's default (`nil` unless `Hash.new(x)` / a default proc).
+        It silently hides typos and missing config.
+      - `h.fetch(:k)` raises `KeyError` on a miss; `fetch(:k, default)` or `fetch(:k) { ... }` gives a
+        fallback. `fetch` **ignores** the hash's own default / default proc.
+      - `h.dig(:a, :b, :c)` walks nested hashes/arrays/structs and returns `nil` as soon as a level is
+        missing, instead of raising `NoMethodError` on `nil`. It raises `TypeError` if an intermediate
+        value does not respond to `dig` (e.g. an Integer).
+      - Use `fetch` for required keys (config, params you own) so failures are loud and early;
+        `[]` when `nil` is a legitimate "absent"; `dig` for optional deep paths in JSON-like data.
+      - `fetch` with a block is lazy, `fetch(:k, expensive_call)` evaluates the default eagerly.
+    explanation: |
+      Follow-ups: "what does `dig` do on `{a: 1}.dig(:a, :b)`?" (TypeError: Integer does not have #dig),
+      "how is `KeyError#key` / `#receiver` useful?" (3.1+ gives you the missing key for error messages),
+      and "why is `params.fetch(:user)` idiomatic in Rails controllers?" (fail fast with a 400 instead
+      of a `NoMethodError` on nil three layers deeper).
+    tags: [hash, fetch, dig]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-each-with-object-vs-inject
+    kind: open
+    difficulty: middle
+    title: "`each_with_object` vs `inject`"
+    body: |
+      Both of these build a hash of word lengths. Compare them and say which you would write in a
+      code review and why.
+
+      ```ruby
+      words.inject({}) { |acc, w| acc[w] = w.size; acc }
+      words.each_with_object({}) { |w, acc| acc[w] = w.size }
+      ```
+    answer: |
+      - `inject`/`reduce` passes the **return value of the block** as the next accumulator, so you must
+        end the block with `acc` (hence the trailing `; acc`). Forgetting it makes the next iteration
+        receive `w.size` and blow up with `NoMethodError` on Integer.
+      - `each_with_object` always passes the *same* memo object; the block's return value is ignored.
+        It only works when the memo is mutable (Hash, Array, String), never with Integers.
+      - Argument order is reversed: `inject` yields `|acc, elem|`, `each_with_object` yields `|elem, memo|`.
+      - Prefer `each_with_object` for building collections, `inject` for folding into an immutable
+        value (`sum`, product, min). For a plain hash from pairs, `words.to_h { |w| [w, w.size] }` is
+        shorter still.
+    explanation: |
+      Interviewers may push: "what does `inject` return on an empty array without an initial value?"
+      (`nil`), and "what does `inject(:+)` do with a symbol?" (uses that method as the combiner). A
+      strong candidate also mentions `tally`, `group_by` and `to_h` with a block as the idiomatic
+      replacements for most hand-rolled accumulators.
+    tags: [inject, each_with_object, reduce]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-inject-symbol-initial-empty
+    kind: mcq
+    difficulty: junior
+    title: "`inject(:+)` on an empty array"
+    body: |
+      ```ruby
+      p [].inject(:+)
+      p [].sum
+      p [].inject(0, :+)
+      p [1, 2, 3].inject(10) { |s, x| s + x }
+      ```
+
+      What is printed?
+    choices:
+      - "`0`, `0`, `0`, `16`"
+      - "`nil`, `0`, `0`, `16`"
+      - "`nil`, `nil`, `0`, `6`"
+      - "Raises `NoMethodError` on the first line"
+    answer: 1
+    explanation: |
+      With no initial value and no elements, `inject` has nothing to fold and returns `nil`, which is a
+      classic production bug (`total = orders.map(&:amount).inject(:+)` then `total > 0` raises
+      `NoMethodError` on nil). `sum` defaults its initial value to `0`, and `inject(0, :+)` gives an
+      explicit seed. With an initial value of 10, the seed is the first accumulator: 10+1+2+3 = 16.
+    tags: [inject, sum, nil]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-sum-float-kahan
+    kind: mcq
+    difficulty: senior
+    title: "`sum` vs `inject(:+)` on floats"
+    body: |
+      ```ruby
+      a = [0.1] * 10
+      p a.sum == 1.0
+      p a.inject(:+) == 1.0
+      ```
+
+      What is printed, and why?
+    choices:
+      - "`true`, `true` - both are plain left folds and 0.1 * 10 is exactly 1.0 in IEEE 754"
+      - "`false`, `false` - 0.1 cannot be represented exactly so neither sum is 1.0"
+      - "`true`, `false` - `sum` uses Kahan-Babuska compensated summation, `inject` accumulates rounding error"
+      - "`false`, `true` - `sum` promotes to `BigDecimal` and compares by identity"
+    answer: 2
+    explanation: |
+      `Enumerable#sum` / `Array#sum` detect Float elements and switch to the Kahan-Babuska compensated
+      summation algorithm, which tracks the rounding error in a second variable and corrects for it, so
+      `([0.1] * 10).sum` is exactly `1.0`. `inject(:+)` is a naive left fold and yields
+      `0.9999999999999999`. This is why `sum` is both faster (C loop, Gauss formula for integer ranges)
+      and more accurate than `inject(:+)`, and why the two are not interchangeable in money or
+      statistics code. Ruby's own spec suite has a test for this behaviour.
+    tags: [sum, float, kahan]
+    source: https://sources.debian.org/src/ruby3.3/3.3.8-2/spec/ruby/core/enumerable/sum_spec.rb
+
+  - slug: ruby-enum-group-by-partition-tally
+    kind: mcq
+    difficulty: junior
+    title: "`group_by`, `partition` and `tally` return types"
+    body: |
+      ```ruby
+      nums = [1, 2, 3, 4, 5, 6]
+      a = nums.group_by { |n| n % 3 }
+      b = nums.partition(&:even?)
+      c = nums.map { |n| n % 2 }.tally
+      p a, b, c
+      ```
+
+      What is printed?
+    choices:
+      - "`{1=>[1, 4], 2=>[2, 5], 0=>[3, 6]}`, `[[2, 4, 6], [1, 3, 5]]`, `{1=>3, 0=>3}`"
+      - "`[[1, 4], [2, 5], [3, 6]]`, `{true=>[2, 4, 6], false=>[1, 3, 5]}`, `{1=>3, 0=>3}`"
+      - "`{1=>[1, 4], 2=>[2, 5], 0=>[3, 6]}`, `{true=>[2, 4, 6], false=>[1, 3, 5]}`, `[[1, 3], [0, 3]]`"
+      - "`{0=>[3, 6], 1=>[1, 4], 2=>[2, 5]}`, `[[2, 4, 6], [1, 3, 5]]`, `{0=>3, 1=>3}`"
+    answer: 0
+    explanation: |
+      `group_by` returns a Hash keyed by the block's result, in first-seen key order (1, 2, 0 here, not
+      sorted). `partition` returns a two-element **Array** `[trues, falses]`, which is why it is
+      usually destructured: `evens, odds = nums.partition(&:even?)`. `tally` counts occurrences into a
+      Hash, also in first-seen order (`1` appears before `0`). Mixing up Hash vs Array returns for
+      `partition` is the most common slip; `group_by { |n| n.even? }` is the Hash version.
+    tags: [group_by, partition, tally]
+    source: https://dev.to/baweaver/understanding-ruby-enumerable-grouping-59pl
+
+  - slug: ruby-enum-each-slice-vs-each-cons
+    kind: mcq
+    difficulty: junior
+    title: "`each_slice` vs `each_cons`"
+    body: |
+      ```ruby
+      p (1..5).each_slice(2).to_a
+      p (1..5).each_cons(2).to_a
+      ```
+
+      What is printed?
+    choices:
+      - "`[[1, 2], [3, 4], [5]]` and `[[1, 2], [2, 3], [3, 4], [4, 5]]`"
+      - "`[[1, 2], [3, 4]]` and `[[1, 2], [2, 3], [3, 4], [4, 5]]`"
+      - "`[[1, 2], [3, 4], [5]]` and `[[1, 2], [3, 4], [5, nil]]`"
+      - "`[[1, 2], [2, 3], [3, 4], [4, 5]]` and `[[1, 2], [3, 4], [5]]`"
+    answer: 0
+    explanation: |
+      `each_slice(n)` yields **disjoint** chunks and keeps a short final chunk; `each_cons(n)` yields
+      **overlapping** sliding windows and never pads, so with 5 elements you get 4 windows of size 2.
+      Typical uses: `each_slice` for batching (`ids.each_slice(1000) { |batch| ... }`), `each_cons` for
+      pairwise comparisons (is the list sorted? `a.each_cons(2).all? { |x, y| x <= y }`). Both return
+      an Enumerator without a block.
+    tags: [each_slice, each_cons]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-zip-flat-map
+    kind: mcq
+    difficulty: junior
+    title: "`zip` padding and `flat_map` depth"
+    body: |
+      ```ruby
+      p [1, 2, 3].zip([4, 5], [6])
+      p [[1, [2]], [3]].flat_map { |x| x }
+      ```
+
+      What is printed?
+    choices:
+      - "`[[1, 4, 6], [2, 5]]` and `[1, 2, 3]`"
+      - "`[[1, 4, 6], [2, 5, nil], [3, nil, nil]]` and `[1, [2], 3]`"
+      - "`[[1, 4, 6], [2, 5, nil], [3, nil, nil]]` and `[1, 2, 3]`"
+      - "Raises `ArgumentError`: arrays must have the same length"
+    answer: 1
+    explanation: |
+      `zip` always produces `self.size` tuples; shorter arguments are padded with `nil` and longer ones
+      are truncated. `flat_map` (alias `collect_concat`) flattens exactly **one** level of the block's
+      results, so the nested `[2]` survives. If you need deep flattening, call `.flatten` explicitly.
+      Remember that `zip` with a block returns `nil`, not an array.
+    tags: [zip, flat_map]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-code-group-anagrams
+    kind: code
+    difficulty: junior
+    title: "Group words by anagram"
+    body: |
+      Implement `group_anagrams(words)` that returns an Array of groups, where each group is an Array of
+      words that are anagrams of each other (same letters, any order). Groups appear in the order
+      their first word appears; words inside a group keep input order. Comparison is case-sensitive.
+
+      ```ruby
+      group_anagrams(%w[eat tea tan ate nat bat])
+      # => [["eat", "tea", "ate"], ["tan", "nat"], ["bat"]]
+      group_anagrams([]) # => []
+      ```
+    starter_code: |
+      def group_anagrams(words)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_groups_anagrams_in_first_seen_order
+          assert_equal [["eat", "tea", "ate"], ["tan", "nat"], ["bat"]],
+                       group_anagrams(%w[eat tea tan ate nat bat])
+        end
+
+        def test_empty
+          assert_equal [], group_anagrams([])
+        end
+
+        def test_single_words_stay_separate
+          assert_equal [["a"], ["b"]], group_anagrams(%w[a b])
+        end
+
+        def test_case_sensitive
+          assert_equal [["Ab"], ["ba"]], group_anagrams(%w[Ab ba])
+        end
+      end
+    solution: |
+      def group_anagrams(words)
+        words.group_by { |w| w.chars.sort }.values
+      end
+    explanation: |
+      The canonical key for an anagram class is the sorted character list (or a letter `tally`).
+      `group_by` returns a Hash in first-seen key order, so `.values` already gives the required group
+      order and preserves insertion order within each group. Interviewers look for whether you know
+      `group_by` returns a Hash and whether you reach for a hash-keyed grouping instead of an O(n^2)
+      pairwise comparison.
+    tags: [group_by, strings]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-code-my-each-slice
+    kind: code
+    difficulty: middle
+    title: "Implement `my_each_slice`"
+    body: |
+      Implement `my_each_slice(array, n)` without using `each_slice`. It yields successive
+      non-overlapping slices of `n` elements to the block (the last slice may be shorter) and returns
+      the array. Without a block it returns an Enumerator. Raise `ArgumentError` if `n <= 0`.
+
+      ```ruby
+      out = []
+      my_each_slice([1, 2, 3, 4, 5], 2) { |s| out << s }
+      out # => [[1, 2], [3, 4], [5]]
+      my_each_slice([1, 2, 3], 2).to_a # => [[1, 2], [3]]
+      ```
+    starter_code: |
+      def my_each_slice(array, n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_yields_slices_and_returns_array
+          out = []
+          arr = [1, 2, 3, 4, 5]
+          assert_same arr, my_each_slice(arr, 2) { |s| out << s }
+          assert_equal [[1, 2], [3, 4], [5]], out
+        end
+
+        def test_enumerator_without_block
+          enum = my_each_slice([1, 2, 3], 2)
+          assert_kind_of Enumerator, enum
+          assert_equal [[1, 2], [3]], enum.to_a
+        end
+
+        def test_empty_array_yields_nothing
+          out = []
+          my_each_slice([], 3) { |s| out << s }
+          assert_equal [], out
+        end
+
+        def test_invalid_size
+          assert_raises(ArgumentError) { my_each_slice([1], 0) }
+        end
+      end
+    solution: |
+      def my_each_slice(array, n)
+        raise ArgumentError, "invalid slice size" if n <= 0
+        return to_enum(:my_each_slice, array, n) unless block_given?
+
+        i = 0
+        while i < array.size
+          yield array[i, n]
+          i += n
+        end
+        array
+      end
+    explanation: |
+      The two things interviewers check: the `return to_enum(...) unless block_given?` idiom that every
+      real Enumerable-style method uses, and the `array[i, n]` slice form which naturally shortens at the
+      end. Validation of `n` is done before the enumerator is created so `my_each_slice([], 0)` fails
+      immediately, matching the built-in's behaviour.
+    tags: [each_slice, enumerator]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-code-flatten-hash-dotted
+    kind: code
+    difficulty: middle
+    title: "Flatten a nested hash to dotted keys"
+    body: |
+      Implement `flatten_keys(hash)` that turns nested hashes into a single-level Hash whose keys are
+      dot-joined **strings**. Non-hash values (including arrays) are kept as is. Empty nested hashes
+      disappear.
+
+      ```ruby
+      flatten_keys({ a: 1, b: { c: 2, d: { e: 3 } }, "f" => [1, 2] })
+      # => { "a" => 1, "b.c" => 2, "b.d.e" => 3, "f" => [1, 2] }
+      ```
+    starter_code: |
+      def flatten_keys(hash)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_flattens_nested
+          input = { a: 1, b: { c: 2, d: { e: 3 } }, "f" => [1, 2] }
+          assert_equal({ "a" => 1, "b.c" => 2, "b.d.e" => 3, "f" => [1, 2] }, flatten_keys(input))
+        end
+
+        def test_flat_hash_unchanged_but_stringified
+          assert_equal({ "x" => nil }, flatten_keys({ x: nil }))
+        end
+
+        def test_empty_nested_hash_disappears
+          assert_equal({ "a" => 1 }, flatten_keys({ a: 1, b: {} }))
+        end
+
+        def test_does_not_mutate_input
+          input = { a: { b: 1 } }
+          flatten_keys(input)
+          assert_equal({ a: { b: 1 } }, input)
+        end
+      end
+    solution: |
+      def flatten_keys(hash, prefix = nil)
+        hash.each_with_object({}) do |(k, v), acc|
+          key = prefix ? "#{prefix}.#{k}" : k.to_s
+          if v.is_a?(Hash)
+            acc.merge!(flatten_keys(v, key))
+          else
+            acc[key] = v
+          end
+        end
+      end
+    explanation: |
+      A recursion over `each_with_object` with a `prefix` is the whole trick; the destructuring block
+      parameter `|(k, v), acc|` is what people get wrong (writing `|k, v, acc|` makes `acc` nil). Note
+      the `nil` value test: `v.is_a?(Hash)` is the right check, `v.respond_to?(:each)` would wrongly
+      recurse into arrays. This task mirrors what config loaders and i18n libraries do with
+      `en.errors.messages.blank`.
+    tags: [hash, recursion, each_with_object]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-sort-vs-sort-by
+    kind: open
+    difficulty: middle
+    title: "`sort` vs `sort_by`: stability and the Schwartzian transform"
+    body: |
+      Explain the difference between `users.sort { |a, b| a.age <=> b.age }` and
+      `users.sort_by(&:age)`. Which is faster, and is either of them stable?
+    answer: |
+      - `sort` with a block calls the block (and `<=>`) O(n log n) times; if the key is expensive to
+        compute (a method call, a date parse) that cost is paid on every comparison.
+      - `sort_by` computes the key **once per element**, builds `[key, element]` tuples, sorts those,
+        then unwraps: the Schwartzian transform. It is faster whenever key extraction is not trivial,
+        and it is what the docs recommend for that case.
+      - Neither is guaranteed stable. MRI uses an introsort/quicksort hybrid; equal keys may come out in
+        any order. The docs say "the ordering of equal elements is indeterminate and may be unstable".
+      - To get a stable sort, add the index as a tiebreaker:
+        `users.each_with_index.sort_by { |u, i| [u.age, i] }.map(&:first)`, or sort by an array key
+        that includes a unique secondary field.
+      - `sort` is the only option for composite rules that cannot be expressed as a single key
+        (e.g. descending age but ascending name): `sort_by { |u| [-u.age, u.name] }` works for numbers,
+        but reversing a string needs the block form or a `Comparable` wrapper.
+    explanation: |
+      Follow-up: "how do you sort descending by a string field with `sort_by`?" Answers: `sort_by { }.reverse`
+      (which also reverses the order of ties), or `sort { |a, b| b.name <=> a.name }`, or `max_by`-style
+      tricks. Also probe `sort_by` with `nil` keys: `<=>` returns `nil` and `sort_by` raises
+      `ArgumentError: comparison of NilClass with String failed`.
+    tags: [sort, sort_by, stability]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-array-new-shared-reference
+    kind: mcq
+    difficulty: junior
+    title: "`Array.new(3, [])` shared reference"
+    body: |
+      ```ruby
+      grid = Array.new(3, [])
+      grid[0] << :x
+      p grid
+      grid2 = Array.new(3) { [] }
+      grid2[0] << :x
+      p grid2
+      ```
+
+      What is printed?
+    choices:
+      - "`[[:x], [], []]` and `[[:x], [], []]`"
+      - "`[[:x], [:x], [:x]]` and `[[:x], [], []]`"
+      - "`[[:x], [:x], [:x]]` and `[[:x], [:x], [:x]]`"
+      - "`[[:x], [], []]` and `[[:x], [:x], [:x]]`"
+    answer: 1
+    explanation: |
+      `Array.new(size, obj)` fills every slot with a reference to the **same** object; the docs say to
+      use it only with immutable objects. `<<` mutates that one array, so all three rows show `:x`.
+      `Array.new(size) { block }` calls the block for each index and gives each row its own array.
+      Same rule as `Hash.new([])` vs `Hash.new { }`, and the same reason `"a" * 3` is fine while
+      `[[]] * 3` is a trap.
+    tags: [array, pitfall]
+    source: https://docs.ruby-lang.org/en/3.3/Array.html
+
+  - slug: ruby-enum-find-select-filter-map
+    kind: open
+    difficulty: junior
+    title: "`find` vs `select` vs `filter_map`"
+    body: |
+      What do `find`/`detect`, `select`/`filter`, `reject` and `filter_map` return, and when would you
+      pick `filter_map` over `map(...).compact`?
+    answer: |
+      - `find` (alias `detect`) returns the **first** element for which the block is truthy, or `nil`.
+        It stops iterating as soon as it finds one.
+      - `select` (alias `filter`) returns **all** matching elements as an Array; `reject` returns the
+        non-matching ones. On a Hash, `select` returns a Hash, not an Array of pairs.
+      - `filter_map` (2.7+) maps each element and keeps only truthy results in one pass:
+        `ids.filter_map { |id| lookup(id) }`.
+      - `map { }.compact` only drops `nil`, so `false` survives; `filter_map` drops both `nil` and
+        `false`. `filter_map` also avoids the intermediate array.
+      - `select { }.map { }` evaluates the predicate and the transformation separately; `filter_map`
+        is the idiom when the transformation itself decides membership (parse-or-nil).
+    explanation: |
+      Follow-up: "what is `find_index`, `find_all`?" (`find_all` is another alias of `select`), and "how
+      do you get the first *transformed* value?" (`lazy.filter_map { }.first`, which stops early, versus
+      `filter_map { }.first`, which processes everything).
+    tags: [find, select, filter_map]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-predicates-with-patterns
+    kind: mcq
+    difficulty: middle
+    title: "`all?`, `any?`, `none?`, `one?` with a pattern"
+    body: |
+      ```ruby
+      p [1, "a", nil].all?(Integer)
+      p [nil, false, 0].one?(Integer)
+      p [].all?
+      p [].any?
+      p %w[ab cd].any?(/c/)
+      ```
+
+      What is printed?
+    choices:
+      - "`false`, `true`, `true`, `false`, `true`"
+      - "`false`, `false`, `false`, `false`, `true`"
+      - "`false`, `true`, `false`, `false`, `false`"
+      - "`true`, `true`, `true`, `true`, `true`"
+    answer: 0
+    explanation: |
+      Since 2.5 these predicates accept a pattern and test `pattern === element`, so classes, regexps
+      and ranges all work. `[].all?` is vacuously `true` (no counterexample) while `[].any?` is `false`,
+      a logic point interviewers love. `one?(Integer)` counts exactly one match: `0` is the only
+      Integer, `nil` and `false` are not. `/c/ === "cd"` is true, so `any?(/c/)` is true.
+    tags: [predicates, pattern]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-each-with-index-with-index-1
+    kind: mcq
+    difficulty: junior
+    title: "`each_with_index` vs `each.with_index(1)`"
+    body: |
+      ```ruby
+      a = %w[x y].each_with_index.map { |s, i| "#{i}#{s}" }
+      b = %w[x y].map.with_index(1) { |s, i| "#{i}#{s}" }
+      p a, b
+      ```
+
+      What is printed?
+    choices:
+      - "`[\"0x\", \"1y\"]` and `[\"1x\", \"2y\"]`"
+      - "`[\"0x\", \"1y\"]` and `[\"0x\", \"1y\"]`"
+      - "`[\"1x\", \"2y\"]` and `[\"1x\", \"2y\"]`"
+      - "The first line raises because `each_with_index` returns `self`, not an Enumerator"
+    answer: 0
+    explanation: |
+      `each_with_index` takes no offset argument and always starts at 0; called without a block it
+      returns an Enumerator you can chain `map` on. `with_index(offset)` is an `Enumerator` method, so
+      you call it on `map`, `each`, `select` etc. and pick the start index (1 for human-facing numbering).
+      `each_with_index(1)` is an `ArgumentError`, which is the common mistake.
+    tags: [each_with_index, with_index, enumerator]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-lazy-infinite
+    kind: mcq
+    difficulty: middle
+    title: "Lazy enumeration over an infinite range"
+    body: |
+      ```ruby
+      r = (1..Float::INFINITY)
+      a = r.lazy.map { |x| x * 2 }.select { |x| x % 3 == 0 }.first(3)
+      b = r.map { |x| x * 2 }.select { |x| x % 3 == 0 }.first(3)
+      p a
+      ```
+
+      What happens?
+    choices:
+      - "Prints `[6, 12, 18]`; line `b` also finishes because `first(3)` stops after three elements"
+      - "Prints `[6, 12, 18]`; line `b` never finishes because `map` on a Range is eager and tries to build an infinite array"
+      - "Both lines raise `RangeError: cannot convert endless range to an array`"
+      - "Prints `[6, 12, 18]` only after calling `.force` on the lazy chain"
+    answer: 1
+    explanation: |
+      `Enumerable#lazy` returns an `Enumerator::Lazy` that redefines `map`, `select`, `reject`,
+      `take_while`, `take` etc. to return another lazy enumerator, so nothing is computed until a
+      consumer like `first(n)`, `to_a`/`force` or `each` pulls values. `first` is **not** redefined: it
+      is a terminal operation that pulls just enough elements. Without `lazy`, `Range#map` eagerly walks
+      the whole range and never returns. Note `lazy.take(3)` is still lazy and needs `.to_a`.
+    tags: [lazy, enumerator, infinite]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator/Lazy.html
+
+  - slug: ruby-enum-chunk-while-slice-when
+    kind: mcq
+    difficulty: middle
+    title: "`chunk_while` vs `slice_when`"
+    body: |
+      ```ruby
+      a = [1, 2, 4, 9, 10, 11, 15]
+      p a.chunk_while { |x, y| y == x + 1 }.to_a
+      p a.slice_when  { |x, y| y != x + 1 }.to_a
+      ```
+
+      What is printed?
+    choices:
+      - "Two different results: `chunk_while` groups consecutive runs, `slice_when` returns the split points"
+      - "`[[1, 2], [4], [9, 10, 11], [15]]` twice - they are the same operation with the predicate inverted"
+      - "`[[1, 2, 4], [9, 10, 11, 15]]` twice"
+      - "Raises `ArgumentError`: `slice_when` expects a one-argument block"
+    answer: 1
+    explanation: |
+      Both yield consecutive pairs `(before, after)`. `chunk_while` keeps `before` and `after` in the same
+      chunk while the block is **true**; `slice_when` starts a new chunk when the block is **true**. So
+      `chunk_while { cond }` equals `slice_when { !cond }`. Use whichever reads better: "chunk while
+      consecutive" vs "slice when there is a gap". `chunk` (one-arg block, groups by key) is the third
+      sibling, often confused with these.
+    tags: [chunk_while, slice_when]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+
+  - slug: ruby-enum-uniq-with-block-min-by-minmax
+    kind: mcq
+    difficulty: junior
+    title: "`uniq` with a block, `min_by`, `minmax`"
+    body: |
+      ```ruby
+      words = %w[apple fig kiwi banana pear]
+      p words.uniq(&:size)
+      p words.min_by(&:size)
+      p words.minmax_by(&:size)
+      p [].minmax
+      ```
+
+      What is printed?
+    choices:
+      - "`[5, 3, 4, 6]`, `\"fig\"`, `[\"fig\", \"banana\"]`, `[nil, nil]`"
+      - "`[\"apple\", \"fig\", \"kiwi\", \"banana\"]`, `\"fig\"`, `[\"fig\", \"banana\"]`, `[]`"
+      - "`[\"apple\", \"fig\", \"kiwi\", \"banana\"]`, `\"fig\"`, `[\"fig\", \"banana\"]`, `[nil, nil]`"
+      - "`[\"apple\", \"fig\", \"kiwi\", \"banana\", \"pear\"]`, `\"pear\"`, `[\"fig\", \"banana\"]`, `[nil, nil]`"
+    answer: 2
+    explanation: |
+      `uniq` with a block dedups by the block's value but returns the **original elements**, keeping the
+      first one seen per key: sizes are 5, 3, 4, 6, 4, so `pear` (second size-4 word) is dropped.
+      `min_by` / `max_by` / `minmax_by` compute the key once per element and return elements, not keys.
+      `minmax` on an empty collection returns `[nil, nil]`, not `[]` and not an error, so destructuring
+      `lo, hi = list.minmax` is always safe but may give nils.
+    tags: [uniq, min_by, minmax]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-comparable-spaceship
+    kind: theory
+    difficulty: middle
+    title: "`Comparable` and `<=>`: making your objects sortable"
+    body: |
+      `sort`, `min`, `max`, `minmax`, `between?`, `clamp` and the comparison operators all boil down to
+      one method: the spaceship `<=>`. It must return `-1`, `0`, `1` (or any negative/zero/positive
+      Integer), or `nil` when the two objects are not comparable.
+
+      ```ruby
+      class Money
+        include Comparable
+        attr_reader :cents, :currency
+
+        def initialize(cents, currency) = (@cents, @currency = cents, currency)
+
+        def <=>(other)
+          return nil unless other.is_a?(Money) && other.currency == currency
+          cents <=> other.cents
+        end
+      end
+
+      a, b = Money.new(100, "EUR"), Money.new(250, "EUR")
+      a < b                      # => true   (from Comparable)
+      [b, a].sort.first == a     # => true   (Comparable#== uses <=>)
+      a.clamp(a, b)              # => a
+      a <=> Money.new(1, "USD")  # => nil
+      a < Money.new(1, "USD")    # ArgumentError: comparison of Money with Money failed
+      ```
+
+      Points interviewers probe:
+
+      - `Comparable` gives you `<`, `<=`, `==`, `>`, `>=`, `between?`, `clamp` for free from `<=>`.
+        It does **not** define `hash`/`eql?`, so such objects are still distinct Hash keys.
+      - `Array#<=>` compares element-wise, which is why `sort_by { |u| [u.last_name, u.first_name] }`
+        works as a multi-key sort.
+      - `sort` raises `ArgumentError` if `<=>` returns `nil` for any pair (e.g. mixing `nil` with
+        numbers, or `Integer` with `String`).
+    answer: |
+      **Q:** `[3, nil, 1].sort` raises. `[3, nil, 1].max_by(&:to_i)` does not. Why?
+
+      **A:** `sort` compares elements with `<=>`, and `3 <=> nil` is `nil`, so Ruby raises
+      `ArgumentError: comparison of Integer with nil failed`. `max_by` compares the **keys** produced
+      by the block (`3, 0, 1`), which are all Integers.
+    explanation: |
+      A typical follow-up is "what is the difference between `==`, `eql?` and `equal?`?": `==` is value
+      equality (and `Comparable#==` derives it from `<=>`), `eql?` is the stricter equality used by
+      Hash keys together with `hash`, `equal?` is identity. Overriding `<=>` alone does not make your
+      object usable as a deduplicating Hash key.
+    tags: [comparable, spaceship, sort]
+    source: https://docs.ruby-lang.org/en/3.3/Comparable.html
+
+  - slug: ruby-enum-code-version-comparable
+    kind: code
+    difficulty: middle
+    title: "Comparable semantic version"
+    body: |
+      Implement a class `Version` that is constructed from a dotted string like `"1.2.10"` and includes
+      `Comparable`, so that versions compare numerically segment by segment (so `1.2.10 > 1.2.9`).
+      Missing trailing segments count as zero (`"1.2" == "1.2.0"`). Expose `to_s` returning the
+      original string.
+
+      ```ruby
+      Version.new("1.2.10") > Version.new("1.2.9")   # => true
+      Version.new("1.2") == Version.new("1.2.0")     # => true
+      %w[1.10 1.9 1.2.3].map { Version.new(_1) }.sort.map(&:to_s) # => ["1.2.3", "1.9", "1.10"]
+      ```
+    starter_code: |
+      class Version
+        include Comparable
+
+        def initialize(string)
+          # your code here
+        end
+
+        def <=>(other)
+          # your code here
+        end
+
+        def to_s
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def v(s) = Version.new(s)
+
+        def test_numeric_not_lexical
+          assert v("1.2.10") > v("1.2.9")
+          assert v("1.10") > v("1.9")
+        end
+
+        def test_missing_segments_are_zero
+          assert_equal 0, (v("1.2") <=> v("1.2.0"))
+          assert v("1.2") == v("1.2.0")
+        end
+
+        def test_sort_and_minmax
+          sorted = %w[1.10 1.9 1.2.3 0.9].map { |s| v(s) }.sort.map(&:to_s)
+          assert_equal %w[0.9 1.2.3 1.9 1.10], sorted
+          assert_equal "1.10", %w[1.10 1.9].map { |s| v(s) }.max.to_s
+        end
+
+        def test_between_and_clamp
+          assert v("1.5").between?(v("1.0"), v("2.0"))
+          assert_equal "2.0", v("3.0").clamp(v("1.0"), v("2.0")).to_s
+        end
+
+        def test_non_version_returns_nil
+          assert_nil(v("1.0") <=> "1.0")
+        end
+      end
+    solution: |
+      class Version
+        include Comparable
+        attr_reader :segments
+
+        def initialize(string)
+          @string = string
+          @segments = string.split(".").map(&:to_i)
+        end
+
+        def <=>(other)
+          return nil unless other.is_a?(Version)
+
+          n = [segments.size, other.segments.size].max
+          pad = ->(s) { s + [0] * (n - s.size) }
+          pad.(segments) <=> pad.(other.segments)
+        end
+
+        def to_s = @string
+      end
+    explanation: |
+      The whole exercise is "do you know `Array#<=>` compares element-wise" plus the two edge cases:
+      padding to equal length so `1.2` equals `1.2.0`, and returning `nil` (not raising) for foreign
+      objects so `Comparable` can produce the standard `ArgumentError`. A common mistake is comparing
+      the strings, which makes `"1.10" < "1.9"`. Gem::Version in RubyGems does the same job with
+      pre-release handling.
+    tags: [comparable, sort, versions]
+    source: https://docs.ruby-lang.org/en/3.3/Comparable.html
+
+  - slug: ruby-enum-set-operations
+    kind: open
+    difficulty: junior
+    title: "Set operations and when to use `Set`"
+    body: |
+      What do `|`, `&`, `-`, `^`, `subset?` and `superset?` do on a `Set`? Give a concrete example where
+      you would use a Set instead of an Array in application code.
+    answer: |
+      - `a | b` (alias `union`, `+`) all elements of both; `a & b` (`intersection`) common elements;
+        `a - b` (`difference`) elements of `a` not in `b`; `a ^ b` symmetric difference: in exactly one.
+      - `a.subset?(b)` / `a <= b` is every element of `a` in `b`; `superset?` / `>=` the reverse;
+        `disjoint?` / `intersect?` for quick overlap checks.
+      - Set is backed by a Hash, so `include?`, `add`, `delete` are O(1) and elements are deduplicated
+        by `hash`/`eql?`. Iteration order is insertion order like Hash.
+      - Arrays also have `|`, `&`, `-` but each call is O(n*m)-ish and rebuilds an array; they shine only
+        for one-off small lists.
+      - Use cases: "which of these 10k user ids are already subscribed?"
+        (`requested - Set.new(existing)`), permission checks (`required.subset?(granted)`), visited
+        nodes in graph traversal, allow-lists of tags.
+      - `Set#add?` returns `nil` if the element was already present, which replaces an
+        `include?`-then-`add` pair.
+    explanation: |
+      Follow-ups: "Does `Set.new([[1,2]]).include?([1,2])` work?" (yes, Array implements `hash`/`eql?`
+      by content), "What happens if you mutate an element after adding it?" (its hash no longer matches
+      its bucket; `include?` fails until you rebuild the set), and "`Set` vs `SortedSet`?" (`SortedSet`
+      was removed from the stdlib in 3.0; use a gem or sort on output).
+    tags: [set]
+    source: https://docs.ruby-lang.org/en/3.3/Set.html
+
+  - slug: ruby-enum-struct-value-object
+    kind: open
+    difficulty: middle
+    title: "`Struct` as a value object"
+    body: |
+      When would you use a `Struct` instead of a plain class or a Hash? What do you get for free, and
+      what are the pitfalls? Mention `Data` (Ruby 3.2) if you know it.
+    answer: |
+      - `Point = Struct.new(:x, :y)` generates `initialize`, readers, writers, `==`/`eql?`/`hash` based on
+        member values, `to_a`, `to_h`, `members`, `deconstruct` for pattern matching, and `inspect`.
+        That makes instances usable as Hash keys and comparable by value, unlike a plain class
+        (identity equality by default) and more explicit than a Hash (typed accessors, NoMethodError on
+        typos instead of silent `nil`).
+      - `Struct.new(..., keyword_init: true)` forces keyword construction; since 3.2 a Struct accepts
+        both positional and keyword args by default.
+      - Pitfalls: instances are **mutable** (setters exist) unless you `freeze`; a Struct is positional
+        so reordering members breaks callers; extra positional args raise `ArgumentError` but missing
+        ones become `nil`; `Struct.new("Name")` with a string creates a constant under `Struct::`.
+      - `Data.define(:x, :y)` (3.2+) is the immutable sibling: no setters, `with(x: 1)` for copies,
+        required arguments, intended precisely for value objects.
+      - Use Struct/Data for small immutable records returned from services (`Result`, coordinates,
+        money), a full class when behaviour outgrows a couple of methods.
+    explanation: |
+      Follow-up: "why is value equality important for `uniq` and `Set`?" Because those rely on
+      `hash`/`eql?`; two plain-class objects with identical fields are different elements, while two
+      `Point.new(1, 2)` are the same. Also probe `OpenStruct`: slow (method_missing / define per key)
+      and a known security and performance smell, avoid it in hot paths.
+    tags: [struct, data, value-object]
+    source: https://docs.ruby-lang.org/en/3.3/Struct.html
+
+  - slug: ruby-enum-block-param-destructuring
+    kind: open
+    difficulty: middle
+    title: "Destructuring block parameters: `|(k, v), i|` and Hash arity"
+    body: |
+      Explain what each of these prints and why:
+
+      ```ruby
+      h = { a: 1, b: 2 }
+      h.each_with_index { |(k, v), i| puts "#{i}: #{k}=#{v}" }
+      h.each_with_index { |k, v| puts "#{k.inspect} #{v}" }
+      h.any? { |k, v| v > 1 }
+      h.map { |pair| pair }
+      ```
+    answer: |
+      - A Hash yields one `[key, value]` array per entry. A block with two plain params `|k, v|` auto-splats
+        that array, which is why `h.each { |k, v| }` works.
+      - `each_with_index` yields **two** values: the pair and the index. `|(k, v), i|` destructures the
+        pair in place, printing `0: a=1`, `1: b=2`.
+      - `|k, v|` on `each_with_index` binds `k` to the whole pair and `v` to the index: prints
+        `[:a, 1] 0` and `[:b, 2] 1`. This is the classic bug.
+      - `any?` / `all?` / `count` / `find` with `|k, v|` work because the single yielded pair is
+        auto-splatted into two params (block arity 2). `h.any? { |pair| }` receives the array.
+      - `map { |pair| pair }` returns `[[:a, 1], [:b, 2]]`, an Array of pairs: Enumerable methods on a Hash
+        return Arrays unless the method is overridden on Hash (`select`, `reject`, `filter_map` is
+        not, `to_h` converts back).
+      - Lambdas and methods do not auto-splat; only procs/blocks do.
+    explanation: |
+      Follow-ups: "how do you write a block that takes the pair as one object?" (`|pair|` or `|(k, v)|`),
+      "what does `h.each.with_index(1) { |(k, v), i| }` give you?" (1-based numbering), and "why does
+      `h.map(&:first)` work?" (`:first.to_proc` receives the pair array).
+    tags: [blocks, destructuring, hash]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-array-combinatorics-and-flatten
+    kind: open
+    difficulty: junior
+    title: "`flatten(depth)`, `compact`, `product`, `combination`, `permutation`, `transpose`, `Array#*`"
+    body: |
+      Walk through what each line returns:
+
+      ```ruby
+      [1, [2, [3, [4]]]].flatten(1)
+      [1, nil, false, 2].compact
+      [1, 2].product([3, 4])
+      [1, 2, 3].combination(2).to_a
+      [1, 2, 3].permutation(2).count
+      [[1, 2], [3, 4]].transpose
+      [1, 2] * 2
+      [1, 2] * ","
+      ```
+    answer: |
+      - `flatten(1)` flattens exactly one level: `[1, 2, [3, [4]]]`; no argument (or negative) flattens
+        completely.
+      - `compact` removes only `nil`, so `false` stays: `[1, false, 2]`.
+      - `product` is the cartesian product: `[[1, 3], [1, 4], [2, 3], [2, 4]]`; with several arrays it
+        can explode in size, so prefer the block form `product(other) { |pair| }` to avoid the array.
+      - `combination(2)` ignores order: `[[1, 2], [1, 3], [2, 3]]` (3 choose 2). `permutation(2)` counts
+        ordered pairs: 6. Both return Enumerators without a block.
+      - `transpose` flips rows and columns: `[[1, 3], [2, 4]]`; it raises `IndexError` if rows differ
+        in length (`zip` pads with `nil` instead).
+      - `Array#*` with an Integer repeats: `[1, 2, 1, 2]`; with a String it is `join`: `"1,2"`.
+    explanation: |
+      Follow-up: "what is the complexity of `permutation` on 10 elements?" 10! = 3.6M arrays, so you
+      stream them with a block and bail early, never `to_a`. Also mention `each_cons`/`each_slice` for
+      windows vs `combination` for unordered pairs: `combination(2)` is what you want for "all pairs".
+    tags: [array, flatten, product, combination]
+    source: https://docs.ruby-lang.org/en/3.3/Array.html
+
+  - slug: ruby-enum-hash-transform-invert-to-a
+    kind: open
+    difficulty: middle
+    title: "`transform_values`, `transform_keys`, `invert`, `to_a`, `filter_map` on a Hash"
+    body: |
+      ```ruby
+      h = { a: 1, b: 2, c: 1 }
+      h.transform_values { |v| v * 10 }
+      h.transform_keys(&:to_s)
+      h.transform_keys(a: :x)
+      h.invert
+      h.to_a
+      h.filter_map { |k, v| k if v == 1 }
+      h.select { |k, v| v == 1 }
+      ```
+
+      What does each return, and what gotcha does `invert` have?
+    answer: |
+      - `transform_values` returns a new Hash with the same keys and mapped values: `{a: 10, b: 20, c: 10}`.
+        `transform_values!` is in place. Default procs are not copied.
+      - `transform_keys(&:to_s)` gives `{"a" => 1, "b" => 2, "c" => 1}`; since 3.0 it also takes a
+        mapping Hash: `transform_keys(a: :x)` renames only `:a` and leaves others.
+      - `invert` swaps keys and values: `{1 => :c, 2 => :b}`. Duplicate values collide and the **last**
+        one wins, so `invert` silently loses data unless values are unique. For the reverse mapping of
+        non-unique values use `group_by`/`each_with_object` to collect keys into arrays.
+      - `to_a` gives an Array of `[key, value]` pairs; `to_h` reverses it, and `to_h { |k, v| [..] }`
+        maps pairs in one step.
+      - `filter_map` comes from Enumerable and returns an **Array** (`[:a, :c]`), whereas `select`,
+        `reject`, `filter`, `min_by`... `select` is overridden on Hash and returns a Hash
+        (`{a: 1, c: 1}`); `map`, `flat_map`, `filter_map`, `sort_by`, `min_by` all return Arrays.
+    explanation: |
+      Follow-up: "why does `h.map { |k, v| [k, v * 2] }` not give you a Hash?" Because `map` is
+      Enumerable's generic implementation; call `.to_h` on it, or use `transform_values` /
+      `to_h { }` which exist for exactly this. Rails adds `deep_transform_keys`, `symbolize_keys`,
+      `stringify_keys` on top of these primitives.
+    tags: [hash, transform_values, invert]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-hash-key-contract-identity
+    kind: theory
+    difficulty: senior
+    title: "Hash key contract, string key copying and `compare_by_identity`"
+    body: |
+      A Hash looks up a key by calling `key.hash` to pick a bucket and then `eql?` to confirm. Three
+      consequences matter in interviews.
+
+      1. **Keys must be stable.** If you mutate a key object after insertion, its `hash` changes and the
+         entry is unreachable until `h.rehash`.
+
+      2. **String keys are copied and frozen.** `h[str] = 1` stores a frozen duplicate of `str` (unless
+         `str` is already frozen), so later mutation of `str` cannot corrupt the table. That is why
+         symbols or frozen string literals are cheaper keys: no copy on insert.
+
+         ```ruby
+         s = "k".dup
+         h = { s => 1 }
+         s << "x"
+         h["k"]           # => 1  (the stored key was a frozen copy)
+         h.keys.first.frozen? # => true
+         ```
+
+      3. **`compare_by_identity`** switches the table to `equal?`/`object_id` semantics: two equal but
+         distinct strings become two different keys and the string-copy rule no longer applies.
+
+         ```ruby
+         h = {}.compare_by_identity
+         h["a".dup] = 1
+         h["a".dup] = 2
+         h.size             # => 2
+         h["a"]             # => nil
+         ```
+
+         Use it for object caches / memoisation keyed by the object itself (e.g. an AST node, an
+         ActiveRecord instance before it has an id) where value equality would wrongly merge entries.
+         `ObjectSpace::WeakMap` is the identity-keyed, GC-friendly cousin.
+
+      Implementation notes: small hashes (<= 8 entries) are flat `ar_table`s scanned linearly, bigger
+      ones are open-addressing `st_table`s; both preserve insertion order via an entries array.
+    answer: |
+      **Q:** `k = [1]; h = { k => :v }; k << 2; h[k]` returns what, and how do you fix it?
+
+      **A:** `nil`. The Array's `hash` changed with its contents, so the lookup goes to a different
+      bucket. `h.rehash` rebuilds the index and `h[k]` returns `:v` again; the real fix is to never
+      mutate keys (freeze them or use immutable values).
+    explanation: |
+      Follow-ups: "why is a Symbol a better key than a String?" (interned, immutable, no dup/freeze on
+      insert, pointer-equality fast path), and "what must a custom class implement to be a key?"
+      (`hash` and `eql?` consistent with each other; `Struct` and `Data` do this for you).
+    tags: [hash, eql, compare_by_identity, internals]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-frozen-literals-and-mutation
+    kind: open
+    difficulty: senior
+    title: "Frozen literals, `freeze` depth and Enumerable results"
+    body: |
+      ```ruby
+      # frozen_string_literal: true
+      CONFIG = { tags: %w[a b] }.freeze
+      CONFIG[:tags] << "c"
+      CONFIG[:new] = 1
+      name = "x"
+      name << "y"
+      ```
+
+      Which lines raise, which succeed, and why? How do you make `CONFIG` truly immutable?
+    answer: |
+      - `CONFIG[:tags] << "c"` **succeeds**: `freeze` is shallow. The Hash is frozen, the Array inside it
+        is not, so nested mutation works. The strings from `%w[]` are frozen by the magic comment, but
+        the array is not.
+      - `CONFIG[:new] = 1` raises `FrozenError: can't modify frozen Hash`.
+      - `name << "y"` raises `FrozenError` because the literal `"x"` is frozen by the magic comment;
+        `name = +"x"`, `"x".dup` or `String.new` give a mutable copy. `name += "y"` would work because it
+        creates a new String.
+      - Deep immutability requires freezing recursively (`each_value(&:freeze)`, or a tiny
+        `deep_freeze` helper, or `Ractor.make_shareable(CONFIG)` which deep-freezes for you).
+      - Enumerable methods return **new, unfrozen** collections: `CONFIG[:tags].map(&:upcase)` is fine
+        even when the source is frozen; mutating methods (`map!`, `sort!`, `<<`) are what raise.
+      - Frozen string literals save allocations (one shared object per literal site) and are the
+        default in Ruby 3.4+ for files without the comment (with a deprecation warning first).
+    explanation: |
+      Follow-ups: "why does `frozen_string_literal` not affect `"a#{b}"`?" (interpolated strings are
+      always new, unfrozen objects since 3.0), "what about `Symbol#to_s`?" (returns a new unfrozen string
+      each time; `name` returns a frozen one), and "how does `Hash#[]=` interact with frozen keys?" (an
+      unfrozen String key is duplicated and frozen on insert).
+    tags: [frozen, freeze, immutability]
+    source: https://docs.ruby-lang.org/en/3.3/Array.html
+
+  - slug: ruby-enum-enumerator-external-iteration
+    kind: theory
+    difficulty: senior
+    title: "Enumerators: external iteration, `with_index`, `each_entry`"
+    body: |
+      Almost every Enumerable method called without a block returns an `Enumerator`, a resumable
+      iteration object. That is what makes chains like `each_slice(2).with_index(1).map { }` work.
+
+      ```ruby
+      e = [1, 2, 3].each          # Enumerator over Array#each
+      e.next                      # => 1   external iteration
+      e.next                      # => 2
+      e.peek                      # => 3
+      e.next                      # => 3
+      e.next                      # raises StopIteration ("iteration reached an end")
+      e.rewind
+      loop { p e.next }           # loop rescues StopIteration and returns e.result
+      ```
+
+      - `next`/`peek` run the underlying `each` in a **Fiber**, pausing after every yield. That is
+        flexible (you can interleave two enumerators, implement generators) but slower than internal
+        iteration, and `next` is not thread-safe.
+      - `Enumerator.new { |y| y << 1; y.yield 2 }` builds a generator with a `Yielder`; combine with
+        `lazy` for streams of unknown length (paginated APIs, file lines).
+      - `with_index(offset)` and `with_object(memo)` exist only on Enumerator, which is why you write
+        `map.with_index(1)` rather than `map_with_index`.
+      - `each_entry` is the odd one: when an `each` yields **multiple values** (`yield 1, 2`),
+        `each { |x| }` receives only the first, but `each_entry { |x| }` packs them into an array
+        `[1, 2]`. It exists for custom Enumerables whose `each` yields several values per step.
+      - `Range#step(n)` (and `Numeric#step`) return an `ArithmeticSequence`, an Enumerator subclass
+        that knows its `begin`/`end`/`step`, supports `==` and `size` without iterating, and is what
+        `(1..10) % 3` returns.
+    answer: |
+      **Q:** Why does `loop { e.next }` terminate cleanly while `while true; e.next; end` crashes?
+
+      **A:** `Kernel#loop` rescues `StopIteration` and returns the exception's `result` (the return
+      value of the underlying `each`). A plain `while` has no such rescue, so the `StopIteration`
+      raised by `next` at the end propagates.
+    explanation: |
+      Follow-up probes: "when is external iteration worth it?" (merging two sorted streams, lexers,
+      lock-step comparison of two collections), "what is the cost?" (Fiber switch per element, roughly an
+      order of magnitude slower than `each`), and "how do you make your class Enumerable?" (define
+      `each` that yields and `include Enumerable`; return `to_enum(:each)` when no block is given).
+    tags: [enumerator, next, with_index, each_entry]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-code-top-n-frequent
+    kind: code
+    difficulty: middle
+    title: "Top N most frequent words"
+    body: |
+      Implement `top_words(text, n)` that returns the `n` most frequent words in `text` as an Array of
+      `[word, count]` pairs, most frequent first. Words are split on whitespace and compared
+      case-insensitively (downcase them). Ties are broken alphabetically. Return fewer than `n` pairs
+      if there are not enough distinct words.
+
+      ```ruby
+      top_words("the cat and The dog and the bird", 2)
+      # => [["the", 3], ["and", 2]]
+      top_words("b a b a c", 5) # => [["a", 2], ["b", 2], ["c", 1]]
+      ```
+    starter_code: |
+      def top_words(text, n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_most_frequent_first_case_insensitive
+          assert_equal [["the", 3], ["and", 2]], top_words("the cat and The dog and the bird", 2)
+        end
+
+        def test_ties_alphabetical_and_fewer_than_n
+          assert_equal [["a", 2], ["b", 2], ["c", 1]], top_words("b a b a c", 5)
+        end
+
+        def test_empty_text
+          assert_equal [], top_words("   ", 3)
+        end
+
+        def test_zero_n
+          assert_equal [], top_words("a b", 0)
+        end
+      end
+    solution: |
+      def top_words(text, n)
+        text.downcase.split.tally
+            .sort_by { |word, count| [-count, word] }
+            .first(n)
+      end
+    explanation: |
+      `tally` does the counting, and the sort key `[-count, word]` expresses "count descending, then
+      word ascending" in one `sort_by`, exploiting `Array#<=>`. Interviewers check that you do not
+      write `sort_by { -count }.reverse` (which also reverses ties) or a hand-rolled
+      `each_with_object(Hash.new(0))` when `tally` exists. `first(n)` with `n = 0` returns `[]`, and
+      `max_by(n)` would be an alternative that is O(n log k) but does not promise tie order.
+    tags: [tally, sort_by, strings]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-sample-shuffle-seeded
+    kind: open
+    difficulty: middle
+    title: "Deterministic `sample` / `shuffle` in tests"
+    body: |
+      A test that calls `users.sample` or `deck.shuffle` is flaky. How do you make the randomness
+      deterministic without stubbing `Array#sample`, and what are the trade-offs of each approach?
+    answer: |
+      - Both `sample` and `shuffle` (and their bang versions) accept a `random:` keyword: any object
+        responding to `rand`. Pass `Random.new(seed)`: `deck.shuffle(random: Random.new(42))` is the
+        same order every run with that seed.
+      - Inject the RNG as a dependency (`def initialize(rng: Random::DEFAULT)`) so production uses the
+        global generator and tests pass a seeded one. This is the cleanest option.
+      - `srand(1234)` / `Kernel.srand` reseeds the **global** generator, which also affects every other
+        caller in the process (including libraries); fine in a single test with `srand` restored,
+        risky in parallel test runs.
+      - Minitest already randomises test order with a seed printed in the output
+        (`--seed 1234`), and `Random.new(seed)` is what you want to reuse that seed inside a test.
+      - Stubbing `Array#sample` globally hides the real behaviour and breaks if the implementation
+        switches to `shuffle.first`; prefer controlling the RNG.
+      - Note that `sample(n)` returns `n` **distinct** elements (no replacement) and `sample` on an
+        empty array returns `nil`, not an error.
+    explanation: |
+      Follow-ups: "how would you pick a weighted random element?" (`max_by { |w| rand ** (1.0 / w) }`
+      or cumulative weights with `bsearch`), "is `shuffle` uniform?" (Fisher-Yates, yes), and "is the
+      sequence from a seed guaranteed stable across Ruby versions?" (MT19937 output is, but how
+      `shuffle` consumes it is an implementation detail).
+    tags: [sample, shuffle, random, testing]
+    source: https://docs.ruby-lang.org/en/3.3/Array.html
+
+  - slug: ruby-enum-code-run-length-encode
+    kind: code
+    difficulty: junior
+    title: "Run-length encode with `chunk_while`"
+    body: |
+      Implement `rle(string)` that returns an Array of `[char, count]` pairs for consecutive runs, and
+      `rle_decode(pairs)` that rebuilds the string.
+
+      ```ruby
+      rle("aaabccdd")          # => [["a", 3], ["b", 1], ["c", 2], ["d", 2]]
+      rle("")                  # => []
+      rle_decode([["a", 3], ["b", 1]]) # => "aaab"
+      ```
+    starter_code: |
+      def rle(string)
+        # your code here
+      end
+
+      def rle_decode(pairs)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_encode
+          assert_equal [["a", 3], ["b", 1], ["c", 2], ["d", 2]], rle("aaabccdd")
+        end
+
+        def test_encode_empty_and_single
+          assert_equal [], rle("")
+          assert_equal [["z", 1]], rle("z")
+        end
+
+        def test_non_adjacent_runs_stay_separate
+          assert_equal [["a", 1], ["b", 1], ["a", 2]], rle("abaa")
+        end
+
+        def test_round_trip
+          s = "xxyzzzzxx"
+          assert_equal s, rle_decode(rle(s))
+        end
+      end
+    solution: |
+      def rle(string)
+        string.chars.chunk_while { |a, b| a == b }.map { |run| [run.first, run.size] }
+      end
+
+      def rle_decode(pairs)
+        pairs.map { |char, count| char * count }.join
+      end
+    explanation: |
+      `chunk_while { |a, b| a == b }` groups adjacent equal characters; `slice_when { |a, b| a != b }`
+      or `chunk(&:itself)` work too. The decode side is `map` + `join`. Interviewers want to see you
+      pick a grouping primitive instead of an index-walking loop, and that you handle the empty string
+      (`"".chars` is `[]`, so everything composes without special cases).
+    tags: [chunk_while, strings]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-array-pack-unpack
+    kind: open
+    difficulty: senior
+    title: "When do you reach for `Array#pack` / `String#unpack`?"
+    body: |
+      What do `Array#pack` and `String#unpack` do? Give three realistic uses and the format
+      directives you would use.
+    answer: |
+      - `pack` serialises an Array into a binary String according to a template of directives;
+        `unpack` / `unpack1` parse the other way. They are Ruby's `struct.pack` for wire formats.
+      - Network/binary protocols: `[len].pack("N")` is a 32-bit big-endian unsigned int (network byte
+        order); `"n"` is 16-bit; `"V"/"v"` little-endian; `"C"` unsigned byte, `"c"` signed, `"q"` 64-bit.
+        Reading a length-prefixed frame: `len = io.read(4).unpack1("N")`.
+      - Encoding: `["abc"].pack("m0")` is strict Base64 (`"YWJj"`), `"m"` adds newlines, `"H*"` /
+        `"h*"` convert hex strings to bytes (`["ff"].pack("H*")` is `"\xFF"`), `"U*"` packs code points
+        as UTF-8.
+      - Byte manipulation: `str.unpack("C*")` gives the byte values, `bytes.pack("C*")` rebuilds
+        the string; `"w"` is BER-compressed integers (used by Marshal and LEB128-like formats).
+      - `*` repeats the previous directive for all remaining elements; counts (`"a10"`) pad/truncate
+        strings; `"Z*"` is a NUL-terminated string.
+      - Alternatives: `String#bytes`, `Integer#digits`, `IO#read` + `unpack`, or libraries like
+        `bindata` for complex layouts.
+    explanation: |
+      Follow-ups: "endianness: what is the difference between `N` and `L`?" (`N` is always big-endian
+      32-bit, `L` is native-endian and native size), "how do you turn an IPv4 string into an integer?"
+      (`ip.split(".").map(&:to_i).pack("C4").unpack1("N")`), and "why does `unpack` return an Array
+      even for one value?" (hence `unpack1`, added in 2.4).
+    tags: [pack, unpack, binary]
+    source: https://docs.ruby-lang.org/en/3.3/Array.html
+
+  - slug: ruby-enum-string-array-conversions
+    kind: theory
+    difficulty: middle
+    title: "String <-> Array conversions and what they cost"
+    body: |
+      Most string-processing interview tasks are "convert to an array, use Enumerable, convert back".
+      Know the exact tools and their edge cases.
+
+      ```ruby
+      "a b  c".split            # => ["a", "b", "c"]   whitespace runs, leading/trailing ignored
+      "a,b,,c".split(",")       # => ["a", "b", "", "c"]  trailing empties are dropped, inner kept
+      "a,b,,".split(",", -1)    # => ["a", "b", "", ""]   negative limit keeps trailing empties
+      "héllo".chars             # => ["h", "é", "l", "l", "o"]  characters (code points in UTF-8)
+      "héllo".bytes             # => [104, 195, 169, ...]       6 bytes for 5 chars
+      "héllo".codepoints        # => [104, 233, 108, 108, 111]
+      "a1b2".scan(/\d/)         # => ["1", "2"]
+      %w[a b].join("-")         # => "a-b"
+      ["a", "b"] * ","          # => "a,b"   Array#* with a String is join
+      "abc".each_char           # Enumerator, no intermediate Array
+      "abc".chars.each_slice(2).map(&:join)  # => ["ab", "c"]
+      "abc".sum                 # => 294  byte checksum, NOT Enumerable#sum
+      ```
+
+      Points interviewers probe:
+
+      - `String` is **not** Enumerable (no `each`); you choose `chars`, `bytes`, `lines`,
+        `each_char`, `each_grapheme_cluster`. `each_grapheme_cluster` is the correct unit for emoji
+        with modifiers and combining accents.
+      - `chars` allocates an Array of one-character Strings: for a 10 MB string that is millions of
+        objects. `each_char` streams, and byte-level work (`each_byte`, `unpack("C*")`) is cheaper.
+      - `split` with a Regexp and capture groups includes the captures in the result; `split("")` is
+        the same as `chars`.
+      - `join` calls `to_s` on every element, including nested arrays (it flattens), and raises
+        `ArgumentError` on recursive arrays.
+      - `Array#pack("U*")` / `String#unpack("U*")` convert code points, `Integer#chr(Encoding::UTF_8)`
+        and `String#ord` do it per character.
+    answer: |
+      **Q:** `"a,b,,".split(",")` returns three elements but `"a,b,,".split(",", -1)` returns four. Why,
+      and when does it matter?
+
+      **A:** `split` drops trailing empty strings by default; a negative limit disables that. It matters
+      when parsing fixed-column data such as CSV lines where an empty last field is meaningful (use the
+      `csv` library for real CSV).
+    explanation: |
+      Follow-up: "reverse a string without `reverse`": `s.chars.reverse.join` is the obvious answer; a
+      strong candidate notes `s.each_grapheme_cluster.to_a.reverse.join` for Unicode correctness and
+      that `s.bytes.reverse.pack("C*")` corrupts multibyte characters.
+    tags: [string, chars, split, join]
+    source: https://docs.ruby-lang.org/en/3.3/Array.html
+
+  - slug: ruby-enum-code-invert-multi
+    kind: code
+    difficulty: junior
+    title: "Invert a hash with non-unique values"
+    body: |
+      `Hash#invert` loses data when values repeat. Implement `invert_multi(hash)` that maps each
+      value to the **Array of all keys** that had it, keys in their original order. Values may be
+      scalars or Arrays; when a value is an Array, each element counts as a separate value.
+
+      ```ruby
+      invert_multi({ a: 1, b: 2, c: 1 })            # => { 1 => [:a, :c], 2 => [:b] }
+      invert_multi({ a: [1, 2], b: [2] })            # => { 1 => [:a], 2 => [:a, :b] }
+      invert_multi({})                               # => {}
+      ```
+    starter_code: |
+      def invert_multi(hash)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_scalar_values
+          assert_equal({ 1 => [:a, :c], 2 => [:b] }, invert_multi({ a: 1, b: 2, c: 1 }))
+        end
+
+        def test_array_values
+          assert_equal({ 1 => [:a], 2 => [:a, :b] }, invert_multi({ a: [1, 2], b: [2] }))
+        end
+
+        def test_empty
+          assert_equal({}, invert_multi({}))
+        end
+
+        def test_result_has_no_default_proc_leak
+          result = invert_multi({ a: 1 })
+          assert_nil result[:missing]
+          assert_equal 1, result.size
+        end
+      end
+    solution: |
+      def invert_multi(hash)
+        hash.each_with_object({}) do |(key, value), acc|
+          Array(value).each { |v| (acc[v] ||= []) << key }
+        end
+      end
+    explanation: |
+      `Array(value)` normalises scalar and array values, `each_with_object` builds the result, and
+      `(acc[v] ||= []) << key` is the idiom that avoids the shared-default trap. If you use
+      `Hash.new { |h, k| h[k] = [] }` instead, remember the default proc stays on the returned hash
+      (`result[:missing]` would then **create** an entry); the last test catches that. `group_by` is
+      not enough here because a key can appear under several values.
+    tags: [hash, invert, each_with_object]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-enum-lazy-when-it-helps
+    kind: open
+    difficulty: senior
+    title: "When does `lazy` help, and when does it hurt?"
+    body: |
+      A colleague rewrote `users.map { expensive(_1) }.select(&:valid?).first(10)` as a `lazy` chain and
+      another sprinkled `.lazy` on every pipeline "for performance". Evaluate both decisions.
+    answer: |
+      - The first rewrite is right: with `lazy`, `expensive` runs only until 10 valid users are found
+        instead of on every user; the eager version does all the work and allocates two intermediate
+        arrays. Early termination (`first`, `take`, `find`, `take_while`) on a long or infinite source
+        is the sweet spot, as is streaming data that does not fit in memory (`File.foreach(...).lazy`).
+      - Blanket `lazy` is a loss: `Enumerator::Lazy` wraps every stage in an enumerator/fiber-style
+        pipeline, so each element pays several method calls per stage. On short arrays with cheap blocks
+        that are fully consumed anyway, lazy is noticeably **slower** (often 2-5x) and allocates more.
+      - Lazy also changes semantics: results are enumerators until you call `to_a`/`force`/`first`;
+        `sort_by`, `group_by`, `tally`, `min` must still see every element, so they are eager inside a
+        lazy chain and give no benefit.
+      - Side effects in lazy blocks run at consumption time, in a different place in the code, which
+        surprises readers and complicates debugging.
+      - Alternatives before reaching for `lazy`: `find`/`detect` for one element, `each_slice` batching,
+        `filter_map` to fuse two stages, a plain loop with `break`.
+      - Rule: use `lazy` for early exit or unbounded streams; measure (Benchmark/ips) before adding it
+        elsewhere.
+    explanation: |
+      Follow-ups: "what does `lazy.map { }.take(3)` return?" (another lazy enumerator; call `to_a`),
+      "how does `lazy` interact with `each_slice(1000)`?" (lazy `each_slice` yields arrays lazily, nice
+      for batched DB inserts over a huge file), and "what is `eager`?" (converts a lazy chain back to a
+      normal Enumerator, 3.1+).
+    tags: [lazy, performance]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator/Lazy.html
+
+  - slug: ruby-enum-code-merge-intervals
+    kind: code
+    difficulty: senior
+    title: "Merge overlapping intervals"
+    body: |
+      Implement `merge_intervals(intervals)` where `intervals` is an Array of `[start, end]` integer
+      pairs in any order. Return a new Array of merged, non-overlapping intervals sorted by start.
+      Touching intervals (`[1, 3]` and `[3, 5]`) merge. Do not mutate the input.
+
+      ```ruby
+      merge_intervals([[8, 10], [1, 3], [2, 6], [15, 18]]) # => [[1, 6], [8, 10], [15, 18]]
+      merge_intervals([[1, 4], [4, 5]])                    # => [[1, 5]]
+      merge_intervals([])                                  # => []
+      ```
+    starter_code: |
+      def merge_intervals(intervals)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_merges_overlaps
+          assert_equal [[1, 6], [8, 10], [15, 18]], merge_intervals([[8, 10], [1, 3], [2, 6], [15, 18]])
+        end
+
+        def test_touching_intervals_merge
+          assert_equal [[1, 5]], merge_intervals([[1, 4], [4, 5]])
+        end
+
+        def test_contained_interval
+          assert_equal [[1, 10]], merge_intervals([[1, 10], [2, 3], [4, 5]])
+        end
+
+        def test_empty_and_single
+          assert_equal [], merge_intervals([])
+          assert_equal [[2, 3]], merge_intervals([[2, 3]])
+        end
+
+        def test_does_not_mutate_input
+          input = [[3, 4], [1, 2]]
+          merge_intervals(input)
+          assert_equal [[3, 4], [1, 2]], input
+        end
+      end
+    solution: |
+      def merge_intervals(intervals)
+        intervals.sort_by(&:first).each_with_object([]) do |(s, e), acc|
+          last = acc.last
+          if last && s <= last[1]
+            last[1] = [last[1], e].max
+          else
+            acc << [s, e]
+          end
+        end
+      end
+    explanation: |
+      Sort by start (O(n log n)), then a single pass that either extends the last accumulated interval
+      or appends a new one. `sort_by` returns a new array so the input is not reordered, and `acc << [s, e]`
+      creates fresh pairs so mutating `last[1]` never touches the caller's data (the final test is there
+      to catch `acc << pair`). The "contained interval" case is why you take `max` of the ends rather
+      than blindly assigning.
+    tags: [sort_by, each_with_object, algorithms]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-enumerable-protocol
+    kind: theory
+    difficulty: senior
+    title: "Making a class Enumerable: the `each` contract"
+    body: |
+      `Enumerable` is a mixin with ~60 methods (`map`, `select`, `sort_by`, `lazy`, `each_slice`...)
+      implemented on top of **one** method you provide: `each`. This is the Ruby answer to "how do you
+      write a reusable collection".
+
+      ```ruby
+      class Playlist
+        include Enumerable
+
+        def initialize(*tracks) = @tracks = tracks
+
+        def each(&block)
+          return to_enum(:each) { @tracks.size } unless block   # Enumerator with cheap size
+          @tracks.each(&block)
+          self
+        end
+      end
+
+      pl = Playlist.new("a", "bb", "ccc")
+      pl.map(&:size)            # => [1, 2, 3]
+      pl.sort_by(&:size).last   # => "ccc"
+      pl.each_slice(2).to_a     # => [["a", "bb"], ["ccc"]]
+      pl.lazy.select { _1.size > 1 }.first   # => "bb"
+      pl.include?("bb")         # => true   (uses ==)
+      pl.first                  # => "a"    (breaks out of each after one element)
+      ```
+
+      What interviewers expect you to know:
+
+      - `each` should yield one element per iteration and return an Enumerator (`to_enum`) when no block
+        is given; otherwise every chained call like `pl.each.with_index` breaks.
+      - Most Enumerable methods are O(n) and allocate Arrays. `min`, `sort`, `include?`, `count`
+        walk everything. If your structure can do better (a Set for `include?`, a size counter for
+        `count`), override those methods; Hash and Array override many for exactly this reason.
+      - `size`/`length` are **not** provided; `count` is, but it iterates. Pass a size block to
+        `to_enum` so `lazy`/`with_index` can report size without iterating.
+      - `Enumerable#to_a`/`entries` honour multiple yielded values (`yield 1, 2` becomes `[1, 2]`),
+        while `map`/`each` receive just the first unless the block destructures.
+      - `Comparable` is the one-method cousin (`<=>`); together they cover most of what a custom
+        collection or value type needs.
+    answer: |
+      **Q:** You `include Enumerable` and define `each` that yields, but `obj.lazy.first(2)` raises
+      `NoMethodError` on `nil`. What did you forget?
+
+      **A:** Returning an Enumerator when `each` is called without a block
+      (`return to_enum(:each) unless block_given?`). `lazy` calls `each` with no block and expects an
+      enumerator back.
+    explanation: |
+      Follow-ups: "why not inherit from Array?" (you leak 150 mutating methods and `Array` methods
+      return plain Arrays, not your class; composition plus Enumerable gives a tight API), "how does
+      `Enumerable#first` stop early?" (it breaks out of the `each` via a non-local exit, so `each` must
+      not do cleanup that depends on running to the end; use `ensure`).
+    tags: [enumerable, each, to_enum]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-enum-sum-strings-and-arrays
+    kind: mcq
+    difficulty: junior
+    title: "`sum` on non-numeric elements"
+    body: |
+      ```ruby
+      a = %w[a b].sum
+      ```
+
+      What happens, and how do you sum strings or arrays with `sum`?
+    choices:
+      - "Returns `\"ab\"`: `sum` uses `+`, and `String#+` concatenates"
+      - "Raises `TypeError` (String can't be coerced into Integer); use `sum(\"\")` or `join` for strings and `sum([])` to concatenate arrays"
+      - "Returns `195`, the sum of the byte values, like `String#sum`"
+      - "Returns `nil`, like `inject(:+)` on an empty array"
+    answer: 1
+    explanation: |
+      `sum` starts from an initial value that defaults to `0`, so the first step is `0 + "a"`, which
+      raises `TypeError`. Supplying the identity for your type fixes it: `%w[a b].sum("")` gives
+      `"ab"` and `[[1], [2]].sum([])` gives `[1, 2]`, though `join` and `flatten(1)` are clearer and
+      faster (`sum("")` is O(n^2) string copying). `String#sum` (a byte checksum) is unrelated to
+      Enumerable and a common confusion. `sum` also takes a block: `orders.sum(&:total)` or
+      `sum(0.0) { }` to force Float output.
+    tags: [sum, strings]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html

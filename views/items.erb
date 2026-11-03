@@ -1,0 +1,37 @@
+<h1>Browse</h1>
+<% if params[:empty] %><p class="notice">Nothing matches that filter yet. Seed content or widen the filter.</p><% end %>
+<form class="filters" method="get" action="/items">
+  <select name="language"><option value="">Any language</option>
+    <% LANGUAGES.each do |l| %><option value="<%= l %>" <%= 'selected' if params[:language] == l %>><%= l %></option><% end %></select>
+  <select name="topic"><option value="">Any topic</option>
+    <% @topics.each do |lang, topic| %>
+      <% next if params[:language].to_s != "" && params[:language] != lang %>
+      <option value="<%= topic %>" <%= 'selected' if params[:topic] == topic %>><%= lang %> / <%= topic %></option>
+    <% end %></select>
+  <select name="kind"><option value="">Any kind</option>
+    <% KINDS.each do |k| %><option value="<%= k %>" <%= 'selected' if params[:kind] == k %>><%= k %></option><% end %></select>
+  <select name="difficulty"><option value="">Any level</option>
+    <% DIFFICULTIES.each do |d| %><option value="<%= d %>" <%= 'selected' if params[:difficulty] == d %>><%= d %></option><% end %></select>
+  <input type="text" name="q" placeholder="search title" value="<%= h params[:q] %>">
+  <button>Filter</button>
+  <a class="btn primary" href="/study?<%= qs(filter) %>">Study these</a>
+</form>
+<p class="muted"><%= @total %> items<%= @pages > 1 ? ", page #{@page} of #{@pages}" : "" %></p>
+<table>
+  <tr><th>Title</th><th>Kind</th><th>Level</th><th>Topic</th><th>Last</th></tr>
+  <% @items.each do |it| %>
+    <tr>
+      <td><a href="<%= item_url(it) %>"><%= h it.title %></a></td>
+      <td><%= it.kind %></td>
+      <td><span class="badge <%= it.difficulty %>"><%= it.difficulty %></span></td>
+      <td class="muted"><%= it.language %> / <%= it.topic %></td>
+      <td><%= @last.key?(it.id) ? (@last[it.id] ? "✅" : "❌") : "–" %></td>
+    </tr>
+  <% end %>
+</table>
+<% if @pages > 1 %>
+  <p class="actions">
+    <% if @page > 1 %><a class="btn" href="/items?<%= qs(filter.merge('page' => @page - 1)) %>">← Prev</a><% end %>
+    <% if @page < @pages %><a class="btn" href="/items?<%= qs(filter.merge('page' => @page + 1)) %>">Next →</a><% end %>
+  </p>
+<% end %>

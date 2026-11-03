@@ -1,0 +1,1408 @@
+language: ruby
+topic: blocks-procs-lambdas
+items:
+  - slug: ruby-blocks-yield-without-block
+    kind: mcq
+    difficulty: junior
+    title: "What happens when `yield` runs but no block was passed?"
+    body: |
+      ```ruby
+      def twice
+        yield
+        yield
+      end
+
+      twice
+      ```
+
+      What happens on the last line?
+    choices:
+      - "Nothing; `yield` is a no-op without a block"
+      - "`LocalJumpError: no block given (yield)` is raised"
+      - "`ArgumentError: wrong number of arguments` is raised"
+      - "It returns `nil` twice and the method returns `nil`"
+    answer: 1
+    explanation: |
+      `yield` transfers control to the block attached to the current method call. If no block was
+      given, there is nothing to jump to, so Ruby raises `LocalJumpError` ("no block given (yield)").
+      Guard with `block_given?` (`yield if block_given?`) or make the block mandatory by design.
+      It is not an `ArgumentError` because a block is not a positional argument.
+    tags: [yield, block_given]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-blocks-lambda-vs-proc-argument-strictness
+    kind: mcq
+    difficulty: junior
+    title: "Proc vs lambda: calling with the wrong number of arguments"
+    body: |
+      ```ruby
+      pr = proc   { |a, b| [a, b] }
+      la = lambda { |a, b| [a, b] }
+
+      p pr.call(1)
+      p la.call(1)
+      ```
+
+      What is the output?
+    choices:
+      - "`[1, nil]` then `[1, nil]`"
+      - "`ArgumentError` on the first call"
+      - "`[1, nil]` then `ArgumentError (given 1, expected 2)`"
+      - "`[1]` then `[1]`"
+    answer: 2
+    explanation: |
+      Non-lambda procs have lenient argument handling: missing arguments become `nil`, extras are
+      dropped, and a single array argument is auto-splatted. Lambdas (and methods) check arity
+      strictly and raise `ArgumentError`. This is the first difference interviewers expect you to name.
+    tags: [proc, lambda, arity]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-return-inside-proc
+    kind: mcq
+    difficulty: middle
+    title: "What does `return` inside a proc do?"
+    body: |
+      ```ruby
+      def run
+        pr = proc { return :from_proc }
+        pr.call
+        :after
+      end
+
+      def run_lambda
+        la = -> { return :from_lambda }
+        la.call
+        :after
+      end
+
+      p run
+      p run_lambda
+      ```
+    choices:
+      - "`:from_proc` then `:after`"
+      - "`:after` then `:after`"
+      - "`:from_proc` then `:from_lambda`"
+      - "`LocalJumpError` on the first call"
+    answer: 0
+    explanation: |
+      In a non-lambda proc, `return` returns from the *enclosing method* (the one where the proc was
+      created), so `run` returns `:from_proc` and `:after` is never reached. In a lambda, `return`
+      only exits the lambda itself, so `run_lambda` continues and returns `:after`. A `LocalJumpError`
+      would only occur if the proc were called after `run` had already returned.
+    tags: [proc, lambda, return]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-symbol-to-proc-map
+    kind: mcq
+    difficulty: junior
+    title: "How does `map(&:upcase)` work?"
+    body: |
+      ```ruby
+      %w[a b].map(&:upcase)
+      ```
+
+      Which statement is correct?
+    choices:
+      - "`&:upcase` is special syntax the parser rewrites into `{ |x| x.upcase }`"
+      - "`&` calls `Symbol#to_proc`, producing a proc that sends `:upcase` to its argument, and passes it as the block"
+      - "`map` detects a Symbol argument and calls it with `send`"
+      - "It only works for `map`; `select(&:even?)` is a syntax error"
+    answer: 1
+    explanation: |
+      `&obj` in a call means "use `obj` as the block"; if `obj` is not already a Proc, Ruby calls
+      `obj.to_proc`. `Symbol#to_proc` returns a lambda equivalent to `->(recv, *args) { recv.public_send(sym, *args) }`.
+      Any object defining `to_proc` works the same way, and it works with any method that takes a
+      block, not just `map`.
+    tags: [symbol, to_proc]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-closure-counter-output
+    kind: mcq
+    difficulty: junior
+    title: "Closures capture variables, not values"
+    body: |
+      ```ruby
+      count = 0
+      inc = -> { count += 1 }
+      inc.call
+      inc.call
+      count = 10
+      inc.call
+      p count
+      ```
+    choices:
+      - "`3`"
+      - "`11`"
+      - "`2`"
+      - "`NameError`"
+    answer: 1
+    explanation: |
+      A closure captures the *binding* (a reference to the variable), not a snapshot of its value.
+      After two calls `count` is 2; the assignment `count = 10` rebinds the same variable the lambda
+      sees, so the third call makes it 11. People who answer `3` are thinking of copy semantics.
+    tags: [closure]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-optional-arg-arity
+    kind: mcq
+    difficulty: senior
+    title: "Arity of procs vs lambdas with optional arguments"
+    body: |
+      ```ruby
+      p proc   { |a = 0| }.arity
+      p lambda { |a = 0| }.arity
+      p lambda { |a, b = 1| }.arity
+      ```
+    choices:
+      - "`0`, `-1`, `-2`"
+      - "`-1`, `-1`, `-2`"
+      - "`1`, `1`, `2`"
+      - "`0`, `0`, `-1`"
+    answer: 0
+    explanation: |
+      For lambdas (and methods), optional/rest params make arity negative: `-(required + 1)`. So
+      `|a = 0|` is `-1` and `|a, b = 1|` is `-2`. For non-lambda procs with only optional args and no
+      splat, Ruby reports the number of *mandatory* args, which is `0`. The asymmetry exists because
+      procs are lenient anyway, so the optional count is not meaningful for them.
+    tags: [arity, proc, lambda]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-break-value-from-each
+    kind: mcq
+    difficulty: middle
+    title: "`break` with a value inside a block"
+    body: |
+      ```ruby
+      result = [1, 2, 3].each { |x| break x * 10 if x == 2 }
+      p result
+      ```
+    choices:
+      - "`[1, 2, 3]`"
+      - "`nil`"
+      - "`20`"
+      - "`LocalJumpError`"
+    answer: 2
+    explanation: |
+      `break` terminates the *method that yielded* (`each`), and the value given to `break` becomes
+      that method call's return value. Without a value `break` makes the call return `nil`. Contrast
+      with `next`, which only ends the current block iteration and makes `yield` return the value.
+    tags: [break, each]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/control_expressions_rdoc.html
+
+  - slug: ruby-blocks-next-in-map
+    kind: mcq
+    difficulty: junior
+    title: "`next` inside `map`"
+    body: |
+      ```ruby
+      p [1, 2, 3].map { |x| next 0 if x == 2; x * 2 }
+      ```
+    choices:
+      - "`[2, 6]`"
+      - "`[2, 0, 6]`"
+      - "`[2, nil, 6]`"
+      - "`0`"
+    answer: 1
+    explanation: |
+      `next value` ends the current block invocation and makes the block return `value`, so `map`
+      collects `0` for the second element and continues. Bare `next` would yield `nil`. Only
+      `break` stops iteration entirely.
+    tags: [next, map]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/control_expressions_rdoc.html
+
+  - slug: ruby-blocks-block-local-variable
+    kind: mcq
+    difficulty: middle
+    title: "Block-local variables declared after `;`"
+    body: |
+      ```ruby
+      x = 10
+      y = 10
+      [1, 2].each { |i; x| x = i; y = i }
+      p [x, y]
+      ```
+    choices:
+      - "`[2, 2]`"
+      - "`[10, 10]`"
+      - "`[10, 2]`"
+      - "`SyntaxError`"
+    answer: 2
+    explanation: |
+      Variables listed after `;` in the block parameters are *block-local*: they shadow any outer
+      variable with the same name, so assignments inside do not leak. `y` is not declared, so the
+      block closes over the outer `y` and overwrites it. This is the escape hatch when a block would
+      otherwise clobber a method-level variable.
+    tags: [block-local, scope]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/calling_methods_rdoc.html
+
+  - slug: ruby-blocks-inject-forgets-to-return-accumulator
+    kind: mcq
+    difficulty: middle
+    title: "The classic `inject` accumulator bug"
+    body: |
+      ```ruby
+      [1, 2].inject({}) { |h, x| h[x] = x }
+      ```
+
+      What happens?
+    choices:
+      - "Returns `{1 => 1, 2 => 2}`"
+      - "Raises `NoMethodError: undefined method []= for an instance of Hash`"
+      - "Returns `2`"
+      - "Raises `NoMethodError: undefined method []= for an instance of Integer`"
+    answer: 3
+    explanation: |
+      `inject` passes the block *return value* on as the accumulator for the next step. `h[x] = x`
+      evaluates to the assigned value, so after the first iteration the accumulator is `1`, and the
+      second iteration runs `1[2] = 2`, which fails on `Integer`. Fix by ending the block with `h`
+      (`h[x] = x; h`) or, more idiomatically, by using `each_with_object({})`, which always passes the
+      same object and ignores the block result.
+    tags: [inject, each_with_object]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-blocks-proc-composition-order
+    kind: mcq
+    difficulty: middle
+    title: "`>>` vs `<<` composition order"
+    body: |
+      ```ruby
+      inc = ->(x) { x + 1 }
+      dbl = ->(x) { x * 2 }
+
+      p (inc >> dbl).call(3)
+      p (inc << dbl).call(3)
+      ```
+    choices:
+      - "`8` then `7`"
+      - "`7` then `8`"
+      - "`8` then `8`"
+      - "`NoMethodError`; only `Method` supports `>>`"
+    answer: 0
+    explanation: |
+      `f >> g` means "f, then g": `g.call(f.call(x))`, so `(3 + 1) * 2 = 8`. `f << g` is
+      mathematical composition `f(g(x))`: `(3 * 2) + 1 = 7`. Both `Proc` and `Method` define them,
+      and the right-hand side can be anything that responds to `call`. Read `>>` as a pipeline arrow.
+    tags: [composition]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-lazy-infinite-range
+    kind: mcq
+    difficulty: middle
+    title: "Lazy enumerator over an infinite range"
+    body: |
+      ```ruby
+      r = (1..Float::INFINITY).lazy.map { |x| x * 2 }.select { |x| x % 3 == 0 }.first(3)
+      p r
+      ```
+    choices:
+      - "Hangs forever: `map` must finish before `select` starts"
+      - "`[6, 12, 18]`"
+      - "`[3, 6, 9]`"
+      - "`RangeError: cannot iterate an endless range`"
+    answer: 1
+    explanation: |
+      `Enumerator::Lazy` threads each element through the whole chain one at a time, so `first(3)`
+      stops pulling as soon as three values pass the filter. Without `.lazy`, `map` would try to
+      build an infinite array first and never return. `first(n)`, `take(n).to_a`, `force` and `to_a`
+      are the points where evaluation actually happens.
+    tags: [lazy, enumerator]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator/Lazy.html
+
+  - slug: ruby-blocks-tap-vs-then
+    kind: mcq
+    difficulty: junior
+    title: "`tap` vs `then`"
+    body: |
+      ```ruby
+      a = 5.tap  { |x| x + 1 }
+      b = 5.then { |x| x + 1 }
+      p [a, b]
+      ```
+    choices:
+      - "`[6, 6]`"
+      - "`[5, 5]`"
+      - "`[5, 6]`"
+      - "`[6, 5]`"
+    answer: 2
+    explanation: |
+      `tap` yields the receiver and returns the *receiver*, ignoring the block result; it exists for
+      side effects such as logging inside a chain. `then` (alias `yield_self`) yields the receiver
+      and returns the *block result*, which makes it a pipeline step: `value.then { transform(_1) }`.
+    tags: [tap, then]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-blocks-define-method-lambda-semantics
+    kind: mcq
+    difficulty: senior
+    title: "Lambda-ness of blocks given to `define_method`"
+    body: |
+      ```ruby
+      class Greeter
+        define_method(:hi) { |name| "hi #{name}" }
+      end
+
+      p Greeter.new.method(:hi).to_proc.lambda?
+      Greeter.new.hi("a", "b")
+      ```
+    choices:
+      - "`false`, then returns `\"hi a\"` (extra arg ignored, proc semantics)"
+      - "`true`, then `ArgumentError (given 2, expected 1)`"
+      - "`false`, then `ArgumentError (given 2, expected 1)`"
+      - "`true`, then returns `\"hi a\"`"
+    answer: 1
+    explanation: |
+      A block passed to `define_method` becomes a real method body, and methods have strict arity,
+      so the block is treated with lambda semantics regardless of how it was written. `Method#to_proc`
+      always yields a lambda. Related trap: `lambda(&some_proc)` does *not* convert a proc into a
+      lambda; since Ruby 3.3 it raises `ArgumentError: the lambda method requires a literal block`.
+    tags: [define_method, lambda]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-code-my-map-yield
+    kind: code
+    difficulty: junior
+    title: "Implement `my_map` with `yield`"
+    body: |
+      Implement `my_map(arr)` that behaves like `Array#map` for the given array, using `yield` to call
+      the block for each element. It must return a new array and must not mutate `arr`. If no block
+      is given, calling `yield` should raise `LocalJumpError` naturally; do not rescue it.
+
+      ```ruby
+      my_map([1, 2, 3]) { |x| x * 2 }  # => [2, 4, 6]
+      my_map([]) { |x| x }             # => []
+      ```
+    starter_code: |
+      def my_map(arr)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_doubles
+          assert_equal [2, 4, 6], my_map([1, 2, 3]) { |x| x * 2 }
+        end
+
+        def test_empty
+          assert_equal [], my_map([]) { |x| x }
+        end
+
+        def test_does_not_mutate_input
+          src = [1, 2]
+          my_map(src) { |x| x + 1 }
+          assert_equal [1, 2], src
+        end
+
+        def test_raises_without_block
+          assert_raises(LocalJumpError) { my_map([1]) }
+        end
+      end
+    solution: |
+      def my_map(arr)
+        out = []
+        arr.each { |x| out << yield(x) }
+        out
+      end
+    explanation: |
+      `yield(x)` calls the block attached to the current `my_map` call and returns the block's value.
+      Building a fresh array keeps the input untouched. Interviewers often follow up with "how would
+      you make it return an Enumerator when no block is given?" (`return to_enum(:my_map, arr) unless block_given?`).
+    tags: [yield, map]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/methods_rdoc.html
+
+  - slug: ruby-blocks-code-my-select-to-enum
+    kind: code
+    difficulty: middle
+    title: "`my_select` that returns an Enumerator without a block"
+    body: |
+      Implement `my_select(arr)` that returns the elements of `arr` for which the block is truthy.
+      When called **without** a block it must return an `Enumerator` (use `block_given?` and
+      `to_enum`), so that `my_select(arr).with_index { ... }` works.
+
+      ```ruby
+      my_select([1, 2, 3, 4]) { |x| x.even? }       # => [2, 4]
+      my_select([1, 2, 3]).with_index { |x, i| i.even? }  # => [1, 3]
+      ```
+    starter_code: |
+      def my_select(arr)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_with_block
+          assert_equal [2, 4], my_select([1, 2, 3, 4]) { |x| x.even? }
+        end
+
+        def test_without_block_returns_enumerator
+          e = my_select([1, 2, 3])
+          assert_kind_of Enumerator, e
+          assert_equal [1, 3], e.each { |x| x.odd? }
+        end
+
+        def test_enumerator_chains_with_with_index
+          assert_equal [1, 3], my_select([1, 2, 3]).with_index { |x, i| i.even? }
+        end
+      end
+    solution: |
+      def my_select(arr)
+        return to_enum(:my_select, arr) unless block_given?
+        out = []
+        arr.each { |x| out << x if yield(x) }
+        out
+      end
+    explanation: |
+      `to_enum(:my_select, arr)` builds an Enumerator that, when iterated, calls `my_select(arr)`
+      again with the enumerator's block. This is exactly how core methods such as `Array#select`
+      and `each_with_index` behave, and it is why `map.with_index` chains work. The `block_given?`
+      guard is the standard idiom.
+    tags: [block_given, to_enum, enumerator]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html
+
+  - slug: ruby-blocks-code-make-counter-closure
+    kind: code
+    difficulty: junior
+    title: "Closure counter with `make_counter`"
+    body: |
+      Implement `make_counter(start = 0)` that returns a **lambda**. Each call of the lambda
+      increments and returns a private counter starting from `start + 1`. Counters from separate
+      `make_counter` calls must be independent.
+
+      ```ruby
+      c = make_counter
+      c.call  # => 1
+      c.call  # => 2
+      make_counter(10).call  # => 11
+      ```
+    starter_code: |
+      def make_counter(start = 0)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_counts_up
+          c = make_counter
+          assert_equal 1, c.call
+          assert_equal 2, c.call
+          assert_equal 3, c.()
+        end
+
+        def test_counters_are_independent
+          a = make_counter
+          b = make_counter(10)
+          a.call
+          assert_equal 11, b.call
+          assert_equal 2, a.call
+        end
+
+        def test_is_a_lambda
+          assert make_counter.lambda?
+        end
+      end
+    solution: |
+      def make_counter(start = 0)
+        n = start
+        -> { n += 1 }
+      end
+    explanation: |
+      The lambda closes over the local `n`, which lives on after `make_counter` returns because the
+      closure keeps its binding alive. Every `make_counter` call creates a fresh `n`, so counters do
+      not share state. This is the minimal demonstration of "closures capture variables by reference".
+    tags: [closure, lambda]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-code-memoize-wrapper
+    kind: code
+    difficulty: middle
+    title: "Write a `memoize` wrapper around a block"
+    body: |
+      Implement `memoize(&fn)` that returns a callable (a proc or lambda) wrapping `fn`. The wrapper
+      caches results keyed by the full argument list, so `fn` runs at most once per distinct set of
+      arguments. It must also cache `nil` and `false` results (do not use `cache[args] ||= ...`).
+
+      ```ruby
+      sq = memoize { |x| x * x }
+      sq.call(3)  # => 9 (computes)
+      sq.call(3)  # => 9 (cached)
+      ```
+    starter_code: |
+      def memoize(&fn)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_returns_same_result
+          sq = memoize { |x| x * x }
+          assert_equal 9, sq.call(3)
+          assert_equal 9, sq.call(3)
+        end
+
+        def test_calls_block_once_per_distinct_args
+          calls = 0
+          slow = memoize { |a, b| calls += 1; a + b }
+          slow.call(1, 2); slow.call(1, 2); slow.call(2, 1)
+          assert_equal 2, calls
+        end
+
+        def test_caches_nil_and_false
+          calls = 0
+          f = memoize { |x| calls += 1; x > 0 ? nil : false }
+          f.call(1); f.call(1); f.call(-1); f.call(-1)
+          assert_equal 2, calls
+        end
+      end
+    solution: |
+      def memoize(&fn)
+        cache = {}
+        ->(*args) { cache.key?(args) ? cache[args] : (cache[args] = fn.call(*args)) }
+      end
+    explanation: |
+      `&fn` captures the block as a Proc so it can be stored and called later. The returned lambda
+      closes over `cache`, a hash keyed by the argument array. `Hash#key?` is required because the
+      common `||=` idiom treats `nil`/`false` as "not cached" and recomputes them. In production
+      you would also think about thread safety and unbounded cache growth.
+    tags: [memoization, closure, explicit-block]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-code-compose-pipeline
+    kind: code
+    difficulty: middle
+    title: "`compose(*fns)` with `>>`"
+    body: |
+      Implement `compose(*fns)` that returns a callable applying the given callables **left to
+      right** (the first function runs first). With no arguments it returns the identity function.
+      Any object responding to `call` (lambdas, procs, `Method` objects) must be accepted.
+
+      ```ruby
+      inc = ->(x) { x + 1 }
+      dbl = ->(x) { x * 2 }
+      compose(inc, dbl).call(3)  # => 8
+      compose.call(42)           # => 42
+      ```
+    starter_code: |
+      def compose(*fns)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_applies_left_to_right
+          inc = ->(x) { x + 1 }
+          dbl = ->(x) { x * 2 }
+          assert_equal 8, compose(inc, dbl).call(3)
+          assert_equal 7, compose(dbl, inc).call(3)
+        end
+
+        def test_empty_is_identity
+          assert_equal 42, compose.call(42)
+        end
+
+        def test_accepts_method_objects_and_symbol_procs
+          assert_equal "HELLO", compose(:strip.to_proc, :upcase.to_proc).call("  hello ")
+          assert_equal "6", compose(6.method(:+), :to_s.to_proc).call(0)
+        end
+      end
+    solution: |
+      def compose(*fns)
+        fns.reduce(->(x) { x }) { |acc, f| acc >> f }
+      end
+    explanation: |
+      `Proc#>>` returns a new proc that runs the receiver and then feeds its result into the
+      argument, so folding with `>>` from an identity lambda yields a left-to-right pipeline. The
+      right-hand side of `>>` only needs to respond to `call`, which is why `Method` objects and
+      `Symbol#to_proc` lambdas plug in unchanged.
+    tags: [composition, functional]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-code-enumerable-each
+    kind: code
+    difficulty: middle
+    title: "Make a class Enumerable by defining `each`"
+    body: |
+      Implement `NumberList`, constructed as `NumberList.new(3, 1, 2)`, so that it includes
+      `Enumerable` and supports `map`, `sort`, `select`, `include?`, `min`, `sum`, etc.
+      Requirements for `each`:
+
+      - with a block: yield each number in order and return `self`;
+      - without a block: return an `Enumerator` whose `size` is the number of elements
+        (hint: `to_enum(:each) { @nums.size }`).
+    starter_code: |
+      class NumberList
+        include Enumerable
+
+        def initialize(*nums)
+          @nums = nums
+        end
+
+        def each
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def setup
+          @list = NumberList.new(3, 1, 2)
+        end
+
+        def test_enumerable_methods_work
+          assert_equal [6, 2, 4], @list.map { |n| n * 2 }
+          assert_equal [1, 2, 3], @list.sort
+          assert_equal [2], @list.select(&:even?)
+          assert @list.include?(2)
+          assert_equal 1, @list.min
+          assert_equal 6, @list.sum
+        end
+
+        def test_each_without_block_returns_enumerator
+          e = @list.each
+          assert_kind_of Enumerator, e
+          assert_equal 3, e.next
+          assert_equal 3, e.size
+        end
+
+        def test_each_with_block_returns_self
+          assert_same @list, @list.each { |_| }
+        end
+      end
+    solution: |
+      class NumberList
+        include Enumerable
+
+        def initialize(*nums)
+          @nums = nums
+        end
+
+        def each
+          return to_enum(:each) { @nums.size } unless block_given?
+          @nums.each { |n| yield n }
+          self
+        end
+      end
+    explanation: |
+      `Enumerable` is implemented entirely on top of `each`: every method (`map`, `sort`, `min`...)
+      calls `each` with its own block. Returning an Enumerator when no block is given is the
+      convention core classes follow; the block passed to `to_enum` supplies a lazy `size` so
+      `each.size` does not have to iterate.
+    tags: [enumerable, each, to_enum]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerable.html
+
+  - slug: ruby-blocks-code-fibonacci-enumerator
+    kind: code
+    difficulty: middle
+    title: "Infinite Fibonacci `Enumerator`"
+    body: |
+      Implement `fibs` returning a **new** `Enumerator` (use `Enumerator.new` and its yielder) that
+      produces the Fibonacci sequence `0, 1, 1, 2, 3, 5, ...` forever. It must work with `take`,
+      `lazy`, and external iteration via `next` / `peek`.
+
+      ```ruby
+      fibs.take(5)                          # => [0, 1, 1, 2, 3]
+      fibs.lazy.select(&:even?).first(3)    # => [0, 2, 8]
+      e = fibs; e.next; e.next; e.next      # => 1
+      ```
+    starter_code: |
+      def fibs
+        Enumerator.new do |y|
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_take
+          assert_equal [0, 1, 1, 2, 3, 5, 8, 13], fibs.take(8)
+        end
+
+        def test_lazy_chain
+          assert_equal [0, 2, 8, 34], fibs.lazy.select(&:even?).first(4)
+        end
+
+        def test_external_iteration
+          e = fibs
+          assert_equal 0, e.next
+          assert_equal 1, e.next
+          assert_equal 1, e.peek
+          assert_equal 1, e.next
+          assert_equal 2, e.next
+        end
+
+        def test_fresh_enumerator_each_call
+          fibs.next
+          assert_equal 0, fibs.first
+        end
+      end
+    solution: |
+      def fibs
+        Enumerator.new do |y|
+          a, b = 0, 1
+          loop do
+            y << a
+            a, b = b, a + b
+          end
+        end
+      end
+    explanation: |
+      The block given to `Enumerator.new` receives an `Enumerator::Yielder`; `y << value` (or
+      `y.yield value`) hands one element to whoever is consuming. Because consumers like `take(8)`
+      stop asking after enough elements, the infinite `loop` is fine. External `next` runs the block
+      on a Fiber and suspends it after each yield, which is why `peek` can look ahead.
+    tags: [enumerator, yielder, lazy]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html
+
+  - slug: ruby-blocks-code-with-retries
+    kind: code
+    difficulty: middle
+    title: "Block-based `with_retries` helper"
+    body: |
+      Implement `with_retries(times)` that yields to its block, passing the attempt number
+      (1-based). If the block raises a `StandardError`, run it again, up to `times` attempts in
+      total. After the last failed attempt re-raise the error. On success return the block's value.
+      Exceptions that are not `StandardError` (e.g. `NoMemoryError`) must propagate immediately.
+
+      ```ruby
+      with_retries(3) { |n| raise "flaky" if n < 3; n }  # => 3 (block ran 3 times)
+      with_retries(2) { raise "boom" }                  # raises RuntimeError after 2 attempts
+      ```
+    starter_code: |
+      def with_retries(times)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_returns_block_value_on_success
+          assert_equal :ok, with_retries(3) { :ok }
+        end
+
+        def test_retries_until_success
+          seen = []
+          result = with_retries(3) do |n|
+            seen << n
+            raise "flaky" if n < 3
+            n
+          end
+          assert_equal 3, result
+          assert_equal [1, 2, 3], seen
+        end
+
+        def test_reraises_after_exhausting_attempts
+          calls = 0
+          err = assert_raises(RuntimeError) { with_retries(2) { calls += 1; raise "boom" } }
+          assert_equal "boom", err.message
+          assert_equal 2, calls
+        end
+
+        def test_does_not_rescue_non_standard_errors
+          calls = 0
+          assert_raises(NoMemoryError) { with_retries(3) { calls += 1; raise NoMemoryError } }
+          assert_equal 1, calls
+        end
+      end
+    solution: |
+      def with_retries(times)
+        attempts = 0
+        begin
+          attempts += 1
+          yield attempts
+        rescue StandardError
+          retry if attempts < times
+          raise
+        end
+      end
+    explanation: |
+      This is the "block as a unit of work" pattern used by `Timeout.timeout`, `Mutex#synchronize`
+      and transaction helpers: the method owns the control flow and the caller supplies the body.
+      `retry` re-enters the `begin` block; a bare `raise` inside `rescue` re-raises the current
+      exception. Rescuing `StandardError` rather than `Exception` is the key safety point.
+    tags: [yield, retry, callbacks]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-blocks-open-proc-vs-lambda-differences
+    kind: open
+    difficulty: junior
+    title: "Explain the differences between a proc and a lambda"
+    body: |
+      Both `proc { }` and `-> { }` give you a `Proc` object. What are the differences, and how do you
+      tell them apart at runtime?
+    answer: |
+      - Both are instances of `Proc`; `Proc#lambda?` tells them apart.
+      - Arity: lambdas are strict like methods and raise `ArgumentError`; procs fill missing args with
+        `nil`, drop extras and auto-splat a single array argument.
+      - `return`: in a lambda it returns from the lambda; in a proc it returns from the method where
+        the proc was *defined* (and raises `LocalJumpError` if that method has already returned).
+      - `break` behaves the same way: exits the lambda vs. the method that yielded.
+      - Creation: `lambda { }`, `->(x) { }`, `Method#to_proc`, `define_method` bodies are lambdas;
+        `proc { }`, `Proc.new { }` and `&block` parameters are procs.
+      - Blocks are not objects at all until captured with `&block` (then they become a proc).
+    explanation: |
+      Follow-ups: "Why does `[[1, 2]].each { |a, b| }` work?" (proc auto-splat), "What does
+      `lambda(&blk)` return?" (since 3.3 an `ArgumentError`; it never converted procs), "When would
+      you pick a lambda over a proc?" (stored callbacks, anything called later or from another
+      scope, functional-style code).
+    tags: [proc, lambda]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-open-what-is-a-closure
+    kind: open
+    difficulty: middle
+    title: "What is a closure in Ruby, and what exactly does it capture?"
+    body: |
+      ```ruby
+      def make
+        secret = 1
+        [-> { secret }, -> { secret += 1 }]
+      end
+
+      get, bump = make
+      bump.call
+      p get.call
+      ```
+
+      Explain why this prints `2`, and what the lambdas are holding on to.
+    answer: |
+      - A closure is a function plus the *binding* (the environment of local variables and `self`)
+        where it was created. Blocks, procs and lambdas are all closures in Ruby.
+      - They capture variables by reference, not by value: both lambdas share the same `secret`
+        variable, so a mutation via `bump` is visible to `get`.
+      - The binding outlives the method call; `secret` is kept alive by the closures after `make`
+        returns (it is not on the stack any more, Ruby heap-allocates the environment).
+      - The captured scope includes `self`, which is why a block in an instance method can call
+        other instance methods and read `@ivars`.
+      - Variables defined *inside* the block are local to it; variables assigned after the block was
+        created are not visible (`Binding` is fixed at creation, values are not).
+    explanation: |
+      Common mistakes: saying closures "copy" values; forgetting that `self` is captured (which
+      is what `instance_eval` changes); not knowing that loops with `define_method` share one
+      variable unless you create a fresh scope per iteration. Follow-up: "What is `binding` and
+      what does `Kernel#binding` return?"
+    tags: [closure, binding]
+    source: https://docs.ruby-lang.org/en/3.3/Binding.html
+
+  - slug: ruby-blocks-open-yield-vs-block-param
+    kind: open
+    difficulty: middle
+    title: "When should a method use `yield` and when `&block`?"
+    body: |
+      Compare `def each; yield; end` with `def each(&block); block.call; end`. When do you need
+      the explicit `&block` parameter, and what does it cost?
+    answer: |
+      - `yield` calls the implicit block without materialising a Proc; it is the fastest and the
+        idiomatic choice when you only invoke the block.
+      - `&block` reifies the block into a `Proc` object. You need it when you must *store* the block
+        (callbacks, DSL registries), *pass it on* (`other.each(&block)`), inspect it (`arity`,
+        `parameters`, `lambda?`), or call it from a different `self` (`instance_exec(&block)`).
+      - Cost: an object allocation per call (VM may elide it if the block is only forwarded); so hot
+        iterator methods prefer `yield` + `block_given?`.
+      - Ruby 3.1+ allows an anonymous block parameter: `def each(&) = @items.each(&)`.
+      - A block given to a method that neither yields nor takes `&block` is silently ignored, which
+        is a frequent source of bugs (`Hash.new { }` vs `Hash.new({})` style confusions aside).
+    explanation: |
+      Follow-up: "What does `block_given?` check?" (whether the current frame has a block; it works
+      in both styles). "What happens if you `return` from a stored `&block` later?" (`LocalJumpError`,
+      because it is a non-lambda proc).
+    tags: [yield, explicit-block, performance]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/methods_rdoc.html
+
+  - slug: ruby-blocks-open-custom-to-proc
+    kind: open
+    difficulty: middle
+    title: "How does `&` work, and how can your own object be used with it?"
+    body: |
+      `%w[a b].map(&:upcase)` and `[1, 2].each(&method(:puts))` both work. Explain what `&` does
+      in a method call, and show how you would make `users.map(&Serializer)` work for a class
+      `Serializer`.
+    answer: |
+      - In a call, `&expr` says "use `expr` as the block". If `expr` is a Proc it is used directly;
+        otherwise Ruby calls `expr.to_proc` and uses the result.
+      - `Symbol#to_proc` returns a lambda that sends the symbol to its first argument; `Method#to_proc`
+        wraps the Method; `Hash#to_proc` returns `->(k) { hash[k] }`.
+      - Any object (including a class via a singleton method) can define `to_proc`, e.g.
+        `def self.to_proc = ->(user) { new(user).to_h }`, after which `users.map(&Serializer)` works.
+      - Conversely, in a method *definition* `&block` captures the block as a Proc.
+      - `&:sym` cannot pass extra arguments; `map(&:+)`-style calls receive the element as receiver
+        and any yielded extras as arguments.
+    explanation: |
+      Follow-up: "Why is `map(&:to_s)` sometimes slower or faster than a literal block?" (Symbol
+      procs are cached per symbol and avoid a closure, but each call goes through `send`, so it
+      depends on the Ruby version; measure). "What does `&nil` do?" (passes no block).
+    tags: [to_proc, symbol]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-open-method-objects
+    kind: open
+    difficulty: middle
+    title: "What are `Method` objects and when do you use `method(:name)`?"
+    body: |
+      What does `obj.method(:foo)` return, what can you do with it, and when is it preferable to a
+      lambda?
+    answer: |
+      - `Kernel#method` returns a `Method` object: a bound, callable reference to a method, with
+        `call`, `to_proc`, `arity`, `parameters`, `owner`, `receiver`, `source_location`, `unbind`.
+      - Pass it as a block: `list.each(&method(:puts))`, `map(&User.method(:new))`.
+      - Compose it: `method(:parse) >> method(:validate)`; curry it: `method(:add).curry[1]`.
+      - It is a lambda when converted (`to_proc.lambda? == true`), so strict arity applies.
+      - Prefer it over `->(x) { foo(x) }` when the logic already exists as a method: no duplicate
+        closure, better introspection, and `owner`/`source_location` help debugging.
+      - `Method#unbind` gives an `UnboundMethod` you can `bind_call` on another receiver of the same
+        class, used in metaprogramming.
+    explanation: |
+      Follow-ups: "What is the difference between `method(:x).owner` and `receiver`?", "Does `method`
+      honor refinements?" (no, per the refinements docs), "Why can `Method#to_proc` be slower than a
+      block?" (extra indirection; measure before optimising).
+    tags: [method-object]
+    source: https://docs.ruby-lang.org/en/3.3/Method.html
+
+  - slug: ruby-blocks-open-curry-use-cases
+    kind: open
+    difficulty: senior
+    title: "What does `Proc#curry` do and when is it actually useful?"
+    body: |
+      ```ruby
+      add = ->(a, b, c) { a + b + c }
+      add.curry[1][2][3]      # => 6
+      add.curry.(1, 2).(3)    # => 6
+      ```
+
+      Explain currying in Ruby and give a realistic use.
+    answer: |
+      - `curry` returns a lambda that accumulates arguments across calls and invokes the original
+        once it has received its arity worth of arguments; intermediate results are partially applied
+        lambdas.
+      - For variadic procs you must pass the arity: `->(*xs) { xs.sum }.curry(3)`.
+      - Lambdas validate the arity argument; procs accept any.
+      - Use cases: building a family of functions from one definition (`tax = apply_rate.curry[0.2]`),
+        pipelines with `>>` where each step needs configuration, callbacks that expect one argument.
+      - Partial application is the same idea without the one-argument-at-a-time rule; in Ruby you
+        often write `->(x) { f.(config, x) }` instead because it is more readable.
+      - Caveat: curried procs are slower and harder to read; most Ruby code uses closures or method
+        objects rather than currying.
+    explanation: |
+      Follow-up: "What does `add.curry.arity` return?" (`-1`, the curried lambda accepts any number
+      of arguments per call). "How is `Method#curry` different?" (same API on a Method object).
+    tags: [curry, functional]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-open-lazy-when-and-cost
+    kind: open
+    difficulty: senior
+    title: "When do you reach for `Enumerator::Lazy`, and what does it cost?"
+    body: |
+      Compare `(1..n).map { }.select { }.first(5)` with the `.lazy` version. When is laziness a
+      win, when is it a loss, and how does it work under the hood?
+    answer: |
+      - Eager chains materialise a full intermediate array per step; lazy chains pull one element
+        through every step on demand, so `first(5)` touches only as many source elements as needed.
+      - Wins: infinite or very large sources (ranges, file lines, paginated APIs, generators), early
+        termination (`first`, `take_while`, `find`), and memory pressure from big intermediates.
+      - Losses: for small, finite collections lazy is slower (each element goes through a chain of
+        block calls and yielder objects, roughly 2-5x overhead) and nothing is saved.
+      - Mechanics: `Enumerable#lazy` wraps the source; each `map`/`select`/... returns a new `Lazy`
+        wrapping the previous one with a block; evaluation starts only at `first`, `to_a`/`force`,
+        `each`, `eager`.
+      - `lazy.map` etc. require a block (`ArgumentError` otherwise); `eager` converts back to a plain
+        Enumerator for APIs that expect one.
+      - Side effects run interleaved, not step by step, which can surprise people debugging with `puts`.
+    explanation: |
+      Follow-up: "How would you lazily read a huge file?" (`File.foreach(path).lazy.map(...).first(10)`),
+      "Which `Lazy` method is *not* lazy?" (`zip` with a block, per the docs; `first`, `include?`,
+      `sum` are terminal).
+    tags: [lazy, performance]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator/Lazy.html
+
+  - slug: ruby-blocks-open-external-enumerators
+    kind: open
+    difficulty: senior
+    title: "How does `Enumerator#next` work and when would you use external iteration?"
+    body: |
+      ```ruby
+      e = [1, 2].each
+      e.next  # => 1
+      e.next  # => 2
+      e.next  # => StopIteration
+      ```
+
+      Explain the mechanism behind `next`, what `StopIteration` is, and when external iteration
+      is the right tool.
+    answer: |
+      - `each`-style iteration is *internal*: the collection drives the loop and calls your block.
+        `next`/`peek` is *external*: the caller pulls values one at a time.
+      - Under the hood, the first `next` starts the underlying `each` on a `Fiber`; each yielded value
+        suspends the fiber and hands the value back. `peek` looks ahead; `rewind` discards the fiber.
+      - When the source is exhausted, `next` raises `StopIteration`, whose `result` holds the return
+        value of the iteration. `Kernel#loop` rescues `StopIteration` and returns that result, which
+        makes `loop { e.next }` a clean idiom.
+      - Use external iteration to merge or zip several streams in lock-step, to implement parsers or
+        state machines that consume tokens, or to interleave two generators. It is much slower than
+        internal iteration because of fiber switches and is not thread-safe across threads.
+      - `next_values`/`peek_values` distinguish `yield` from `yield nil`.
+    explanation: |
+      Follow-up: "Why is `e.next` in a tight loop slow?" (fiber context switch per element).
+      "What does `loop` return when the enumerator is exhausted?" (`StopIteration#result`, e.g. the
+      array for `Array#each`).
+    tags: [enumerator, fiber, stop-iteration]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html
+
+  - slug: ruby-blocks-open-instance-exec-vs-instance-eval
+    kind: open
+    difficulty: middle
+    title: "`instance_eval` vs `instance_exec` when building a block DSL"
+    body: |
+      ```ruby
+      Router.draw do
+        get "/users", to: "users#index"
+      end
+      ```
+
+      How does `get` resolve inside that block? Compare `instance_eval` and `instance_exec` and
+      explain which you would use for this DSL and why.
+    answer: |
+      - A block closes over the caller's `self`; `draw` cannot normally make `get` resolve to its own
+        method. `instance_eval(&block)` re-executes the block with `self` switched to the receiver,
+        so bare `get` becomes `router.get`.
+      - `instance_exec(*args, &block)` does the same but also passes arguments to the block, which is
+        the only way to give the block parameters while changing `self` (`instance_eval` passes
+        the receiver itself as the single block argument).
+      - Downside of switching `self`: the block loses access to the caller's instance methods and
+        `@ivars` (locals still work because the binding is kept). A yield-style DSL (`draw { |r| r.get ... }`)
+        avoids that at the cost of a noisier syntax; many libraries support both via `block.arity`.
+      - `instance_eval` with a string additionally parses code; prefer the block form.
+      - `class_eval`/`class_exec` are the analogues that also change the *definee* so `def` defines
+        instance methods.
+    explanation: |
+      Follow-up: "What does `self` refer to in `Class.new { ... }`?" (the new class, it uses
+      `class_eval` semantics). "How does RSpec's `let` work?" (`define_method` inside `class_exec`).
+    tags: [instance_eval, instance_exec, dsl]
+    source: https://docs.ruby-lang.org/en/3.3/BasicObject.html
+
+  - slug: ruby-blocks-open-memoization-pitfalls
+    kind: open
+    difficulty: senior
+    title: "Memoization with closures and `||=`: what can go wrong?"
+    body: |
+      A colleague writes `def config = @config ||= load_config` and a closure-based
+      `memoize { |k| ... }` helper. What are the pitfalls of these patterns in production code?
+    answer: |
+      - `||=` treats `nil` and `false` as "not yet computed", so falsy results are recomputed on
+        every call; use `defined?(@x)` or `Hash#key?`/`fetch` for correctness.
+      - Keys: a closure cache keyed by argument arrays grows without bound (memory leak for
+        high-cardinality inputs); add an eviction policy or bound it.
+      - Thread safety: `||=` is check-then-set, so two threads can compute twice; harmless for pure
+        functions, dangerous for side-effecting loaders. Use a `Mutex` or `Concurrent::Map`.
+      - Mutability: returning the cached object lets callers mutate shared state; `freeze` or `dup`.
+      - Lifetime: instance-level memo lives as long as the object (fine for request objects); a
+        closure captured in a constant lives for the process, so stale data never refreshes.
+      - Arguments that are not value objects (hashes with default procs, objects with custom `==`)
+        produce surprising cache hits/misses; `hash`/`eql?` must be consistent.
+    explanation: |
+      Follow-up: "How would you memoize across processes?" (external cache such as Redis),
+      "What does `Hash.new { |h, k| h[k] = compute(k) }` give you?" (a lazy memo table in one line;
+      same unbounded-growth and falsy-value caveats, but here falsy values are stored correctly).
+    tags: [memoization, closure, thread-safety]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-blocks-open-define-method-loop-closure
+    kind: open
+    difficulty: senior
+    title: "Closures inside a loop with `define_method`"
+    body: |
+      ```ruby
+      class Settings
+        %w[host port].each do |name|
+          define_method("#{name}?") { !send(name).nil? }
+        end
+      end
+      ```
+
+      Why does each generated method see the right `name`? Would `def` inside the loop work?
+      What would break if the loop were a `while` loop with a single variable?
+    answer: |
+      - `define_method` takes a block, which is a closure: each iteration of `each` creates a fresh
+        block scope with its own `name`, so every method captures its own value.
+      - `def` is not a closure; it opens a new scope and cannot see `name`, so you would be forced
+        into string `class_eval`, which also loses syntax highlighting and is eval-based.
+      - With `while i < names.size` and `name = names[i]` the variable `name` belongs to the
+        enclosing scope and is shared by all blocks; every method would see the last value. Fix by
+        wrapping each iteration in a method/lambda call to create a new scope, or use `each`.
+      - The same bug appears with `Thread.new { }` in loops and with `lambda` callbacks collected in
+        a `while` loop.
+      - `define_method` bodies have lambda semantics for arguments and `return` returns from the
+        method, which is what you want.
+    explanation: |
+      Follow-up: "What is faster, a `define_method` method or a `def` method?" (`def`; `define_method`
+      methods have extra block-call overhead and cannot be inlined by YJIT as well; usually irrelevant).
+      "How do you pass a block to a `define_method`-defined method?" (declare `|*args, &blk|` in the
+      block; the method's block is not visible as implicit `yield`).
+    tags: [define_method, closure, scope]
+    source: https://docs.ruby-lang.org/en/3.3/Module.html
+
+  - slug: ruby-blocks-open-blocks-as-callbacks
+    kind: open
+    difficulty: senior
+    title: "Designing a callback API: storing blocks and calling them later"
+    body: |
+      You are writing an event emitter: `on(:save) { |record| ... }` registers a handler and
+      `emit(:save, record)` runs them. Some handlers take one argument, some take none. Design it
+      and point out the traps.
+    answer: |
+      - Capture with `def on(event, &handler)` and store the Proc in a hash of arrays; call with
+        `handler.call(*args)` or `instance_exec` if handlers should run in another context.
+      - Non-lambda procs are lenient, so a zero-arity handler can be called with arguments; if you
+        accept lambdas or `Method` objects too, check `handler.arity`/`parameters` and pass only what
+        they accept (`handler.arity.zero? ? handler.call : handler.call(*args)`).
+      - `return` inside a stored proc raises `LocalJumpError` once the defining method has returned;
+        document that handlers should use `next`, or convert handlers to lambdas by asking callers to
+        pass `->(r) { }`.
+      - Exceptions in one handler should not silently cancel the others; decide on rescue-and-report.
+      - Handlers hold closures and therefore references to objects; long-lived emitters leak unless
+        you provide `off`.
+      - For removal, keep the Proc identity (or return a handle) since blocks are new objects each time.
+      - `Proc#parameters` tells you about keyword parameters so you can support `on(:save) { |record:| }`.
+    explanation: |
+      Follow-up: "What is the difference between `handler.call`, `handler.()`, `handler[]` and
+      `handler.yield`?" (aliases, `yield` on a Proc is the lenient-argument variant). "How does
+      ActiveSupport::Callbacks differ?" (compiles callbacks into methods for speed).
+    tags: [callbacks, proc, arity]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-theory-three-kinds-of-closures
+    kind: theory
+    difficulty: junior
+    title: "Blocks, procs and lambdas at a glance"
+    body: |
+      Ruby has one closure concept with three faces.
+
+      | | block | proc | lambda |
+      |---|---|---|---|
+      | object? | no (syntax only) | `Proc`, `lambda? == false` | `Proc`, `lambda? == true` |
+      | create | `{ }` / `do end` after a call | `proc { }`, `Proc.new`, `&blk` param | `lambda { }`, `-> { }`, `method(:m).to_proc` |
+      | args | lenient | lenient, auto-splat | strict, `ArgumentError` |
+      | `return` | from enclosing method | from enclosing method | from the lambda |
+      | call | `yield` | `.call`, `.()`, `[]`, `.yield` | same |
+
+      ```ruby
+      def run
+        yield 1 if block_given?          # block
+      end
+      run { |x| x }                      # => 1
+
+      sq = ->(x) { x * x }               # lambda
+      twice = proc { |x| x * 2 }         # proc
+      sq.(3)                             # => 9
+      [1, 2].map(&sq)                    # & turns a Proc back into a block
+      ```
+
+      A method takes at most one block. Capture it with `&blk` to store or forward it. `&` in a
+      call does the reverse: Proc (or anything with `to_proc`) to block.
+    answer: |
+      **Q:** Which of the three is not an object, and how do you turn it into one?
+      **A:** The block. Declare `&blk` in the method signature (or call `proc { }` / `Proc.new`
+      inside the method), which wraps it in a non-lambda `Proc`.
+    explanation: |
+      Interviewers use this table as the warm-up before "what does `return` do here" questions.
+      Knowing `lambda?` and the four ways to call a Proc signals fluency.
+    tags: [blocks, proc, lambda]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-theory-localjumperror
+    kind: theory
+    difficulty: middle
+    title: "`return`, `break` and `LocalJumpError`"
+    body: |
+      `return` and `break` inside a closure are *non-local* jumps: they refer to the frame where
+      the closure was written, not where it is called.
+
+      ```ruby
+      def make_proc   = proc   { return :p }
+      def make_lambda = lambda { return :l }
+
+      make_lambda.call      # => :l   (returns from the lambda only)
+      make_proc.call        # LocalJumpError: unexpected return
+      ```
+
+      `make_proc` has already returned, so the proc's `return` has no method to return from.
+      The same proc called *inside* `make_proc` would return `:p` from `make_proc`.
+
+      ```ruby
+      def first_even(nums)
+        nums.each { |n| return n if n.even? }   # fine: returns from first_even
+        nil
+      end
+
+      def iterate(&blk) = [1, 2, 3].each(&blk)
+      iterate { |n| break n * 10 if n == 2 }    # => 20, break exits `iterate`'s `each`
+      ```
+
+      `break` in a proc that was passed with `&` to another method also raises `LocalJumpError`
+      if the method it would break out of is gone. `next` is always safe: it only ends the current
+      block invocation and gives `yield` a value.
+    answer: |
+      **Q:** You store a block as a proc in an array and call it later from another method.
+      It contains `return`. What happens, and what should the block author write instead?
+      **A:** `LocalJumpError` ("unexpected return"), because the defining method has finished. Use
+      `next value` to leave the block with a value, or make the callback a lambda.
+    explanation: |
+      Rails `before_action` blocks and RSpec examples are real-world places where people hit this.
+      Rubocop's `Lint/NonLocalExitFromIterator` flags `return` in iterator blocks.
+    tags: [return, break, localjumperror]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-theory-numbered-params-and-it
+    kind: theory
+    difficulty: junior
+    title: "Numbered block parameters `_1` and `it`"
+    body: |
+      Ruby 2.7 added implicit numbered parameters; Ruby 3.4 added `it` as a readable alias for the
+      single-parameter case.
+
+      ```ruby
+      [1, 2, 3].map { _1 * 2 }        # => [2, 4, 6]
+      [1, 2, 3].map { it * 2 }        # => [2, 4, 6]   (Ruby 3.4+)
+      {a: 1}.map { [_1, _2] }         # => [[:a, 1]]
+      ```
+
+      Rules worth knowing:
+
+      - Using `_2` changes the block's arity: with only `_1` the block is `|x|`, with `_2` present it
+        becomes `|x, y|`. So `[[1, 2]].each { p _1 }` prints `[1, 2]`, but adding `_2` makes `_1 == 1`.
+      - `it` always behaves like a single `|x|` parameter (so `[[1, 2]].each { p it }` prints `[1, 2]`).
+      - You cannot mix `it` with `_1`, nor use `_1` in a nested block when the outer block already
+        uses it (`SyntaxError`). `it` may be nested; it binds to the innermost block.
+      - `it` is an ordinary identifier outside blocks, so an RSpec-style `it "does x" do` method call
+        with arguments keeps working.
+      - Explicit names still win for anything longer than a one-liner.
+    answer: |
+      **Q:** What does `[[1, 2], [3, 4]].map { _1 + _2 }` return, and why does `_1` not equal the
+      whole pair here?
+      **A:** `[3, 7]`. Because `_2` appears, the block is treated as taking two parameters, so the
+      pair is destructured into `_1` and `_2` instead of `_1` receiving the array.
+    explanation: |
+      Ruby 3.3 only has `_1`; `it` lands in 3.4 and warns in 3.3 if used as an undeclared
+      identifier. Mentioning the arity change is what distinguishes a careful candidate.
+    tags: [numbered-parameters, it, ruby34]
+    source: https://blog.saeloun.com/2024/06/19/ruby-3-4-makes-it-as-default-block-parameter/
+
+  - slug: ruby-blocks-theory-yield-multiple-values
+    kind: theory
+    difficulty: junior
+    title: "Yielding multiple values and block parameter destructuring"
+    body: |
+      `yield a, b` passes several values; a block binds them with proc (lenient) rules.
+
+      ```ruby
+      def pair = yield 1, 2
+
+      pair { |a| a }           # => 1          extra value dropped
+      pair { |a, b, c| c }     # => nil        missing value is nil
+      pair { |*all| all }      # => [1, 2]
+
+      def one_array = yield [1, 2]
+      one_array { |a, b| b }   # => 2          single array is auto-splatted
+      one_array { |a| a }      # => [1, 2]
+      ```
+
+      This leniency is why `hash.each { |k, v| }` works even though `Hash#each` yields one
+      `[key, value]` array, and why `each_with_index { |(a, b), i| }` needs parentheses to
+      destructure the inner pair. Lambdas and methods do *not* do this: `->(a, b) {}.call([1, 2])`
+      raises `ArgumentError`, which is a classic gotcha when passing a lambda with `&` to
+      `Hash#each` or `each_with_object`.
+    answer: |
+      **Q:** `{a: 1}.each(&->(k, v) { })` raises. Why, and what is the fix?
+      **A:** `Hash#each` yields one `[k, v]` array and a lambda will not auto-splat it, so it is an
+      arity error (given 1, expected 2). Use `->((k, v)) { }`, a proc, or a plain block.
+    explanation: |
+      Verified on Ruby 3.3: `{a: 1}.each(&->(k, v) { })` raises `ArgumentError (given 1, expected 2)`,
+      while `{a: 1}.map(&->(k, v) { })` happens to work because `Enumerable#map` yields the pair as
+      two values. Do not rely on that inconsistency; destructure explicitly with `->((k, v))`.
+    tags: [yield, destructuring]
+    source: https://docs.ruby-lang.org/en/3.3/Proc.html
+
+  - slug: ruby-blocks-theory-enumerator-internals
+    kind: theory
+    difficulty: senior
+    title: "Enumerator, Yielder, Lazy: how iteration is plumbed"
+    body: |
+      An `Enumerator` is an object that knows how to call an `each`-like method later.
+
+      ```ruby
+      e = [3, 1].each_with_index   # to_enum(:each_with_index) under the hood
+      e.class                      # => Enumerator
+      e.to_a                       # => [[3, 0], [1, 1]]
+      e.size                       # => 2
+      ```
+
+      - `obj.to_enum(:meth, *args) { size }` builds one for any method that yields.
+      - `Enumerator.new { |y| y << 1; y.yield 2 }` builds one from scratch; `y` is an
+        `Enumerator::Yielder` whose `<<`/`yield` hands a value to the consumer's block.
+      - Internal iteration (`each`, `map`) runs the generator block to completion, calling the
+        consumer's block for each `y <<`.
+      - External iteration (`next`, `peek`) runs the generator on a Fiber and suspends it at each
+        yield; `StopIteration` signals the end and `Kernel#loop` rescues it.
+      - `lazy` wraps an enumerator in `Enumerator::Lazy`, where `map`/`select`/`take_while`/... return
+        new lazies and nothing runs until `first`, `to_a`, `force` or `each`.
+      - `with_index`, `with_object`, `each_slice` without a block chain because they return enumerators.
+
+      ```ruby
+      File.foreach("big.log").lazy.grep(/ERROR/).map(&:chomp).first(10)
+      ```
+    answer: |
+      **Q:** Why can `fibs.lazy.select(&:even?).first(3)` terminate on an infinite generator while
+      `fibs.select(&:even?).first(3)` hangs?
+      **A:** Eager `select` drives the generator to completion to build an array before `first`
+      runs; the lazy version pulls one element at a time through `select` and stops after three hits.
+    explanation: |
+      Senior follow-ups: "Why is external iteration slow?" (fiber switch per element), "What is
+      `Enumerator::Product` / `Enumerator.produce`?" (3.2+/2.7+ helpers for cartesian products and
+      stateful generators).
+    tags: [enumerator, yielder, lazy, fiber]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html
+
+  - slug: ruby-blocks-theory-binding-objects
+    kind: theory
+    difficulty: senior
+    title: "`Binding`: the closure's environment as an object"
+    body: |
+      Every closure carries a *binding*: the set of local variables plus `self` at the point it
+      was created. `Kernel#binding` hands you that environment as a `Binding` object.
+
+      ```ruby
+      def render(template)
+        name = "Ada"
+        ERB.new(template).result(binding)   # template can read `name`
+      end
+
+      b = binding
+      x = 1
+      b.local_variable_get(:x)       # => 1
+      b.local_variable_set(:y, 2)    # y exists only inside the binding
+      b.local_variables              # => [:x, ...]
+      b.receiver                     # => self at creation
+      b.eval("x + 1")                # => 2
+      ```
+
+      - `Proc#binding` returns the binding a proc closed over, which is how `ERB` and some DSLs
+        evaluate code "inside" your scope.
+      - `binding.irb` opens a REPL with your locals; `pry` does the same with `binding.pry`.
+      - Bindings keep every captured local alive, so a stored proc can pin large objects in memory.
+      - `Binding#eval` and `Kernel#eval(str, binding)` run arbitrary code with full access to
+        locals: never feed them user input.
+      - `Binding` objects cannot be marshalled.
+    answer: |
+      **Q:** Why does `ERB#result(binding)` need the binding argument at all?
+      **A:** The template is compiled to Ruby code and `eval`-ed; without a binding it runs in
+      ERB's own scope and cannot see your method's local variables.
+    explanation: |
+      Related: `TracePoint#binding` gives the binding at a traced event, which is how debuggers
+      inspect locals, and `Method#source_location` plus `binding` are the basis of tools like
+      `pry`'s `show-source`.
+    tags: [binding, erb, eval]
+    source: https://docs.ruby-lang.org/en/3.3/Binding.html

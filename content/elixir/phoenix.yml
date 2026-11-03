@@ -1,0 +1,1356 @@
+language: elixir
+topic: phoenix
+items:
+  - slug: elixir-phx-plug-init-call-contract
+    kind: mcq
+    difficulty: junior
+    title: "What is the relationship between `init/1` and `call/2` in a module plug?"
+    body: |
+      You write a module plug:
+
+      ```elixir
+      defmodule MyAppWeb.Plugs.RequireRole do
+        import Plug.Conn
+
+        def init(opts), do: Keyword.fetch!(opts, :role)
+
+        def call(conn, role) do
+          if conn.assigns.current_user.role == role, do: conn, else: conn |> send_resp(403, "forbidden") |> halt()
+        end
+      end
+      ```
+
+      and use it as `plug MyAppWeb.Plugs.RequireRole, role: :admin`. What does `call/2` receive as its second argument?
+    choices:
+      - "The raw keyword list `[role: :admin]` exactly as written in the router"
+      - "Whatever `init/1` returned (`:admin` here); `init/1` may run at compile time, so it must not return pids or other runtime-only values"
+      - "The `%Plug.Conn{}` assigns map, because `init/1` is only called for validation"
+      - "`nil`, because options are only available via `conn.private`"
+    answer: 1
+    explanation: |
+      The Plug contract is: `init/1` takes the options given at the `plug` call site and returns *initialised* options; that return value is what `call/2` receives as its second argument. `Plug.Builder` (used by routers, endpoints and controllers) invokes `init/1` at **compile time**, so expensive work can be done once and the result is baked into the module. That is also why the docs say `init/1` "must not return pids, ports or values that are specific to the runtime". The first choice is what people assume when they have only written function plugs; the raw options never reach `call/2` unless `init/1` returns them unchanged.
+    tags: [plug, init, call]
+    source: https://plug.hexdocs.pm/Plug.html
+
+  - slug: elixir-phx-plug-conn-struct-immutability
+    kind: theory
+    difficulty: junior
+    title: "The `Plug.Conn` struct: one immutable value threaded through every plug"
+    body: |
+      Everything in a Phoenix request is a transformation of one `%Plug.Conn{}` struct. Every plug, controller action and `render` call takes a conn and **returns a new conn**; nothing mutates in place.
+
+      The fields you touch most:
+
+      - `assigns` — a map for *your* per-request data (`conn.assigns.current_user`). Cleared on the next request.
+      - `private` — reserved for libraries/frameworks (Phoenix stores the controller, action, layout here).
+      - `params`, `body_params`, `query_params` — populated by `Plug.Parsers` and `fetch_query_params`; before that they hold an `%Plug.Conn.Unfetched{}` struct.
+      - `status`, `resp_body`, `resp_headers` — the response being built.
+      - `halted` — set by `halt/1`; `Plug.Builder` skips the remaining plugs when it is `true`.
+      - `state` — `:unset` → `:set` (after `resp/3`) → `:sent` (after `send_resp/1`). Mutating a `:sent` conn raises `Plug.Conn.AlreadySentError`.
+
+      ```elixir
+      def show(conn, %{"id" => id}) do
+        conn
+        |> assign(:user, Accounts.get_user!(id))   # returns a NEW conn
+        |> put_status(200)
+        |> render(:show)                            # sends the response
+      end
+      ```
+
+      The classic bug is forgetting to use the return value:
+
+      ```elixir
+      assign(conn, :user, user)   # result discarded
+      render(conn, :show)         # @user is not set
+      ```
+    answer: |
+      **Q:** `send_resp(conn, 403, "no")` is called in a plug but the controller action still runs afterwards and raises `AlreadySentError`. Why, and what is missing?
+      **A:** Sending a response does not stop the pipeline. The plug must also call `halt/1` (`conn |> send_resp(403, "no") |> halt()`); `Plug.Builder` only skips the remaining plugs when `conn.halted` is `true`.
+    explanation: |
+      Interviewers use the conn struct to check whether you understand that Phoenix is "just" functions over an immutable value: there is no global request object, no middleware stack mutating state. Knowing `assigns` vs `private`, `halted` vs `state`, and that `params` is unfetched until `Plug.Parsers` runs separates people who have read the Plug docs from people who only ran generators.
+    tags: [plug, conn, immutability]
+    source: https://plug.hexdocs.pm/Plug.Conn.html
+
+  - slug: elixir-phx-send-resp-without-halt
+    kind: mcq
+    difficulty: middle
+    title: "What goes wrong in this auth plug?"
+    body: |
+      ```elixir
+      def call(conn, _opts) do
+        case conn.assigns[:current_user] do
+          nil -> send_resp(conn, 401, "unauthorized")
+          _user -> conn
+        end
+      end
+      ```
+
+      The plug sits in the `:browser` pipeline before a controller. An anonymous user hits the page. What happens?
+    choices:
+      - "The client receives a 401 and nothing else runs; `send_resp` ends the request"
+      - "Compile error: `call/2` must return `{:ok, conn}` or `{:halt, conn}`"
+      - "The 401 is sent, but the controller action still runs and raises `Plug.Conn.AlreadySentError` when it tries to render"
+      - "The pipeline stops automatically because `conn.state` is `:sent`"
+    answer: 2
+    explanation: |
+      `send_resp/3` writes the response to the socket and moves `conn.state` to `:sent`, but it does **not** set `conn.halted`. `Plug.Builder` only short-circuits on `halted`, so the router keeps dispatching to the controller, which calls `render` / `put_status` on a sent conn and raises `Plug.Conn.AlreadySentError`. The fix is `conn |> send_resp(401, "unauthorized") |> halt()`. Choice 4 is the tempting one: people assume the state transition is enough. Plug deliberately separates "a response was sent" from "stop running plugs" so you can, for example, send a response and still run logging plugs.
+    tags: [plug, halt, send_resp]
+    source: https://plug.hexdocs.pm/Plug.Conn.html
+
+  - slug: elixir-phx-request-flow-endpoint-router-controller
+    kind: open
+    difficulty: middle
+    title: "Walk me through what happens to an HTTP request from the socket to the controller action"
+    body: |
+      An interviewer asks: "A browser sends `GET /users/42` to a Phoenix 1.7 app. Describe every layer the request passes through until a response is sent, and say where you would add a plug that must run for API routes only."
+    answer: |
+      - The web server (**Bandit** by default since 1.7.11, Cowboy in older apps) accepts the TCP connection and builds a `%Plug.Conn{}` via the adapter.
+      - The **Endpoint** (`MyAppWeb.Endpoint`) is the first plug. It is a `Plug.Builder` pipeline: `Plug.Static` (serve `priv/static`, short-circuits for assets), code reloader + live reload (dev only), `Plug.RequestId`, `Plug.Telemetry`, `Plug.Parsers` (populates `body_params`/`params` for urlencoded, multipart and JSON), `Plug.MethodOverride`, `Plug.Head`, `Plug.Session` (configures the cookie session store), and finally `plug MyAppWeb.Router`.
+      - The **Router** matches verb + path top to bottom. Only *after* a match does it run the `pipe_through` pipelines of the enclosing scope (`:browser` → `accepts`, `fetch_session`, `fetch_live_flash`, `put_root_layout`, `protect_from_forgery`, `put_secure_browser_headers`; `:api` → `accepts ["json"]`).
+      - The **Controller** is itself a plug: `UserController.call(conn, :show)` runs controller-level `plug`s (with optional `when action in [...]` guards), then `show(conn, params)`.
+      - The action returns a conn, usually via `render`/`json`/`redirect`, which calls `send_resp` and the adapter writes the bytes.
+      - An API-only plug goes in `pipeline :api do ... end` in the router (or a controller `plug` in API controllers), never in the Endpoint, which runs for every request including static assets.
+    explanation: |
+      Follow-ups: "Why does `Plug.Static` come first?" (so assets never pay for session/parsers). "Why are pipelines run after matching?" (an unmatched request should 404 cheaply and not fetch sessions). "Where do `conn.params` get decoded?" (`Plug.Parsers` in the Endpoint for the body; path params are merged by the router). A common weak answer puts authentication in the Endpoint; that breaks for `/api` and for static files.
+    tags: [plug, endpoint, router, pipeline]
+    source: https://phoenix.hexdocs.pm/Phoenix.Endpoint.html
+
+  - slug: elixir-phx-router-pipelines-scopes
+    kind: theory
+    difficulty: junior
+    title: "Router pipelines, scopes and `pipe_through`"
+    body: |
+      The router does two things: match a request to a plug (controller + action, or LiveView), and decide which **pipelines** run first.
+
+      ```elixir
+      defmodule MyAppWeb.Router do
+        use MyAppWeb, :router
+
+        pipeline :browser do
+          plug :accepts, ["html"]
+          plug :fetch_session
+          plug :fetch_live_flash
+          plug :put_root_layout, html: {MyAppWeb.Layouts, :root}
+          plug :protect_from_forgery
+          plug :put_secure_browser_headers
+        end
+
+        pipeline :api do
+          plug :accepts, ["json"]
+        end
+
+        scope "/", MyAppWeb do
+          pipe_through :browser
+          get "/", PageController, :home
+          resources "/posts", PostController, except: [:delete]
+          live "/dashboard", DashboardLive
+        end
+
+        scope "/api", MyAppWeb.API, as: :api do
+          pipe_through :api
+          resources "/posts", PostController, only: [:index, :show]
+        end
+
+        forward "/admin", AdminPlug
+      end
+      ```
+
+      Rules worth remembering:
+
+      - Pipelines run **only after a route matches**; an unmatched request never fetches a session.
+      - `scope` shares a path prefix and a module alias; several `pipe_through` calls accumulate, so keep one per scope.
+      - `resources` expands to seven RESTful routes; trim with `only:`/`except:`; `singleton: true` drops the `:id`.
+      - Routes match top to bottom: `get "/pages/:page"` declared before `get "/pages/hello"` shadows it.
+      - `forward "/admin", SomePlug` hands the whole subtree to another plug (Plug.Router, LiveDashboard, etc.); it sees paths relative to `/admin`.
+    answer: |
+      **Q:** An API route defined inside the `:browser` scope works in the browser but returns 403 `InvalidCSRFTokenError` for a `POST` from a mobile client. Why?
+      **A:** The `:browser` pipeline runs `protect_from_forgery`, which rejects non-GET requests without a CSRF token. Move the route to a scope that `pipe_through :api` (no session, no CSRF) and authenticate with a token instead.
+    explanation: |
+      The point to internalise is that the router is a plug that *chooses* other plugs, and pipelines are just named lists of plugs applied per scope. Most routing bugs in interviews come from two things: route order (first match wins) and putting a route in a scope with the wrong pipeline (CSRF on APIs, no session on browser routes).
+    tags: [router, pipeline, scope]
+    source: https://phoenix.hexdocs.pm/Phoenix.Router.html
+
+  - slug: elixir-phx-route-ordering-shadow
+    kind: mcq
+    difficulty: junior
+    title: "Which route handles `GET /posts/new`?"
+    body: |
+      ```elixir
+      scope "/", MyAppWeb do
+        pipe_through :browser
+        get "/posts/:id", PostController, :show
+        get "/posts/new", PostController, :new
+      end
+      ```
+    choices:
+      - "`PostController.new/2`, because literal segments always win over `:id` params"
+      - "Compile error: the two routes conflict"
+      - "Phoenix raises `Phoenix.Router.NoRouteError` because the match is ambiguous"
+      - "`PostController.show/2` with `%{\"id\" => \"new\"}`, because routes match top to bottom"
+    answer: 3
+    explanation: |
+      Phoenix compiles routes into function clauses in declaration order, and `:id` matches any segment, so `/posts/new` is captured by the first clause with `id = "new"`. The controller then usually raises `Ecto.NoResultsError` or `Ecto.Query.CastError`. Declare the literal route first, or use `resources`, which emits `new` before `show` for exactly this reason. There is no "most specific wins" logic like in some other routers, and no compile-time conflict detection.
+    tags: [router, matching]
+    source: https://phoenix.hexdocs.pm/Phoenix.Router.html
+
+  - slug: elixir-phx-resources-only-except
+    kind: mcq
+    difficulty: junior
+    title: "Which routes does `resources \"/users\", UserController, only: [:index, :show, :create]` generate?"
+    body: |
+      Pick the exact set of verb + path pairs.
+    choices:
+      - "`GET /users`, `GET /users/:id`, `POST /users`"
+      - "`GET /users`, `GET /users/:id`, `GET /users/new`, `POST /users`"
+      - "`GET /users`, `GET /users/:id`, `POST /users`, `PUT /users/:id`"
+      - "`GET /users`, `GET /users/:id`, `POST /users/:id`"
+    answer: 0
+    explanation: |
+      `resources` maps the seven conventional actions: `index GET /users`, `new GET /users/new`, `create POST /users`, `show GET /users/:id`, `edit GET /users/:id/edit`, `update PUT/PATCH /users/:id`, `delete DELETE /users/:id`. `only:` keeps exactly the listed actions, so `:new` and `:edit` (the HTML form pages) are not generated; that is why JSON APIs typically use `except: [:new, :edit]`. `POST /users/:id` is not a RESTful route at all.
+    tags: [router, resources]
+    source: https://phoenix.hexdocs.pm/Phoenix.Router.html
+
+  - slug: elixir-phx-verified-routes-sigil
+    kind: theory
+    difficulty: junior
+    title: "Verified routes: `~p` instead of `Routes.user_path/3`"
+    body: |
+      Phoenix 1.7 introduced `Phoenix.VerifiedRoutes`. Instead of generated helper functions you write the path as it appears in the browser, and the compiler checks it against the router:
+
+      ```elixir
+      ~p"/users/#{user}"                 # Phoenix.Param: struct -> id (or slug)
+      ~p"/users?#{[page: 2, sort: :name]}"   # keyword/map -> URL-encoded query
+      ~p"/users/#{user}/posts?page=#{page}"
+      url(~p"/users/#{user}")             # absolute URL using the Endpoint config
+      ```
+
+      If `/userz/...` does not match any route you get a **compile warning**, re-issued whenever the router or the calling file changes.
+
+      Why the change:
+
+      - Helpers (`Routes.user_path(conn, :show, user)`) needed a name, a reverse lookup and the `conn`; the result was hard to read and silently wrong when `as:` changed.
+      - `~p` reads like the URL, works in controllers, LiveViews, components and tests alike, and needs no `conn`.
+      - Static assets go through `~p"/assets/app.js"`, which also applies the digest (`app-<hash>.js`) in production.
+
+      Status of the old helpers: still generated for compatibility, but the Router docs call them deprecated, and you can turn them off with `use Phoenix.Router, helpers: false`. New 1.7+/1.8 apps do not use them at all.
+    answer: |
+      **Q:** Why is `~p"/users/#{user}"` safer than `"/users/#{user.id}"` string interpolation?
+      **A:** It is verified against the router at compile time (typos warn), the interpolation goes through `Phoenix.Param` so slugs/ids are encoded consistently, and query params are URL-encoded; plain strings get none of that.
+    explanation: |
+      A frequent interview probe is "what changed in Phoenix 1.7?" and verified routes are the first thing to name. Note the precise status: helpers are not removed, they are deprecated and still generated unless `helpers: false`; `~p` only warns (it does not fail compilation) and needs a static segment between dynamic ones to be verifiable. `path/2`/`url/2` exist for the rare cases where the router or host is decided at runtime.
+    tags: [router, verified-routes, phoenix-1.7]
+    source: https://phoenix.hexdocs.pm/Phoenix.VerifiedRoutes.html
+
+  - slug: elixir-phx-controller-vs-plug-conn-functions
+    kind: open
+    difficulty: middle
+    title: "Which of these come from `Phoenix.Controller` and which from `Plug.Conn`, and why does it matter?"
+    body: |
+      ```elixir
+      conn
+      |> put_status(:created)
+      |> put_flash(:info, "Saved")
+      |> assign(:user, user)
+      |> put_session(:user_id, user.id)
+      |> json(%{id: user.id})
+      ```
+
+      Classify each call, then explain what `action_fallback` and `redirect/2` need from the conn.
+    answer: |
+      - `put_status/2`, `assign/3`, `put_session/3`, `send_resp/3`, `halt/1`, `put_resp_header/3`, `get_session/2` are **`Plug.Conn`** — generic HTTP, usable in any plug, no Phoenix needed.
+      - `put_flash/3`, `json/2`, `render/3`, `redirect/2`, `text/2`, `html/2`, `put_view/2`, `put_layout/2`, `action_fallback/1`, `protect_from_forgery` are **`Phoenix.Controller`** — they know about views, formats, flash and the Phoenix request lifecycle. `json/2` picks the configured `:json_library`, sets `content-type` and sends; `redirect/2` needs `to:` (a path) or `external:` (a full URL) and uses the status already on the conn, defaulting to 302.
+      - It matters because controllers import both (`use MyAppWeb, :controller`), but a plain plug or a channel only has `Plug.Conn`; `put_flash` in a plug requires `Phoenix.Controller` to be imported and the session + `fetch_flash` to have run.
+      - Ordering matters: `put_status` must precede `json`/`render` (they send); anything after a send raises `AlreadySentError`.
+      - `action_fallback` only triggers when the action returns something that is **not** a `%Plug.Conn{}` (for example `{:error, changeset}`); it calls `FallbackController.call(conn, result)`.
+    explanation: |
+      Follow-ups: "Why does `redirect(conn, to: user_url)` raise for an absolute URL?" (`to:` only allows paths to prevent open redirects; use `external:`). "What does `put_flash` need?" (a fetched session and `fetch_flash`/`fetch_live_flash` in the pipeline). Candidates who treat Phoenix and Plug as one layer struggle when asked to write a plug that works outside Phoenix.
+    tags: [controller, plug-conn]
+    source: https://phoenix.hexdocs.pm/Phoenix.Controller.html
+
+  - slug: elixir-phx-action-fallback-pattern
+    kind: theory
+    difficulty: middle
+    title: "`action_fallback` and the FallbackController pattern"
+    body: |
+      API controllers end up repeating the same error handling in every action:
+
+      ```elixir
+      def create(conn, %{"user" => params}) do
+        case Accounts.create_user(params) do
+          {:ok, user} -> conn |> put_status(:created) |> render(:show, user: user)
+          {:error, %Ecto.Changeset{} = cs} -> conn |> put_status(422) |> render(ErrorJSON, :error, changeset: cs)
+        end
+      end
+      ```
+
+      `action_fallback` removes the duplication. When an action returns anything that is **not** a `%Plug.Conn{}`, Phoenix calls the fallback plug with the original conn and that value:
+
+      ```elixir
+      defmodule MyAppWeb.UserController do
+        use MyAppWeb, :controller
+        action_fallback MyAppWeb.FallbackController
+
+        def create(conn, %{"user" => params}) do
+          with {:ok, user} <- Accounts.create_user(params) do
+            conn |> put_status(:created) |> render(:show, user: user)
+          end
+        end
+      end
+
+      defmodule MyAppWeb.FallbackController do
+        use MyAppWeb, :controller
+
+        def call(conn, {:error, %Ecto.Changeset{} = changeset}) do
+          conn |> put_status(:unprocessable_entity) |> put_view(json: MyAppWeb.ChangesetJSON) |> render(:error, changeset: changeset)
+        end
+
+        def call(conn, {:error, :not_found}) do
+          conn |> put_status(:not_found) |> put_view(json: MyAppWeb.ErrorJSON) |> render(:"404")
+        end
+
+        def call(conn, {:error, :unauthorized}), do: conn |> put_status(403) |> put_view(json: MyAppWeb.ErrorJSON) |> render(:"403")
+      end
+      ```
+
+      The pattern pairs with `with`: the happy path reads top to bottom, every non-matching clause falls through to `FallbackController.call/2`. Contexts should therefore return a small, consistent set of error tuples (`{:error, changeset}`, `{:error, :not_found}`, `{:error, :unauthorized}`), which is also easier to test than exceptions.
+    answer: |
+      **Q:** A `with` in the action has an `else` block that returns `{:error, :nope}` with no matching `call/2` clause in the fallback. What happens?
+      **A:** `FunctionClauseError` is raised in `FallbackController.call/2` (a 500 in prod). Keep the set of error tuples small and give the fallback a catch-all clause that renders 500/422 with logging.
+    explanation: |
+      The fallback is itself a plug (`call/2`), which is why it can also be a module with `init/1`. Interviewers like asking how this interacts with `with`: the `else` block is usually unnecessary because non-matching values fall through, and adding `else` clauses that re-wrap errors is a smell. Also mention `Plug.Exception`/`Plug.Status`: raising `Ecto.NoResultsError` from `get!` already renders a 404 because Ecto implements `Plug.Exception` for it, which is the other common strategy for not-found.
+    tags: [controller, action_fallback, error-handling]
+    source: https://phoenix.hexdocs.pm/Phoenix.Controller.html
+
+  - slug: elixir-phx-code-plug-pipeline
+    kind: code
+    difficulty: middle
+    title: "Implement a minimal Plug-style pipeline with halting"
+    body: |
+      Model the Plug contract without Phoenix. Define a module `MiniPlug` with:
+
+      - a struct `%MiniPlug.Conn{assigns: %{}, status: nil, resp_headers: [], halted: false}` (define it as `MiniPlug.Conn`)
+      - `MiniPlug.run(conn, plugs)` where `plugs` is a list of either `fun` (arity 2, called as `fun.(conn, [])`) or `{fun, opts}` (called as `fun.(conn, opts)`); stop as soon as `conn.halted` is `true` and return the conn
+      - `MiniPlug.halt(conn)` sets `halted: true`
+      - `MiniPlug.assign(conn, key, value)`
+      - `MiniPlug.put_resp_header(conn, key, value)` appends `{key, value}` to `resp_headers`
+      - `MiniPlug.put_status(conn, status)`
+
+      Example:
+
+      ```elixir
+      set_header = fn conn, _ -> MiniPlug.put_resp_header(conn, "x-app", "mini") end
+      deny = fn conn, opts -> if opts[:deny], do: conn |> MiniPlug.put_status(403) |> MiniPlug.halt(), else: conn end
+      after_halt = fn conn, _ -> MiniPlug.assign(conn, :ran, true) end
+
+      MiniPlug.run(%MiniPlug.Conn{}, [set_header, {deny, deny: true}, after_halt])
+      # => %MiniPlug.Conn{status: 403, halted: true, resp_headers: [{"x-app", "mini"}], assigns: %{}}
+      ```
+    starter_code: |
+      defmodule MiniPlug do
+        defmodule Conn do
+          defstruct assigns: %{}, status: nil, resp_headers: [], halted: false
+        end
+
+        def run(conn, plugs) do
+          # TODO: call each plug in order, stop when conn.halted
+        end
+
+        def halt(conn), do: conn
+        def assign(conn, _key, _value), do: conn
+        def put_resp_header(conn, _key, _value), do: conn
+        def put_status(conn, _status), do: conn
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniPlugTest do
+        use ExUnit.Case
+
+        setup do
+          header = fn conn, _ -> MiniPlug.put_resp_header(conn, "x-app", "mini") end
+          deny = fn conn, opts -> if opts[:deny], do: conn |> MiniPlug.put_status(403) |> MiniPlug.halt(), else: conn end
+          mark = fn conn, _ -> MiniPlug.assign(conn, :ran, true) end
+          %{header: header, deny: deny, mark: mark}
+        end
+
+        test "runs all plugs in order", %{header: header, deny: deny, mark: mark} do
+          conn = MiniPlug.run(%MiniPlug.Conn{}, [header, {deny, deny: false}, mark])
+          assert conn.assigns == %{ran: true}
+          assert conn.resp_headers == [{"x-app", "mini"}]
+          refute conn.halted
+          assert conn.status == nil
+        end
+
+        test "halting stops the pipeline", %{header: header, deny: deny, mark: mark} do
+          conn = MiniPlug.run(%MiniPlug.Conn{}, [header, {deny, deny: true}, mark])
+          assert conn.halted
+          assert conn.status == 403
+          assert conn.assigns == %{}
+          assert conn.resp_headers == [{"x-app", "mini"}]
+        end
+
+        test "an already halted conn runs nothing", %{mark: mark} do
+          conn = MiniPlug.run(%MiniPlug.Conn{halted: true}, [mark])
+          assert conn.assigns == %{}
+        end
+
+        test "options are passed to the plug" do
+          plug = fn conn, opts -> MiniPlug.assign(conn, :opts, opts) end
+          assert MiniPlug.run(%MiniPlug.Conn{}, [{plug, role: :admin}]).assigns.opts == [role: :admin]
+          assert MiniPlug.run(%MiniPlug.Conn{}, [plug]).assigns.opts == []
+        end
+      end
+    solution: |
+      defmodule MiniPlug do
+        defmodule Conn do
+          defstruct assigns: %{}, status: nil, resp_headers: [], halted: false
+        end
+
+        def run(%Conn{halted: true} = conn, _plugs), do: conn
+        def run(conn, []), do: conn
+
+        def run(conn, [plug | rest]) do
+          {fun, opts} =
+            case plug do
+              {fun, opts} -> {fun, opts}
+              fun when is_function(fun, 2) -> {fun, []}
+            end
+
+          run(fun.(conn, opts), rest)
+        end
+
+        def halt(conn), do: %{conn | halted: true}
+        def assign(conn, key, value), do: %{conn | assigns: Map.put(conn.assigns, key, value)}
+        def put_resp_header(conn, key, value), do: %{conn | resp_headers: conn.resp_headers ++ [{key, value}]}
+        def put_status(conn, status), do: %{conn | status: status}
+      end
+    explanation: |
+      This is exactly how `Plug.Builder`/`Plug.run/3` behave: every plug is a pure function `conn -> conn`, the only control-flow signal is `conn.halted`, and an already-halted conn runs nothing. The pattern match `run(%Conn{halted: true} = conn, _)` as the first clause is the idiomatic way to short-circuit. Notice the design choice that halting is separate from setting a status; that is why real plugs must call `halt/1` explicitly after `send_resp`.
+    tags: [plug, pipeline, halt, coding]
+    source: https://plug.hexdocs.pm/Plug.html
+
+  - slug: elixir-phx-contexts-why
+    kind: open
+    difficulty: middle
+    title: "What is a Phoenix context, why does Phoenix push you toward them, and how do you draw the boundaries?"
+    body: |
+      A teammate says: "Contexts are just an extra module that calls `Repo`. I'd rather call `Repo.insert` from the controller." Argue for or against, and explain how you decide what goes into which context.
+    answer: |
+      - A context is a plain module (`MyApp.Accounts`, `MyApp.Catalog`) that exposes the **public API of a domain area**: `Accounts.create_user/1`, `Accounts.get_user!/1`, `Catalog.list_products/1`. Schemas, queries and changesets live *behind* it.
+      - Why: the web layer (controllers, LiveViews, channels) should not know about `Repo` or `Ecto.Query`. Then the same operation is reusable from a controller, a LiveView, a channel, a Mix task and an Oban job; it is testable without HTTP; and the schema can change without touching 15 controllers.
+      - It also stops the "flat list of 40 schemas" problem: `Comment` lives under `Posts` because comments belong to posts; `UserToken` lives under `Accounts`.
+      - Drawing boundaries: name a context after a responsibility, not a table (`Accounts`/`Identity`, `Billing`, `Catalog`). If two schemas are always changed together they share a context; if a context function needs another context's internals, call that context's public API rather than its schema.
+      - Generators (`phx.gen.context`, `phx.gen.html`, `phx.gen.live`, `phx.gen.json`) all take the context as the first argument (`mix phx.gen.live Posts Comment comments post_id:references:posts body:text`) and will add to an existing context.
+      - Phoenix 1.8 adds a `Scope` struct (`%Accounts.Scope{user: ...}`) that generated context functions take as their first argument, so authorization/ownership filtering is the default instead of an afterthought.
+      - Against the teammate: calling `Repo` from controllers works for a toy app, but every business rule then has to be duplicated for the LiveView and the API, and you lose the single place where invariants are enforced.
+    explanation: |
+      Follow-ups: "How do you handle a use case that spans two contexts (place an order that charges a card)?" — either a third context/`Multi` that orchestrates via both public APIs, or make one context own the flow. "Is a context a bounded context in the DDD sense?" — loosely; Phoenix borrowed the idea but a context is just a module boundary with no runtime enforcement. Weak answers describe contexts as "the models folder".
+    tags: [contexts, architecture]
+    source: https://phoenix.hexdocs.pm/contexts.html
+
+  - slug: elixir-phx-function-components-attr-slot
+    kind: theory
+    difficulty: junior
+    title: "Function components, `attr`, `slot` and HEEx"
+    body: |
+      Since Phoenix 1.7 views are gone: templates are **function components** that take an `assigns` map and return a `~H` (HEEx) template. Controllers render them via `MyAppWeb.UserHTML.show(assigns)`; LiveViews call them directly.
+
+      ```elixir
+      defmodule MyAppWeb.CoreComponents do
+        use Phoenix.Component
+
+        attr :title, :string, required: true
+        attr :kind, :atom, default: :info, values: [:info, :error]
+        attr :rest, :global
+        slot :inner_block, required: true
+        slot :action do
+          attr :label, :string
+        end
+
+        def card(assigns) do
+          ~H"""
+          <div class={"card card-#{@kind}"} {@rest}>
+            <h2>{@title}</h2>
+            {render_slot(@inner_block)}
+            <button :for={a <- @action}>{a.label}</button>
+          </div>
+          """
+        end
+      end
+      ```
+
+      ```heex
+      <.card title="Hello" kind={:error} id="x">
+        Body text
+        <:action label="OK" />
+      </.card>
+      ```
+
+      Rules that come up in interviews:
+
+      - Inside `~H` always read assigns as `@title` (or `assigns.title` only in the function head). Pattern matching `%{title: t} = assigns` outside the template breaks **change tracking**, so LiveView re-sends the whole template.
+      - `attr` with `required: true` and no `default:` warns at compile time if omitted; reading a missing non-default attr at runtime raises `KeyError`.
+      - `attr :rest, :global` collects standard HTML, `phx-*`, `aria-*` and `data-*` attributes to spread with `{@rest}`.
+      - `slot` declares `inner_block` (the default) or named slots; `render_slot/2` can pass a value back via `:let`.
+      - Validation is compile-time only; there is no runtime type checking of attrs.
+    answer: |
+      **Q:** Why does the HEEx compiler warn when you write `<div class="card <%= @kind %>">`?
+      **A:** In HEEx attribute values must be either a literal string or a single `{expr}` / `{...}` expression; mixing `<%= %>` inside attributes is not allowed because the engine needs the whole attribute to be tracked and escaped as one value.
+    explanation: |
+      Function components replaced `Phoenix.View` because one rendering model (components + change tracking) serves both dead controller views and LiveView. Expect the follow-up "function component vs live component": function components are stateless pure functions; `Phoenix.LiveComponent` has its own assigns, `mount`/`update`/`handle_event` and is addressed by `id` with `phx-target={@myself}`.
+    tags: [components, heex, attr, slot]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.Component.html
+
+  - slug: elixir-phx-attr-required-no-default
+    kind: mcq
+    difficulty: middle
+    title: "What happens when a required `attr` is omitted by the caller?"
+    body: |
+      ```elixir
+      attr :name, :string, required: true
+      def greet(assigns), do: ~H"<p>Hi {@name}</p>"
+      ```
+
+      A template elsewhere renders `<.greet />`.
+    choices:
+      - "Compile error: the template with `<.greet />` fails to compile"
+      - "`@name` is `nil` and the page renders `Hi ` silently"
+      - "A compile-time warning is emitted; at runtime reading `@name` raises `KeyError` because there is no default"
+      - "Phoenix inserts the attr name as a placeholder string"
+    answer: 2
+    explanation: |
+      `attr` declarations are validated by the HEEx compiler, but only as **warnings** (missing required attr, unknown attr, wrong literal value). They never fail the build, which is why CI often runs with `--warnings-as-errors`. At runtime assigns is a plain map; a declared attr without `default:` is simply absent, so `@name` raises `KeyError`. Choice 2 describes what happens when you add `default: nil`. The docs recommend `default: nil` or `assign_new/3` for optional attrs.
+    tags: [components, attr]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.Component.html
+
+  - slug: elixir-phx-liveview-mount-twice
+    kind: mcq
+    difficulty: junior
+    title: "Why does `mount/3` run twice on a normal LiveView page load?"
+    body: |
+      You put `IO.inspect("mounting")` in `mount/3` and see it twice per page visit, and a database query in it runs twice.
+    choices:
+      - "A bug in the generated app: the JS bundle is included twice in `root.html.heex`"
+      - "Once for `mount/3` and once for `handle_params/3`, which share the same callback"
+      - "First for the disconnected HTTP render (plain HTML for SEO and fast first paint), then again when the WebSocket connects and a stateful process is spawned"
+      - "LiveView retries mount once if the first render takes longer than 100ms"
+    answer: 2
+    explanation: |
+      The LiveView lifecycle is: HTTP request → `mount` + `handle_params` + `render` as a regular controller-style response (the **dead render**); the client JS then opens a WebSocket and the server spawns the LiveView process, where `mount` + `handle_params` run again (the **connected mount**). Both are real; neither is a bug. Guard expensive or stateful work with `if connected?(socket)` (subscribe to PubSub, start timers, heavy queries), or accept the double query for cheap data so the dead render has content. Reconnects after a crash or network drop also re-run mount. Choice 1 is a real cause of seeing *three or more* mounts, which is how the forum thread in the source was resolved.
+    tags: [liveview, mount, connected]
+    source: https://elixirforum.com/t/mount-being-called-twice-after-liveview-dead-render/57706
+
+  - slug: elixir-phx-liveview-lifecycle-open
+    kind: open
+    difficulty: middle
+    title: "Describe the LiveView lifecycle and where you put subscriptions, params handling and heavy work"
+    body: |
+      A LiveView shows a product list filtered by `?category=...`, live-updates when stock changes, and runs a slow report query. Explain which callback does what and why.
+    answer: |
+      - `mount/3` (params, session, socket): runs on the dead render **and** on the connected mount. Put one-time setup here: `assign` defaults, `allow_upload`, and, guarded with `connected?(socket)`, `Phoenix.PubSub.subscribe(MyApp.PubSub, "stock")` and timers.
+      - `handle_params/3` (params, uri, socket): runs after mount on both renders and again on every `push_patch`/`<.link patch>`. Read the URL (`?category=`) here, not in mount, so back/forward and patches refilter without remounting.
+      - `handle_event/3` (`"filter"`, params, socket): responds to `phx-click`/`phx-submit`/`phx-change`; typically `push_patch` to put the filter in the URL rather than assigning directly, so the state is shareable.
+      - `handle_info/2`: receives PubSub messages (`{:stock_changed, product}`) and process messages; update the assign or `stream_insert` the row.
+      - Heavy work: `assign_async`/`start_async` (LiveView 0.20+) so mount returns immediately and the report fills in later; or `Task.async` + `handle_info`. Never block mount — the dead render would stall the whole page.
+      - `render/1` runs after every callback that changed assigns; only the changed parts are diffed to the client.
+      - `terminate/2` is best-effort; do not rely on it for cleanup, use monitors/links from the owning process instead.
+    explanation: |
+      Follow-ups: "What is the difference between `push_patch` and `push_navigate`?" (patch stays in the same LiveView and triggers `handle_params`; navigate tears down and mounts a new LiveView over the same socket). "What if the query in mount is cheap, should you still guard it?" (usually no; the dead render then shows real content and is good for SEO). "What happens to the state on a reconnect?" (lost; the process is new, so state must be reconstructable from URL + session + DB).
+    tags: [liveview, lifecycle, handle_params]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.html
+
+  - slug: elixir-phx-push-patch-vs-navigate
+    kind: mcq
+    difficulty: middle
+    title: "`push_patch/2` vs `push_navigate/2`: which statement is correct?"
+    body: |
+      Both are called from a LiveView callback with `to: ~p"/posts?page=2"`.
+    choices:
+      - "`push_patch` triggers a full page reload; `push_navigate` updates the URL via the WebSocket"
+      - "They are aliases; `push_navigate` is the deprecated name of `push_patch`"
+      - "`push_navigate` can only target controller routes, `push_patch` only LiveView routes"
+      - "`push_patch` keeps the current LiveView process and invokes `handle_params/3`; `push_navigate` shuts the LiveView down and mounts a new one over the same socket, which must be in the same `live_session`"
+    answer: 3
+    explanation: |
+      `push_patch` is the cheap one: same process, same assigns, only `handle_params/3` runs, scroll position is kept — use it for filters, pagination, tabs, modals that live in the URL. `push_navigate` (formerly `push_redirect`, which is the deprecated name) ends the current LiveView and mounts the target LiveView over the existing socket without a full page load; if the target is in a different `live_session`, a full page redirect happens instead. `redirect/2` is the one that leaves LiveView entirely (full HTTP redirect, usable for controller routes). The deprecated alias confusion in choice 2 is a frequent interview trap.
+    tags: [liveview, navigation]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.html
+
+  - slug: elixir-phx-assign-vs-assign-new
+    kind: mcq
+    difficulty: middle
+    title: "Why do `on_mount` hooks and layouts use `assign_new/3` instead of `assign/3` for `:current_user`?"
+    body: |
+      ```elixir
+      socket = assign_new(socket, :current_user, fn -> Accounts.get_user_by_session_token(token) end)
+      ```
+    choices:
+      - "`assign_new` is just `assign` with lazy evaluation; the function is always executed on the first render"
+      - "`assign_new` only runs the function if the key is absent, and on the dead render it can reuse an assign already set by a plug on the `conn` (`conn.assigns.current_user`), avoiding a second DB query; the function must still return the same value as a fallback"
+      - "`assign_new` marks the assign as temporary so it is dropped after render"
+      - "`assign` is not allowed inside `on_mount`; only `assign_new` is"
+    answer: 1
+    explanation: |
+      `assign_new/3` sets a key only when it is not already present. During the disconnected render Phoenix shares the `conn.assigns` with the LiveView, so a user loaded by a `fetch_current_user` plug is reused instead of queried again; a child LiveView can likewise reuse a parent's assign. That sharing is "performed when possible but not guaranteed" (the connected mount has no conn), so the function must compute the same value. It is not about laziness per se and has nothing to do with temporary assigns.
+    tags: [liveview, assign_new]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.Component.html
+
+  - slug: elixir-phx-streams-large-collections
+    kind: mcq
+    difficulty: senior
+    title: "A LiveView lists 10,000 messages. Why switch from `assign(:messages, list)` to `stream(:messages, list)`?"
+    body: |
+      ```elixir
+      socket |> stream(:messages, Chat.list_messages(room))
+      ```
+
+      ```heex
+      <div id="messages" phx-update="stream">
+        <div :for={{dom_id, msg} <- @streams.messages} id={dom_id}>{msg.body}</div>
+      </div>
+      ```
+    choices:
+      - "Stream items are sent to the client and then dropped from the server socket state after render, so the process holds no copy of the list; later changes use `stream_insert`/`stream_delete` on single items"
+      - "Streams paginate automatically, sending 50 items per WebSocket frame"
+      - "Streams are stored in ETS instead of the process heap, which is faster for lists"
+      - "Streams render on the client with a JS template, so the server never renders the items"
+    answer: 0
+    explanation: |
+      Keeping a 10k-element list in assigns costs memory in *every* LiveView process (one per connected user) and, worse, any change re-diffs the whole collection. With streams the server renders the items once, ships them, and frees them after `render/1`; the DOM becomes the source of truth. Updates are per item: `stream_insert(socket, :messages, msg, at: 0)`, `stream_delete`, `reset: true` to replace all, `limit:` to cap the DOM. Requirements: container needs `phx-update="stream"` and an id, each item needs the `dom_id`. Streams do not paginate by themselves and are still server-rendered. The older alternative was `temporary_assigns: [messages: []]` with `phx-update="append"`, which cannot delete or update items.
+    tags: [liveview, streams, performance]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.html
+
+  - slug: elixir-phx-temporary-assigns
+    kind: mcq
+    difficulty: middle
+    title: "What does `{:ok, socket, temporary_assigns: [events: []]}` returned from `mount/3` do?"
+    body: |
+      ```elixir
+      def mount(_params, _session, socket) do
+        {:ok, assign(socket, events: Log.recent()), temporary_assigns: [events: []]}
+      end
+      ```
+
+      ```heex
+      <ul id="events" phx-update="append">
+        <li :for={e <- @events} id={"event-#{e.id}"}>{e.text}</li>
+      </ul>
+      ```
+    choices:
+      - "`:events` is excluded from the diff, so the client never receives it"
+      - "`:events` is only assigned on the dead render and dropped on connect"
+      - "After each render `:events` is reset to `[]` on the server; the client keeps what was rendered, so it is used with `phx-update=\"append\"`/`\"prepend\"` to accumulate items without holding them in memory"
+      - "`:events` is stored in the session so it survives reconnects"
+    answer: 2
+    explanation: |
+      Temporary assigns are the pre-streams tool for append-only lists (logs, chat): you assign a batch, render it, and the server resets the assign to the given default so the process heap stays small, while the DOM accumulates because the container has `phx-update="append"`. Limits: no deletion or in-place update of a specific item, which is why `stream/3` superseded it for most cases. The assign is sent to the client normally (choice 1 is wrong) and it has nothing to do with the session.
+    tags: [liveview, temporary_assigns]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.html
+
+  - slug: elixir-phx-liveview-forms-to-form
+    kind: theory
+    difficulty: middle
+    title: "LiveView forms: `to_form`, `phx-change`, `phx-submit` and errors"
+    body: |
+      The modern form flow (LiveView 0.18+/1.0) uses `Phoenix.HTML.Form` structs built with `to_form/2` and the `<.form>` + `<.input>` core components:
+
+      ```elixir
+      def mount(_params, _session, socket) do
+        changeset = Accounts.change_user(%User{})
+        {:ok, assign(socket, form: to_form(changeset))}
+      end
+
+      def handle_event("validate", %{"user" => params}, socket) do
+        changeset = %User{} |> Accounts.change_user(params) |> Map.put(:action, :validate)
+        {:noreply, assign(socket, form: to_form(changeset))}
+      end
+
+      def handle_event("save", %{"user" => params}, socket) do
+        case Accounts.create_user(params) do
+          {:ok, _user} -> {:noreply, socket |> put_flash(:info, "Created") |> push_navigate(to: ~p"/users")}
+          {:error, changeset} -> {:noreply, assign(socket, form: to_form(changeset))}
+        end
+      end
+      ```
+
+      ```heex
+      <.form for={@form} id="user-form" phx-change="validate" phx-submit="save">
+        <.input field={@form[:email]} type="email" label="Email" phx-debounce="300" />
+        <.input field={@form[:name]} label="Name" />
+        <button>Save</button>
+      </.form>
+      ```
+
+      Things to know:
+
+      - `to_form/2` wraps a changeset **or a plain map** (`to_form(%{"q" => ""}, as: :search)`) so schemaless forms use the same components.
+      - Errors are only shown when `changeset.action` is set (`:validate`, `:insert`, ...). `Repo.insert` sets it on failure; for validation you set it yourself (or use `Ecto.Changeset.apply_action/2`).
+      - `@form[:email]` returns a `Phoenix.HTML.FormField` (id, name, value, errors). Access fields this way, not through `:let`, so change tracking works per field.
+      - `phx-change` is needed even if you do nothing with it; otherwise unrelated re-renders can reset inputs. `phx-debounce="300"`/`"blur"` throttles `phx-change`.
+      - `phx-submit` disables the submit button while the event is in flight (`phx-disable-with`). File uploads need `multipart` and `allow_upload`.
+    answer: |
+      **Q:** The form shows "can't be blank" errors immediately on page load. What is wrong?
+      **A:** The changeset passed to `to_form` already has `action` set (e.g. `validate` was called with empty params, or `apply_action` was used in mount). Build the initial form from a changeset with `action: nil` so errors are hidden until the user interacts.
+    explanation: |
+      The old API (`form_for`, `Phoenix.HTML.Form` helpers like `text_input/3`) is deprecated; interviewers will ask what replaced it. The `action` rule is the single most common form bug in LiveView code reviews. Also expect "why does the input lose what I typed?" — missing `phx-change` or a missing `id` on the form, or an `assign` that rebuilt the form from an empty struct on every event.
+    tags: [liveview, forms, to_form]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.Component.html
+
+  - slug: elixir-phx-js-commands
+    kind: theory
+    difficulty: middle
+    title: "`Phoenix.LiveView.JS`: client-side commands without a round trip"
+    body: |
+      Not every click needs a server event. `Phoenix.LiveView.JS` lets you describe DOM operations in Elixir that run **in the browser**, are **DOM-patch aware** (the change survives later server diffs), and can be chained:
+
+      ```heex
+      <button phx-click={JS.toggle(to: "#menu")}>Menu</button>
+
+      <button phx-click={
+        JS.push("delete", value: %{id: @item.id})
+        |> JS.hide(to: "##{@item.id}", transition: "fade-out")
+        |> JS.remove_class("selected", to: ".item")
+      }>Delete</button>
+
+      <div id="modal" phx-click-away={JS.hide(to: "#modal") |> JS.dispatch("modal:closed")}>
+      ```
+
+      Available commands: `show/hide/toggle`, `add_class/remove_class/toggle_class`, `set_attribute/remove_attribute/toggle_attribute`, `transition`, `dispatch` (fire a DOM event your own JS listens to), `focus/focus_first/push_focus/pop_focus`, `push` (send an event to the server, with `target:`, `loading:`, `value:`), `navigate`/`patch` (same semantics as `push_navigate`/`push_patch`), `exec` (run commands stored in another attribute).
+
+      Why they exist:
+
+      - Optimistic UI: hide the row immediately, then `push` the delete; no flicker while waiting for the diff.
+      - Pure UI state (menus, modals, tabs) stays out of the server process, saving round trips and assigns.
+      - Unlike hand-written `onclick` JS, the operations are tracked so a later patch does not undo the hidden state.
+
+      Client commands run in order and do not wait for the server reply of a `push` placed earlier in the chain.
+    answer: |
+      **Q:** When should you reach for a `phx-hook` instead of `JS` commands?
+      **A:** When you need real JavaScript: integrating a third-party library (charts, editors, maps), reading browser APIs, or custom event handling. `JS` commands cover declarative show/hide/class/attribute/push operations only.
+    explanation: |
+      Interviewers use this to check you know LiveView is not "everything through the server". A strong answer mentions optimistic UI, DOM-patch awareness, and that `JS.push` still goes through `handle_event`. Mention `phx-update="ignore"` as the related tool for DOM regions managed by JS that the server must not patch.
+    tags: [liveview, js-commands]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.JS.html
+
+  - slug: elixir-phx-hooks-js-interop
+    kind: mcq
+    difficulty: middle
+    title: "You mount a third-party chart library on a `<div>` inside a LiveView. After the next server update the chart disappears. Why, and what is the fix?"
+    body: |
+      ```heex
+      <div id="chart" phx-hook="Chart" data-points={Jason.encode!(@points)}></div>
+      ```
+
+      ```javascript
+      Hooks.Chart = { mounted() { this.chart = new Chart(this.el, JSON.parse(this.el.dataset.points)) } }
+      ```
+    choices:
+      - "`phx-hook` requires a `phx-target`; without it the hook is detached on every patch"
+      - "Hooks only run on the dead render; you must call `mounted()` again from `handle_params`"
+      - "Jason-encoded attributes are stripped by HEEx escaping, so the hook receives no data"
+      - "The server diff re-renders the `<div>` and wipes the DOM the library created; add `phx-update=\"ignore\"` so LiveView leaves the element's children alone, and react to new data in the hook's `updated()` callback (or via `pushEvent`/`handleEvent`)"
+    answer: 3
+    explanation: |
+      LiveView owns the DOM it rendered and will patch it on every diff, destroying anything JS inserted. `phx-update="ignore"` tells morphdom to keep the element's children/attributes untouched (data-* attributes still update so `updated()` can re-read them). Hooks need a unique `id`, run `mounted/updated/destroyed/disconnected/reconnected`, and communicate with the server via `this.pushEvent(event, payload, reply => ...)` and `this.handleEvent(event, fn)` paired with `push_event/3` on the server. They work only on the connected render, which is the kernel of truth in choice 2, but there is no manual `mounted()` call.
+    tags: [liveview, hooks, phx-update]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.JS.html
+
+  - slug: elixir-phx-live-components-update-send-update
+    kind: open
+    difficulty: senior
+    title: "Function component vs `Phoenix.LiveComponent`: when do you need the latter, and how does its lifecycle differ?"
+    body: |
+      Explain `update/2`, `@myself`, `send_update/3`, and the failure modes (process boundary, state ownership) a senior engineer should warn about.
+    answer: |
+      - A **function component** is a pure function `assigns -> template`. It has no state and no events; `phx-click` inside it is handled by the enclosing LiveView.
+      - A **LiveComponent** (`use Phoenix.LiveComponent`) has its own assigns and callbacks: `mount/1` (once, no params), `update/2` (every time the parent re-renders it with new assigns; default merges them), `handle_event/3`, `render/1`. It is identified by `id` and rendered with `<.live_component module={Form} id="form-1" post={@post} />`.
+      - Events target the component with `phx-target={@myself}`; without it they go to the parent LiveView and raise a `FunctionClauseError` there.
+      - It **runs in the LiveView's process**: no extra process, no isolation, shares the mailbox. A crash in the component kills the LiveView. `handle_info` does not exist in components — messages go to the parent, which forwards with `send_update(Form, id: "form-1", post: post)` (or `send_update(pid, ...)` from another process).
+      - `update_many/1` lets a component batch-load data for all instances rendered in one pass (solves N+1 when rendering 50 components each needing a DB row).
+      - Use a LiveComponent when a piece of UI needs encapsulated event handling reused across LiveViews (a form, a dropdown with search). Prefer function components + events in the parent for everything else; state spread across many components is hard to reason about and hard to test.
+      - Communicating upward: `send(self(), {:saved, post})` from the component (same process) and `handle_info` in the parent; or `notify_parent` conventions from generators.
+    explanation: |
+      Follow-ups: "Why does `update/2` matter?" — if you compute derived assigns in `mount` they never refresh; put them in `update`. "What happens to component state when the parent stops rendering it?" — it is discarded; re-rendering with the same id is a fresh mount. "Why isn't a LiveComponent a process?" — latency and consistency: one diff per render across the page; nested processes would need their own sockets. Weak answers call LiveComponents "like React components" without mentioning the shared process.
+    tags: [liveview, live_component, send_update]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.html
+
+  - slug: elixir-phx-diff-tracking-small-assigns
+    kind: open
+    difficulty: senior
+    title: "How does LiveView decide what to send over the wire, and why does the advice \"keep assigns small\" follow from it?"
+    body: |
+      Explain change tracking in HEEx and give three concrete patterns that defeat it.
+    answer: |
+      - At compile time HEEx splits a template into **statics** (never resent) and **dynamics**, and records which assigns each dynamic depends on. After a callback, LiveView compares `socket.assigns` with the previous render's `__changed__` map and only re-evaluates and sends dynamics whose assigns changed. The client holds the statics and merges the diff.
+      - Memory: every connected user is one process holding all assigns on its heap. A 5MB list in assigns × 2,000 users is 10GB, and on every reconnect it is rebuilt. Hence streams for collections and `temporary_assigns` for append-only data.
+      - Patterns that break tracking: (1) passing `assigns` wholesale or doing `%{user: u} = assigns` then using `u` in `~H` — the template sees a variable, not `@user`, so it is re-sent every render; (2) computing values inside the template (`{Enum.map(@items, ...)}` on a big list) — the whole expression re-runs whenever `@items` changes even for one row; (3) reassigning the same large value (`assign(socket, :items, items)` with an equal list) — Elixir compares by value, so unchanged data is cheap, but a new struct with the same content from the DB still has to be compared and may be re-sent if nested in a comprehension without `:key`.
+      - Nested change tracking: inside `:for` comprehensions only the comprehension's dynamic is tracked; for per-item diffs use streams or LiveComponents with stable ids.
+      - Practical rules: store ids and small structs, not preloaded graphs; derive display values in `handle_*`, not in the template; use `assign_async` so the big result arrives once; profile with `:telemetry` events `[:phoenix, :live_view, :render]` and the LiveDashboard process memory.
+    explanation: |
+      Follow-up: "How is this different from React's virtual DOM?" — React diffs trees on the client; LiveView diffs *assigns* on the server at the granularity the compiler extracted, and ships minimal JSON; the client applies it with morphdom. "What is `__changed__`?" — the map of assigns changed since last render; `changed?(socket, :key)` reads it.
+    tags: [liveview, diff, performance]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.Component.html
+
+  - slug: elixir-phx-attach-hook-halt
+    kind: mcq
+    difficulty: senior
+    title: "An `on_mount` hook returns `{:halt, redirect(socket, to: ~p\"/login\")}`. What does `{:halt, socket}` from `attach_hook(socket, :auth, :handle_event, fun)` mean by comparison?"
+    body: |
+      ```elixir
+      def on_mount(:require_user, _params, session, socket) do
+        case session["user_token"] do
+          nil -> {:halt, redirect(socket, to: ~p"/login")}
+          token -> {:cont, assign_new(socket, :current_user, fn -> Accounts.get_user_by_session_token(token) end)}
+        end
+      end
+
+      socket = attach_hook(socket, :block_delete, :handle_event, fn
+        "delete", _params, socket -> {:halt, put_flash(socket, :error, "read only")}
+        _event, _params, socket -> {:cont, socket}
+      end)
+      ```
+    choices:
+      - "`on_mount` halt must redirect (otherwise LiveView raises), and skips the LiveView's `mount`; an `attach_hook` halt only skips the LiveView's own `handle_event/3` for that one event (optionally replying with `{:halt, reply, socket}`), and the process keeps running"
+      - "Both halt the whole LiveView process and close the socket"
+      - "`attach_hook` halts are ignored; only `on_mount` can halt"
+      - "Both continue to the LiveView callback but mark `socket.redirected`"
+    answer: 0
+    explanation: |
+      `on_mount` hooks (declared on `live_session` or with the `on_mount` macro) run before both the disconnected and connected mount; halting without a redirect raises because the view would have nothing to render. `attach_hook/4` registers a hook for a stage (`:handle_params`, `:handle_event`, `:handle_info`, `:handle_async`, `:after_render`); `{:halt, socket}` means "handled, do not call the view's callback", which is how plugins intercept events, and `{:cont, socket}` lets it fall through. Hooks must have a catch-all clause or unrelated events raise. `:after_render` hooks return the socket only and their assigns do not trigger a re-render.
+    tags: [liveview, on_mount, attach_hook]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveView.html
+
+  - slug: elixir-phx-liveview-test
+    kind: open
+    difficulty: middle
+    title: "How do you test a LiveView without a browser? Sketch a test for a counter with an increment button and a patch-based filter"
+    body: |
+      Name the `Phoenix.LiveViewTest` functions you would use and explain what `live/2` actually does.
+    answer: |
+      ```elixir
+      test "increments and filters", %{conn: conn} do
+        {:ok, view, html} = live(conn, ~p"/counter")
+        assert html =~ "Count: 0"
+
+        assert view |> element("button", "Increment") |> render_click() =~ "Count: 1"
+
+        view |> element("form#filter") |> render_change(%{filter: %{q: "ab"}})
+        assert_patch(view, ~p"/counter?q=ab")
+        assert has_element?(view, "#results li", "abc")
+
+        view |> element("a", "Logout") |> render_click()
+        assert_redirect(view, ~p"/login")
+      end
+      ```
+
+      - `live/2` does a `GET` through the normal pipeline (dead render), then **upgrades**: it spawns the real LiveView process with the test process acting as the client, so `mount` runs twice exactly as in production. `{:ok, view, html}` or `{:error, {:redirect, ...}}` if mount redirected.
+      - `element(view, selector, text_filter)` scopes an action to one element and raises if the selector is ambiguous; `render_click/render_change/render_submit/render_hook/render_keydown` send the matching `phx-*` event with the element's `phx-value-*` attributes and return the re-rendered HTML.
+      - `has_element?/3`, `render(view)` for assertions; `assert_patch/2`, `assert_redirect/2`, `follow_redirect/2` for navigation; `render_async/1` to await `assign_async`.
+      - Because no JS runs, `JS` commands are not executed, hooks do not mount, and you test `handle_event` by name with `render_hook(view, "event", %{})`.
+      - Needs the Ecto sandbox: the LiveView process is unlinked, so use `Ecto.Adapters.SQL.Sandbox.start_owner!` (the generated `ConnCase` does this) to avoid "owner exited" errors.
+    explanation: |
+      Follow-ups: "How is this faster than Wallaby/Playwright?" — it is pure Elixir message passing, no browser, runs with `async: true`. "What can it not test?" — JS hooks, CSS, actual DOM rendering of JS commands. "Why `element` before `render_click`?" — it finds the real `phx-click` attributes, so renaming an event in the template breaks the test instead of silently sending a stale name.
+    tags: [liveview, testing]
+    source: https://phoenix-live-view.hexdocs.pm/Phoenix.LiveViewTest.html
+
+  - slug: elixir-phx-channel-join-handle-in
+    kind: mcq
+    difficulty: middle
+    title: "In a channel, what is the difference between replying and broadcasting from `handle_in/3`?"
+    body: |
+      ```elixir
+      def handle_in("new_msg", %{"body" => body}, socket) do
+        broadcast!(socket, "new_msg", %{body: body})
+        {:reply, {:ok, %{sent: true}}, socket}
+      end
+      ```
+    choices:
+      - "`{:reply, ...}` sends to everyone on the topic; `broadcast!` only to the sender"
+      - "`broadcast!` is asynchronous and the reply is sent only after all subscribers acknowledge"
+      - "`{:reply, {:ok, payload}, socket}` answers only the client that pushed, correlated by the message `ref` so its `.receive(\"ok\", ...)` callback fires; `broadcast!/3` sends an event to all subscribers of the topic (including the sender) without a `ref`; `push/3` sends to just this client without a `ref`"
+      - "Returning `{:reply, ...}` after `broadcast!` is invalid; a channel can do only one of them per message"
+    answer: 2
+    explanation: |
+      Three delivery primitives: **reply** (answers the specific push, carries the client's `ref`; `{:noreply, socket}` plus `socket_ref/1` + `reply/2` lets you answer later from another process), **push** (server-initiated event to this one client), **broadcast** (to every subscriber on the topic via PubSub, across nodes; `broadcast_from!` excludes the caller). Combining broadcast + reply, as above, is the normal pattern: everyone gets the message, the sender gets an acknowledgement. `intercept ["new_msg"]` + `handle_out/3` lets each subscriber's channel process customise or drop the outgoing message, at the cost of encoding once per subscriber.
+    tags: [channels, broadcast, reply]
+    source: https://phoenix.hexdocs.pm/Phoenix.Channel.html
+
+  - slug: elixir-phx-socket-connect-token-auth
+    kind: theory
+    difficulty: middle
+    title: "`Phoenix.Socket`: `connect/3`, `id/1` and token authentication"
+    body: |
+      A socket is the long-lived transport connection (WebSocket by default, long-polling optional); channels multiplex over it by topic. Authentication happens once, at `connect/3`, and the resulting assigns are visible to every channel joined on that socket.
+
+      ```elixir
+      # endpoint
+      socket "/socket", MyAppWeb.UserSocket, websocket: [connect_info: [:peer_data, session: @session_options]], longpoll: false
+
+      defmodule MyAppWeb.UserSocket do
+        use Phoenix.Socket
+        channel "room:*", MyAppWeb.RoomChannel
+
+        @impl true
+        def connect(%{"token" => token}, socket, _connect_info) do
+          case Phoenix.Token.verify(MyAppWeb.Endpoint, "user socket", token, max_age: 86_400) do
+            {:ok, user_id} -> {:ok, assign(socket, :user_id, user_id)}
+            {:error, _} -> :error
+          end
+        end
+        def connect(_params, _socket, _info), do: :error
+
+        @impl true
+        def id(socket), do: "user_socket:#{socket.assigns.user_id}"
+      end
+      ```
+
+      The token is minted server-side (`Phoenix.Token.sign(Endpoint, "user socket", user.id)`), put in a meta tag, and sent by `new Socket("/socket", {params: {token}})`. The salt (`"user socket"`) namespaces tokens so a password-reset token cannot open a socket; `max_age` bounds replay. `sign` is readable by the client but tamper-proof; `encrypt` also hides the payload.
+
+      `id/1` names the socket. Then `MyAppWeb.Endpoint.broadcast("user_socket:42", "disconnect", %{})` closes every socket and channel of user 42 on every node — the standard way to log a user out of live sessions. Returning `nil` makes the socket anonymous and un-disconnectable.
+
+      Cookies are not sent on WebSocket upgrades reliably across origins, so token auth or `connect_info: [session: ...]` (same-origin, uses the signed session cookie) are the two options. `check_origin` must list allowed origins in production.
+    answer: |
+      **Q:** Why validate the join payload in `join/3` even though `connect/3` already authenticated the user?
+      **A:** `connect` proves *who* the client is; `join("room:" <> room_id, ...)` must check *authorisation* for that specific topic (is the user a member of room 42?), because any authenticated client can attempt to join any topic.
+    explanation: |
+      Interviewers probe the split between authentication (socket) and authorisation (channel), the role of the salt and `max_age`, and how to force-disconnect a user. Mention that `connect/3` runs in the transport process before any channel process exists, so expensive checks there delay the whole connection.
+    tags: [channels, socket, phoenix-token]
+    source: https://phoenix.hexdocs.pm/Phoenix.Socket.html
+
+  - slug: elixir-phx-token-sign-vs-encrypt
+    kind: mcq
+    difficulty: middle
+    title: "`Phoenix.Token.sign/4` vs `Phoenix.Token.encrypt/4`: which claim is true?"
+    body: |
+      ```elixir
+      token = Phoenix.Token.sign(MyAppWeb.Endpoint, "user auth", user.id)
+      Phoenix.Token.verify(MyAppWeb.Endpoint, "user auth", token, max_age: 3600)
+
+      secret = Phoenix.Token.encrypt(MyAppWeb.Endpoint, "reset password", %{id: user.id})
+      Phoenix.Token.decrypt(MyAppWeb.Endpoint, "reset password", secret, max_age: 900)
+      ```
+    choices:
+      - "`sign` output can be read by the client (it is signed, not hidden) and detects tampering; `encrypt` additionally hides the payload; both need the same salt and the Endpoint's `secret_key_base` to verify, and `max_age` is checked at verify time"
+      - "`sign` is only for sockets and `encrypt` only for emails"
+      - "`encrypt` tokens never expire because the payload includes no timestamp"
+      - "`sign` uses the salt as the secret, so the salt must be kept out of source control"
+    answer: 0
+    explanation: |
+      Both functions derive a key from `secret_key_base` (taken from the Endpoint, a conn, a socket, or a raw string) and the **salt**, which is a public namespace such as `"user auth"` or `"reset password"`, not a secret. Signed tokens are `base64(payload) + MAC`: anyone can decode the payload, nobody can alter it. `verify/4` returns `{:ok, data}`, `{:error, :expired}`, `{:error, :invalid}` or `{:error, :missing}`; the signing timestamp is embedded, so `max_age` (default one day, set it explicitly) works for both kinds. Put as little as possible in tokens either way — usually just an id.
+    tags: [phoenix-token, security]
+    source: https://phoenix.hexdocs.pm/Phoenix.Token.html
+
+  - slug: elixir-phx-presence-across-nodes
+    kind: open
+    difficulty: senior
+    title: "How does `Phoenix.Presence` know who is online across a cluster without a central store, and what are its limits?"
+    body: |
+      Explain `track`, `list`, `presence_diff`, the role of `Phoenix.Tracker`, and why the docs tell you to implement `fetch/2`.
+    answer: |
+      - `Presence.track(socket, user_id, %{online_at: ...})` registers the **channel process** under a key in the local tracker. `list(topic)` returns `%{key => %{metas: [...]}}`; the same user on two tabs has two metas, each with a unique `phx_ref`.
+      - It is built on `Phoenix.Tracker` (in `phoenix_pubsub`), which keeps per-node state in a **CRDT** (an ORSWOT-style observed-remove set). Each node owns its entries, replicates deltas to other nodes over PubSub/Distributed Erlang, and merges without coordination — no Redis, no single writer, eventually consistent.
+      - Node failure: the tracker uses heartbeats; when a node is declared down its entries are removed and `leaves` are broadcast; on net-split healing the CRDT merge resolves conflicts deterministically.
+      - Process exit: the tracker monitors the tracked process, so a crashed channel is untracked automatically; no explicit `untrack` needed on disconnect.
+      - Clients receive the initial `"presence_state"` push (you do it in `handle_info(:after_join, ...)`) and then `"presence_diff"` with `joins`/`leaves`; `phoenix.js` `Presence` merges them.
+      - `fetch/2` runs on every `list` and diff with *all* keys of the topic at once, so you load user names/avatars in one query instead of N — keep tracked metas small and enrich here.
+      - Limits: metas are replicated to every node, so tracking thousands of fields per user or very large topics costs memory everywhere; ordering is not guaranteed; it answers "who is connected", not "who is active". For a different topology (e.g. non-broadcast tracking) use `Phoenix.Tracker` directly.
+      - Supervision: the Presence module must start **after** PubSub and **before** the Endpoint.
+    explanation: |
+      Follow-ups: "Why CRDT and not a DB table?" — a table needs cleanup on crash and a write per heartbeat; CRDT state dies with the process and merges for free. "How would you count online users cheaply?" — `list/1` on a hot topic is O(n); maintain a counter in `handle_metas/4` or via `fetch/2` batching. Weak answers assume Presence persists to the database.
+    tags: [presence, tracker, crdt]
+    source: https://phoenix.hexdocs.pm/Phoenix.Presence.html
+
+  - slug: elixir-phx-pubsub-across-nodes
+    kind: open
+    difficulty: senior
+    title: "How does `Phoenix.PubSub` deliver a broadcast to a LiveView on another node, and what changes when you deploy behind a load balancer with three replicas?"
+    body: |
+      Cover subscribe/broadcast semantics, the PG2 adapter vs Redis, `Endpoint.broadcast`, and the sticky-session question.
+    answer: |
+      - `Phoenix.PubSub.subscribe(MyApp.PubSub, "post:42")` registers the **calling process** for the topic in a local registry; `broadcast(MyApp.PubSub, "post:42", {:updated, post})` sends that term as an ordinary message to every subscriber's mailbox, which a LiveView handles in `handle_info/2` and a channel in `handle_info/2` (or `handle_out` when it is a channel event).
+      - Default adapter is `Phoenix.PubSub.PG2`: it uses **Distributed Erlang**. Each node has a PubSub process group; a broadcast is delivered locally and forwarded to the same-named PubSub process on every connected node, which then fans out to its local subscribers. No broker needed, but the nodes must be clustered (`libcluster`, DNS or Kubernetes strategy). `local_broadcast/3` stays on the node; `broadcast_from/4` excludes the sender.
+      - `Phoenix.PubSub.Redis` adapter relays through Redis when nodes cannot form an Erlang cluster (some PaaS setups); every node subscribes to Redis and republishes locally.
+      - `MyAppWeb.Endpoint.broadcast(topic, event, payload)` is the channel-flavoured wrapper: it wraps the payload in `%Phoenix.Socket.Broadcast{}` so channel processes deliver it to their clients. Channels and Presence are built on the same PubSub, so cross-node chat works out of the box once clustered.
+      - Three replicas + load balancer: WebSockets are long-lived, so each user is pinned to one node for the connection's lifetime; no sticky sessions are needed for correctness *as long as* nodes are clustered so broadcasts reach everyone. Long-polling, however, does need sticky sessions (each poll must hit the node holding the channel process) or a shared adapter.
+      - Failure modes: a net-split silently drops cross-node messages (PubSub is at-most-once, no persistence); if you need durability use a DB/queue and PubSub only as a wake-up signal. `pool_size` must match across nodes.
+    explanation: |
+      Follow-ups: "How do you cluster on Fly/K8s?" — `libcluster` with DNS polling or the Kubernetes API, `RELEASE_DISTRIBUTION=name`. "What if a subscriber is slow?" — mailbox grows; PubSub does not apply back-pressure. "How does a plain GenServer get updates?" — subscribe in `init/1` and implement `handle_info`.
+    tags: [pubsub, clustering, distribution]
+    source: https://phoenix-pubsub.hexdocs.pm/Phoenix.PubSub.html
+
+  - slug: elixir-phx-code-topic-router
+    kind: code
+    difficulty: middle
+    title: "Implement a Phoenix-style route matcher with `:param` segments"
+    body: |
+      Model `Phoenix.Router` matching. Define `MiniRouter` with:
+
+      - `MiniRouter.match(routes, verb, path)` where `routes` is a list of `{verb, pattern, handler}`; `pattern` is a string such as `"/users/:id/posts/:post_id"`; `verb` is an atom like `:get`.
+      - Return `{:ok, handler, params}` for the **first** route (declaration order) whose verb matches and whose pattern matches the path segment-by-segment; `params` is a map with string keys (`%{"id" => "42"}`).
+      - Return `:error` when nothing matches. A trailing `*` segment (`"/files/*"`) matches the rest of the path, putting the remaining segments joined by `/` under `"*"`.
+
+      ```elixir
+      routes = [
+        {:get, "/users/:id", :show},
+        {:get, "/users/new", :new},
+        {:post, "/users", :create},
+        {:get, "/files/*", :files}
+      ]
+
+      MiniRouter.match(routes, :get, "/users/42")        # => {:ok, :show, %{"id" => "42"}}
+      MiniRouter.match(routes, :get, "/users/new")       # => {:ok, :show, %{"id" => "new"}}  (first match wins!)
+      MiniRouter.match(routes, :get, "/files/a/b.txt")   # => {:ok, :files, %{"*" => "a/b.txt"}}
+      MiniRouter.match(routes, :delete, "/users/42")     # => :error
+      ```
+    starter_code: |
+      defmodule MiniRouter do
+        def match(routes, verb, path) do
+          # TODO
+          :error
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniRouterTest do
+        use ExUnit.Case
+
+        @routes [
+          {:get, "/", :home},
+          {:get, "/users/:id", :show},
+          {:get, "/users/new", :new},
+          {:post, "/users", :create},
+          {:get, "/users/:id/posts/:post_id", :post_show},
+          {:get, "/files/*", :files}
+        ]
+
+        test "static and param routes" do
+          assert MiniRouter.match(@routes, :get, "/") == {:ok, :home, %{}}
+          assert MiniRouter.match(@routes, :get, "/users/42") == {:ok, :show, %{"id" => "42"}}
+          assert MiniRouter.match(@routes, :post, "/users") == {:ok, :create, %{}}
+          assert MiniRouter.match(@routes, :get, "/users/7/posts/9") == {:ok, :post_show, %{"id" => "7", "post_id" => "9"}}
+        end
+
+        test "first declared route wins, like Phoenix" do
+          assert MiniRouter.match(@routes, :get, "/users/new") == {:ok, :show, %{"id" => "new"}}
+        end
+
+        test "verb mismatch and no match" do
+          assert MiniRouter.match(@routes, :delete, "/users/42") == :error
+          assert MiniRouter.match(@routes, :get, "/users/42/posts") == :error
+          assert MiniRouter.match(@routes, :get, "/nope") == :error
+        end
+
+        test "splat" do
+          assert MiniRouter.match(@routes, :get, "/files/a/b.txt") == {:ok, :files, %{"*" => "a/b.txt"}}
+          assert MiniRouter.match(@routes, :get, "/files") == :error
+        end
+      end
+    solution: |
+      defmodule MiniRouter do
+        def match(routes, verb, path) do
+          segments = split(path)
+
+          Enum.find_value(routes, :error, fn
+            {^verb, pattern, handler} ->
+              case match_segments(split(pattern), segments, %{}) do
+                {:ok, params} -> {:ok, handler, params}
+                :error -> nil
+              end
+
+            _ ->
+              nil
+          end)
+        end
+
+        defp split(path), do: path |> String.split("/", trim: true)
+
+        defp match_segments([], [], params), do: {:ok, params}
+        defp match_segments(["*"], [_ | _] = rest, params), do: {:ok, Map.put(params, "*", Enum.join(rest, "/"))}
+        defp match_segments([":" <> name | pt], [seg | st], params), do: match_segments(pt, st, Map.put(params, name, seg))
+        defp match_segments([seg | pt], [seg | st], params), do: match_segments(pt, st, params)
+        defp match_segments(_, _, _), do: :error
+      end
+    explanation: |
+      Phoenix compiles each route into a function clause whose head pattern-matches the verb and the list of path segments (`def match(conn, :get, ["users", id])`), which is exactly `match_segments/3` here: static segments must be equal, `:name` segments bind, `*` captures the rest. Because clauses are tried in order, `"/users/new"` after `"/users/:id"` is unreachable — the behaviour the test pins down. `Enum.find_value/3` gives the "first match or default" shape neatly; the fallthrough `_ -> nil` clause handles verb mismatches.
+    tags: [router, pattern-matching, coding]
+    source: https://phoenix.hexdocs.pm/Phoenix.Router.html
+
+  - slug: elixir-phx-csrf-protection-methods
+    kind: mcq
+    difficulty: junior
+    title: "Which requests does `protect_from_forgery` (`Plug.CSRFProtection`) reject?"
+    body: |
+      The `:browser` pipeline contains `plug :protect_from_forgery`. A form posts without a `_csrf_token`.
+    choices:
+      - "State-changing requests (`POST`, `PUT`, `PATCH`, `DELETE`) whose `_csrf_token` param or `x-csrf-token` header does not match the token in the session are rejected (`InvalidCSRFTokenError` → 403); `GET`/`HEAD` are not checked"
+      - "All requests without a token, including `GET`, are rejected with 403"
+      - "Only requests from a different `Origin` header are rejected"
+      - "Nothing is rejected; the plug only adds a token to the response"
+    answer: 0
+    explanation: |
+      CSRF protection relies on the session: `fetch_session` must run first, the token lives in the session under `"_csrf_token"`, and `<.form>`/`csrf_meta_tag` embed `get_csrf_token()` into the page. Safe methods (GET/HEAD/OPTIONS) are not checked because they must not change state. API scopes skip the plug entirely because they have no session; LiveView sends the token on socket connect (`_csrf_token` param) and `check_csrf` is enforced there too. Call `delete_csrf_token/0` after login to avoid CSRF fixation. `:with` can be `:clear_session` instead of raising.
+    tags: [csrf, security, plug]
+    source: https://plug.hexdocs.pm/Plug.CSRFProtection.html
+
+  - slug: elixir-phx-bandit-vs-cowboy
+    kind: mcq
+    difficulty: junior
+    title: "Which web server does a freshly generated Phoenix 1.7.11+/1.8 app use, and how is it configured?"
+    body: |
+      ```elixir
+      # config/config.exs (generated)
+      config :my_app, MyAppWeb.Endpoint,
+        adapter: Bandit.PhoenixAdapter,
+        url: [host: "localhost"]
+      ```
+    choices:
+      - "Cowboy, via `Plug.Cowboy`; Bandit is experimental"
+      - "Bandit, via `adapter: Bandit.PhoenixAdapter` in the Endpoint config; Cowboy (`Phoenix.Endpoint.Cowboy2Adapter`) remains the fallback when `:adapter` is unset, for apps generated before 1.7.8"
+      - "Both run in parallel; Bandit for HTTP/2 and Cowboy for WebSockets"
+      - "Neither; Phoenix 1.7 ships its own server written on top of `:gen_tcp`"
+    answer: 1
+    explanation: |
+      Bandit is a pure-Elixir HTTP/1.1 + HTTP/2 + WebSocket server built on Thousand Island; it became an option in 1.7.9 (`mix phx.new --adapter bandit`) and the default in 1.7.11. Both servers implement the same `Phoenix.Endpoint` adapter and `Plug` contract, so switching is a config change plus a dependency swap. Bandit advantages usually cited: Elixir-native (easier to debug/contribute), faster in benchmarks, built-in connection draining (the `:drainer` option is Cowboy-only). Cowboy is Erlang, battle-tested and still fully supported.
+    tags: [bandit, cowboy, endpoint]
+    source: https://phoenix.hexdocs.pm/Phoenix.Endpoint.html
+
+  - slug: elixir-phx-runtime-exs-vs-compile-time-config
+    kind: mcq
+    difficulty: senior
+    title: "You set `code_reloader: false` and `secret_key_base: System.fetch_env!(\"SECRET_KEY_BASE\")` in `config/runtime.exs`. Which takes effect in a release?"
+    body: |
+      ```elixir
+      # config/runtime.exs
+      config :my_app, MyAppWeb.Endpoint,
+        secret_key_base: System.fetch_env!("SECRET_KEY_BASE"),
+        code_reloader: false,
+        url: [host: System.get_env("PHX_HOST")]
+      ```
+    choices:
+      - "Both; `runtime.exs` overrides everything set in `config.exs`/`prod.exs`"
+      - "Neither; releases only read `config/prod.exs` and `runtime.exs` is for `mix phx.server`"
+      - "`code_reloader` takes effect but `secret_key_base` must come from `prod.secret.exs`"
+      - "`secret_key_base` and `url` take effect (runtime config); `code_reloader` is a compile-time Endpoint option baked in when the Endpoint module was compiled, so the runtime value is ignored"
+    answer: 3
+    explanation: |
+      `config/runtime.exs` is evaluated when the release (or `mix`) boots, which is why secrets and host names belong there and not in compiled config. But `Phoenix.Endpoint` reads a handful of options at **compile time** inside `use Phoenix.Endpoint` — `:code_reloader`, `:debug_errors`, `:force_ssl`, `:render_errors` layout bits — so they must be set in `config/{dev,prod}.exs` before compilation. Runtime options include `:secret_key_base`, `:url`, `:http`, `:check_origin`, `:server`, `:pubsub_server`, `:cache_static_manifest`. Also note `config :my_app, MyAppWeb.Endpoint, server: true` is what makes a release start the HTTP server; `mix phx.server` sets it for you.
+    tags: [config, runtime, endpoint, releases]
+    source: https://phoenix.hexdocs.pm/Phoenix.Endpoint.html
+
+  - slug: elixir-phx-sessions-cookie-store-security
+    kind: open
+    difficulty: senior
+    title: "Phoenix sessions live in a cookie by default. What does that imply for security, size, and logout?"
+    body: |
+      Explain how `Plug.Session` with the `:cookie` store works, what "signed" means versus "encrypted", why `put_session(conn, :user_id, id)` is safe, what is **not** safe to store, and how `phx.gen.auth` handles logout and session fixation.
+    answer: |
+      - The Endpoint configures `plug Plug.Session, store: :cookie, key: "_my_app_key", signing_salt: "..."` (optionally `encryption_salt:`); the router's `fetch_session` plug loads it lazily and the cookie is only written when something was put.
+      - **Signed** (default): the payload is `term_to_binary` + Base64, with an HMAC derived from `secret_key_base` + `signing_salt`. The user can *read* `user_id` but cannot *change* it without invalidating the MAC. **Encrypted** (when `encryption_salt` is set) also hides the contents. Either way, rotating `secret_key_base` invalidates every session.
+      - Storing `user_id` is fine; storing roles/permissions is risky only in the sense that they are a snapshot (revocation does not propagate) — the rule is: store an identifier, look everything else up per request.
+      - Limits: cookies are ~4KB and sent on every request, so no large data; `put_session` must happen before the response is sent.
+      - Stateless cookie sessions cannot be revoked server-side: logging out on one device does not kill others. `phx.gen.auth` therefore stores a **random session token in the DB** (`users_tokens`), puts only that token in the cookie, and on logout deletes the token, broadcasts a `"disconnect"` on `"users_sessions:#{token}"` to kill LiveViews, and calls `configure_session(conn, renew: true)` to issue a new session id (prevents session fixation); `drop: true` discards the session.
+      - `Plug.Conn.assign` vs session: assigns are per request (in-memory on the conn), the session is per user across requests (in the cookie). A plug like `fetch_current_user` bridges them: read the token from the session, load the user, `assign(:current_user)`.
+      - Alternatives: `Plug.Session.ETS` (single node, not for prod), Redis/DB-backed custom `Plug.Session.Store` for server-side revocation.
+    explanation: |
+      Follow-ups: "Is a signed cookie vulnerable to replay?" — yes until it expires or the server-side token is deleted, hence the token table. "`same_site`/`secure`/`http_only`?" — set on the session cookie options; `http_only` defaults true. "Why do LiveViews receive the session as a map in `mount`?" — the signed session is passed on the socket connect and verified server-side; LiveView cannot write to it (no response), so `put_session` is controller-only.
+    tags: [sessions, cookies, security, auth]
+    source: https://plug.hexdocs.pm/Plug.Session.html
+
+  - slug: elixir-phx-gen-auth-structure
+    kind: open
+    difficulty: middle
+    title: "What does `mix phx.gen.auth Accounts User users` generate, and how do you protect a route and a LiveView with it?"
+    body: |
+      Also explain why the generator hashes passwords with Bcrypt and how Phoenix 1.8 changed the generated code.
+    answer: |
+      - Context `Accounts` with schemas `User` (email, hashed_password, confirmed_at) and `UserToken` (session, confirm, reset tokens stored hashed); migrations; `UserAuth` plug module; registration/login/settings/reset controllers or LiveViews (`--live`/`--no-live`); tests and `ConnCase` helpers like `register_and_log_in_user`.
+      - Plugs in `MyAppWeb.UserAuth`: `fetch_current_user` (in 1.8 `fetch_current_scope_for_user`) added to the `:browser` pipeline reads the session token and assigns the user; `require_authenticated_user` halts with a redirect to login (and stores the return path); `redirect_if_user_is_authenticated` for login pages. You use them with `pipe_through [:browser, :require_authenticated_user]` in a dedicated scope.
+      - LiveViews are protected through `live_session :require_authenticated_user, on_mount: [{MyAppWeb.UserAuth, :ensure_authenticated}]` — plugs do not run on the WebSocket, so the `on_mount` hook re-checks the session token and halts with a redirect. `live_session` also isolates navigation: `push_navigate` across sessions becomes a full redirect, so an unauthenticated view cannot live-navigate into a protected one.
+      - Passwords: `Bcrypt.hash_pwd_salt/1` and `Bcrypt.verify_pass/2` (via Comeonin); bcrypt is slow by design with a cost factor, uses a per-password salt, and `Bcrypt.no_user_verify/0` runs a dummy hash when the email does not exist to avoid timing leaks. `--hashing-lib pbkdf2|argon2` are alternatives; argon2 is recommended when memory-hardness matters.
+      - Phoenix 1.8: default login is **magic link** (email a one-time token), password login is opt-in in settings; "sudo mode" re-authenticates for sensitive settings; everything is organised around a `%Accounts.Scope{user: user}` struct assigned as `:current_scope` and passed into context functions so queries are filtered by the current user by default.
+    explanation: |
+      Follow-ups: "Why generate code instead of a library like Devise?" — the generated code is yours to read and change; auth is too app-specific for a black box. "Why hash session tokens in the DB?" — a DB leak then does not yield usable sessions. "How do you add roles?" — a plug/on_mount reading `current_scope.user.role`, or a policy module; the generator deliberately stops at authentication.
+    tags: [auth, phx-gen-auth, bcrypt]
+    source: https://phoenix.hexdocs.pm/Mix.Tasks.Phx.Gen.Auth.html
+
+  - slug: elixir-phx-rate-limiting-design
+    kind: open
+    difficulty: senior
+    title: "How would you rate-limit a login endpoint and a channel event in Phoenix?"
+    body: |
+      Compare implementing it as a plug (e.g. with `Hammer` or `PlugAttack`) versus inside the channel, discuss the storage choice in a multi-node deployment, and say what you would do about long polling.
+    answer: |
+      - HTTP: a **plug** in the `:api`/login pipeline (or a controller `plug ... when action in [:create]`) keyed by IP or by email: `Hammer.check_rate("login:#{ip}", 60_000, 5)` returns `{:allow, n}` / `{:deny, limit}`; on deny `conn |> put_status(429) |> put_resp_header("retry-after", "60") |> json(...) |> halt()`. `PlugAttack` gives a rule DSL (`throttle`, `fail2ban`, `allow`/`block`) with the same shape.
+      - Algorithms: fixed/sliding window (Hammer) or token bucket; use the user id for authenticated routes and IP (from `x-forwarded-for`, trusted only behind your own proxy) for anonymous ones.
+      - Storage: the default ETS backend is **per node**, so with three replicas the limit is effectively 3×. Options: accept it, use a shared backend (Hammer Redis backend, Postgres), or route by consistent hashing. Brute-force protection on login is the one place you want the shared store.
+      - Channels: plugs do not run per message. Rate-limit in `handle_in/3` (same `Hammer.check_rate` with `socket.assigns.user_id`), reply `{:reply, {:error, %{reason: "rate_limited"}}, socket}` or drop; or guard at `join/3` for join storms. `connect/3` is the place to limit connection attempts per IP (`connect_info: [:peer_data]`).
+      - LiveView: `handle_event` likewise; for form spam use `phx-debounce`/`phx-throttle` client-side as a UX measure, never as the security control.
+      - Long polling is easy to abuse (every poll is a new request): the Endpoint docs recommend limiting it; disable it (`longpoll: false`) unless you need it, and if enabled apply the same plug-level limit on `/socket/longpoll`.
+      - Operational: emit a telemetry event on deny for dashboards, log the key, and prefer limiting *before* expensive work (Bcrypt verify, DB lookup).
+    explanation: |
+      Follow-ups: "Why not limit in the Endpoint?" — it runs for static assets too; limit at the narrowest scope. "Why `retry-after`?" — well-behaved clients back off. "What does `Hammer` do under the hood?" — ETS table with buckets keyed by `{key, window}` plus a periodic pruner; GenServer-free in v7. Weak answers propose a GenServer counter, which becomes a serialisation bottleneck and is still per node.
+    tags: [rate-limiting, hammer, plug-attack, security]
+    source: https://phoenix.hexdocs.pm/Phoenix.Endpoint.html
+
+  - slug: elixir-phx-websocket-vs-longpoll-transports
+    kind: open
+    difficulty: senior
+    title: "WebSocket vs long polling in Phoenix: how do the transports differ, and when would you enable long polling?"
+    body: |
+      Explain how `phoenix.js` chooses a transport, what `Phoenix.Socket.Transport` is, and the operational consequences (load balancers, process model, cost).
+    answer: |
+      - The Endpoint mounts a socket with `socket "/socket", UserSocket, websocket: [...], longpoll: [...]`. WebSocket is on by default; long polling is **off** by default and must be enabled explicitly.
+      - **WebSocket**: one upgraded HTTP connection per client, bidirectional, held by one process (Bandit/Cowboy handler) that runs `Phoenix.Socket`; each joined channel is a separate process linked to it. Cheap per message, server can push instantly, ~a few KB memory per idle connection on the BEAM.
+      - **Long polling**: client repeatedly `POST`s to `/socket/longpoll`; the server parks the request up to `window_ms` (10s default) waiting for messages, then responds; the channel state lives in a server-side process keyed by a session id, so the *next* poll must reach the same node — or you need sticky sessions / a shared PubSub path. Higher latency, more HTTP overhead, and the docs warn it is easy to abuse, so rate-limit it.
+      - `phoenix.js` tries WebSocket first and, if `longpoll` is enabled on the server, falls back automatically after failed WebSocket attempts (`longPollFallbackMs`); you can also force a transport in the client `Socket` options.
+      - When to enable long polling: corporate proxies/old load balancers that block upgrades, some serverless edges, or very restrictive mobile networks. Otherwise leave it off.
+      - `Phoenix.Socket.Transport` is the behaviour both transports implement (`connect/1`, `init/1`, `handle_in/2`, `handle_info/2`, `terminate/2`); you implement it yourself for raw-WebSocket protocols without channels (e.g. a custom binary protocol, or serving a non-Phoenix JS client), and use `socket "/ws", MyRawSocket, websocket: true` the same way.
+      - Scaling knobs: `check_origin` (CSRF for sockets), `max_frame_size`, `timeout` (60s heartbeat), `fullsweep_after` to tame memory of long-lived socket processes, `:drainer` to gracefully close connections on shutdown so clients reconnect to healthy nodes.
+    explanation: |
+      Follow-ups: "Why does LiveView need the WebSocket at all?" — the stateful process and push diffs require a persistent channel; without it you get only the dead render. "How many connections can one node hold?" — hundreds of thousands are realistic given BEAM processes, limited mostly by file descriptors and memory. "What breaks with a non-clustered multi-node deploy?" — broadcasts stop crossing nodes, not the transport itself.
+    tags: [channels, websocket, longpoll, transport]
+    source: https://phoenix.hexdocs.pm/Phoenix.Endpoint.html
+
+  - slug: elixir-phx-17-vs-18-changes
+    kind: open
+    difficulty: middle
+    title: "What changed between Phoenix 1.6, 1.7 and 1.8 that a team upgrading should know about?"
+    body: |
+      Name the headline changes of each major release and one migration gotcha for each.
+    answer: |
+      **1.7 (Feb 2023)**
+      - `Phoenix.VerifiedRoutes` and `~p`; router helpers still generated but on the way out (`helpers: false` to disable).
+      - `Phoenix.View` removed from new apps: controllers render **function components** (`UserHTML`, `UserJSON` modules) via `Phoenix.Component`/HEEx; `Phoenix.Template` replaces `Phoenix.View` internals.
+      - Generated `CoreComponents` (`<.input>`, `<.form>`, `<.table>`, `<.modal>`, flash) and Tailwind by default (`--no-tailwind`).
+      - `Phoenix.Flash` replaces `get_flash/2` (deprecated).
+      - 1.7.11: Bandit becomes the default server.
+      - Gotcha: old `Phoenix.View` apps keep working by adding the `phoenix_view` dep; mixing `Routes.x_path` and `~p` is fine but `as:` names drift.
+
+      **1.8 (Aug 2025)**
+      - **Scopes**: `phx.gen.auth` creates `%Accounts.Scope{}` assigned as `:current_scope`, and `phx.gen.html/live/json/context` generate functions that take the scope first, so per-user data filtering is the default.
+      - `phx.gen.auth` uses **magic links** by default, password login opt-in, plus sudo mode; simpler generated structure.
+      - **daisyUI** on top of Tailwind with light/dark/system themes; generators do not depend on it, so it is removable.
+      - Layouts simplified: single `root.html.heex`, `app` layout is a plain function component you call (`<Layouts.app flash={@flash} current_scope={@current_scope}>`), no `put_layout` magic.
+      - `put_secure_browser_headers` sets a default `content-security-policy`; `:trailing_slash` deprecated in favour of verified routes; OTP 25+ required.
+      - Gotcha: generated contexts now expect a scope argument, so mixing pre-1.8 contexts with new generators needs manual reconciliation; the CSP default can break inline scripts.
+    explanation: |
+      Follow-ups: "Is LiveView 1.0 tied to 1.8?" — no; LiveView 1.0 shipped in late 2024 and works with 1.7. "What is a scope, concretely?" — a struct carrying the current user/org that context functions pattern-match on, replacing ad-hoc `current_user` arguments. Facts here come from the 1.7 and 1.8 changelogs; interviewers reward precision such as "deprecated, not removed" for helpers.
+    tags: [phoenix-1.7, phoenix-1.8, upgrades]
+    source: https://phoenixframework.org/blog/phoenix-1-8-released
+
+  - slug: elixir-phx-code-presence-diff
+    kind: code
+    difficulty: senior
+    title: "Compute a Presence-style diff between two presence states"
+    body: |
+      `Phoenix.Presence` ships `presence_diff` events of the form `%{joins: ..., leaves: ...}`. Implement `MiniPresence.diff(before, after)`.
+
+      Both inputs are maps of `key => %{metas: [meta, ...]}` where each meta is a map with a unique `:phx_ref`. Return `%{joins: joins, leaves: leaves}` where:
+
+      - `joins` contains every key whose metas list has at least one `phx_ref` not present in `before`, with **only the new metas**;
+      - `leaves` contains every key whose metas list in `before` has at least one `phx_ref` not present in `after`, with **only the removed metas**;
+      - keys with no change are omitted; metas keep their original order.
+
+      Also implement `MiniPresence.apply_diff(state, diff)`: remove the `leaves` metas (dropping a key when its metas become empty), then add the `joins` metas (appending to existing metas, creating the key if needed).
+
+      ```elixir
+      before = %{"alice" => %{metas: [%{phx_ref: "a1"}]}}
+      after  = %{"alice" => %{metas: [%{phx_ref: "a1"}, %{phx_ref: "a2"}]}, "bob" => %{metas: [%{phx_ref: "b1"}]}}
+
+      MiniPresence.diff(before, after)
+      # => %{joins: %{"alice" => %{metas: [%{phx_ref: "a2"}]}, "bob" => %{metas: [%{phx_ref: "b1"}]}}, leaves: %{}}
+      ```
+    starter_code: |
+      defmodule MiniPresence do
+        def diff(before, after_state) do
+          # TODO
+          %{joins: %{}, leaves: %{}}
+        end
+
+        def apply_diff(state, %{joins: _joins, leaves: _leaves}) do
+          # TODO
+          state
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniPresenceTest do
+        use ExUnit.Case
+
+        @a1 %{phx_ref: "a1", online_at: 1}
+        @a2 %{phx_ref: "a2", online_at: 2}
+        @b1 %{phx_ref: "b1", online_at: 3}
+
+        test "joins for new keys and new metas" do
+          before = %{"alice" => %{metas: [@a1]}}
+          after_state = %{"alice" => %{metas: [@a1, @a2]}, "bob" => %{metas: [@b1]}}
+          assert MiniPresence.diff(before, after_state) ==
+                   %{joins: %{"alice" => %{metas: [@a2]}, "bob" => %{metas: [@b1]}}, leaves: %{}}
+        end
+
+        test "leaves for removed keys and removed metas" do
+          before = %{"alice" => %{metas: [@a1, @a2]}, "bob" => %{metas: [@b1]}}
+          after_state = %{"alice" => %{metas: [@a2]}}
+          assert MiniPresence.diff(before, after_state) ==
+                   %{joins: %{}, leaves: %{"alice" => %{metas: [@a1]}, "bob" => %{metas: [@b1]}}}
+        end
+
+        test "no change gives empty diff" do
+          state = %{"alice" => %{metas: [@a1]}}
+          assert MiniPresence.diff(state, state) == %{joins: %{}, leaves: %{}}
+        end
+
+        test "apply_diff reproduces the after state" do
+          before = %{"alice" => %{metas: [@a1, @a2]}, "bob" => %{metas: [@b1]}}
+          after_state = %{"alice" => %{metas: [@a2]}, "carol" => %{metas: [@b1]}}
+          diff = MiniPresence.diff(before, after_state)
+          assert MiniPresence.apply_diff(before, diff) == after_state
+        end
+      end
+    solution: |
+      defmodule MiniPresence do
+        def diff(before, after_state) do
+          %{joins: only_new(after_state, before), leaves: only_new(before, after_state)}
+        end
+
+        # metas present in `from` for a key but absent (by phx_ref) in `other`
+        defp only_new(from, other) do
+          Enum.reduce(from, %{}, fn {key, %{metas: metas}}, acc ->
+            known = refs(other, key)
+            fresh = Enum.reject(metas, &(&1.phx_ref in known))
+            if fresh == [], do: acc, else: Map.put(acc, key, %{metas: fresh})
+          end)
+        end
+
+        defp refs(state, key) do
+          state |> Map.get(key, %{metas: []}) |> Map.fetch!(:metas) |> Enum.map(& &1.phx_ref)
+        end
+
+        def apply_diff(state, %{joins: joins, leaves: leaves}) do
+          state
+          |> remove(leaves)
+          |> add(joins)
+        end
+
+        defp remove(state, leaves) do
+          Enum.reduce(leaves, state, fn {key, %{metas: gone}}, acc ->
+            gone_refs = Enum.map(gone, & &1.phx_ref)
+            kept = Enum.reject(refs_metas(acc, key), &(&1.phx_ref in gone_refs))
+            if kept == [], do: Map.delete(acc, key), else: Map.put(acc, key, %{metas: kept})
+          end)
+        end
+
+        defp add(state, joins) do
+          Enum.reduce(joins, state, fn {key, %{metas: new}}, acc ->
+            Map.put(acc, key, %{metas: refs_metas(acc, key) ++ new})
+          end)
+        end
+
+        defp refs_metas(state, key), do: state |> Map.get(key, %{metas: []}) |> Map.fetch!(:metas)
+      end
+    explanation: |
+      This mirrors what `Phoenix.Tracker` sends and what `phoenix.js`'s `Presence.syncDiff` applies: the unit of identity is the `phx_ref` of a meta, not the key, because one user can be present from several tabs/devices. A naive diff on keys would report "alice left" when only one of her tabs closed. The symmetric `only_new/2` helper makes joins and leaves the same computation with swapped arguments, and `apply_diff` must remove before it adds so a meta updated in place (`phx_ref_prev`) is handled correctly.
+    tags: [presence, diff, coding]
+    source: https://phoenix.hexdocs.pm/Phoenix.Presence.html

@@ -1,0 +1,2019 @@
+language: elixir
+topic: genserver-and-otp-behaviours
+items:
+  - slug: elixir-gen-call-vs-cast-basic
+    kind: mcq
+    difficulty: junior
+    title: "What is the difference between `GenServer.call` and `GenServer.cast`?"
+    body: |
+      Pick the correct statement.
+    choices:
+      - "`call` is handled by `handle_call/3` and blocks the caller until the server replies; `cast` is handled by `handle_cast/2` and returns `:ok` immediately"
+      - "`call` runs the callback in the caller's process; `cast` runs it in the server process"
+      - "`cast` is a `call` with an infinite timeout"
+      - "`call` can only be used with named servers; `cast` works with pids"
+    answer: 0
+    explanation: |
+      Both run their callback **in the server process**; the difference is on the caller's side.
+      `call/3` sends the request, then blocks in a selective `receive` until the server returns
+      `{:reply, value, state}` (or until the timeout, 5000 ms by default, exits the caller).
+      `cast/2` sends the message and returns `:ok` without waiting, even if the server does not
+      exist. Both accept pids, atoms, `{:global, _}` and `{:via, _, _}` names.
+    tags: [call, cast, handle_call]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-call-default-timeout
+    kind: mcq
+    difficulty: junior
+    title: "What happens if a `GenServer.call` gets no reply in time?"
+    body: |
+      ```elixir
+      GenServer.call(pid, :slow_work)
+      ```
+
+      The server takes 8 seconds to handle `:slow_work`. What does the caller observe?
+    choices:
+      - "`{:error, :timeout}` after 5 seconds"
+      - "The caller exits with a `:timeout` reason after 5 seconds (the default timeout)"
+      - "`nil` after 5 seconds"
+      - "It waits the full 8 seconds; calls have no timeout unless you pass one"
+    answer: 1
+    explanation: |
+      `GenServer.call/3` has a third argument `timeout` defaulting to **5000 ms**. When it elapses
+      the caller **exits** with `{:timeout, {GenServer, :call, [pid, :slow_work, 5000]}}`; it does
+      not return an error tuple. Pass `:infinity` for calls that may legitimately take long, or a
+      larger integer, and remember the server is *still* working on the request after the caller
+      gave up. Because the exit is an exit (not an exception), `rescue` will not catch it; only
+      `catch :exit, reason` does.
+    tags: [call, timeout]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-handle-call-return-shapes
+    kind: mcq
+    difficulty: junior
+    title: "Which return value is NOT valid from `handle_call/3`?"
+    body: |
+      ```elixir
+      def handle_call(:x, _from, state) do
+        # which of these would crash the server?
+      end
+      ```
+    choices:
+      - "`{:reply, :ok, state}`"
+      - "`{:noreply, state}`"
+      - "`{:stop, :normal, :ok, state}`"
+      - "`{:ok, :ok, state}`"
+    answer: 3
+    explanation: |
+      Valid shapes are `{:reply, reply, new_state}` (optionally with a 4th element `timeout`,
+      `:hibernate` or `{:continue, term}`), `{:noreply, new_state}` (the reply must then be sent
+      later with `GenServer.reply/2`), `{:stop, reason, reply, new_state}` and
+      `{:stop, reason, new_state}`. `{:ok, ...}` is what `init/1` returns, not a callback. Returning
+      an invalid value makes the GenServer exit with `{:bad_return_value, value}`, which takes the
+      caller down too if it was waiting in a `call`.
+    tags: [handle_call, return-values]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-start-link-vs-start
+    kind: mcq
+    difficulty: junior
+    title: "`GenServer.start_link/3` vs `GenServer.start/3`: what is the difference?"
+    body: |
+      When would a crash of the new server affect the process that started it?
+    choices:
+      - "Never: GenServers are always isolated from their starter"
+      - "With `start_link` the server is linked to the caller, so an abnormal exit propagates to the caller (unless it traps exits); `start` creates no link"
+      - "With `start` the server is monitored by the caller and sends `:DOWN`; `start_link` does not"
+      - "`start_link` registers the server under the module name automatically; `start` does not"
+    answer: 1
+    explanation: |
+      `start_link` spawns the server **linked** to the current process and is what supervisors
+      call, because the link is how a supervisor learns about crashes. `start` spawns an unlinked
+      process: nobody is notified when it dies, so it is only appropriate for experiments in IEx
+      (where a linked crash would restart the shell) or very deliberate detached workers. Neither
+      variant registers a name unless you pass `name:`. Both block until `init/1` returns, which is
+      what makes starting synchronous.
+    tags: [start_link, links]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-handle-info-what-arrives
+    kind: mcq
+    difficulty: middle
+    title: "Which messages end up in `handle_info/2`?"
+    body: |
+      A GenServer defines `handle_call`, `handle_cast` and `handle_info`. Which of the following is
+      delivered to `handle_info/2`?
+    choices:
+      - "A `GenServer.cast/2` message whose `handle_cast` clause raised"
+      - "A plain `send(pid, :tick)`, a `Process.send_after` message, a `{:DOWN, ...}` monitor message or a `{:EXIT, ...}` message when trapping exits"
+      - "Only messages sent with `Process.send_after/3`"
+      - "The reply to a `GenServer.call` made by the server itself"
+    answer: 1
+    explanation: |
+      `handle_info/2` is the catch-all for anything that is **not** a `call` or `cast` envelope:
+      raw `send`, timer messages, monitor `:DOWN`s, trapped `:EXIT`s, `{ref, result}` replies from
+      `Task.async`/`async_nolink`, and the `:timeout` atom from a callback timeout. A raising
+      `handle_cast` crashes the server, it is not rerouted. `use GenServer` defines a default
+      `handle_info` that logs and ignores unexpected messages; once you define your own clause you
+      should keep a catch-all `handle_info(_msg, state)` so unknown messages do not crash the
+      server.
+    tags: [handle_info, messages]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-terminate-not-called
+    kind: mcq
+    difficulty: middle
+    title: "When is `terminate/2` NOT called?"
+    body: |
+      A GenServer implements `terminate/2` to close a file handle. It does **not** call
+      `Process.flag(:trap_exit, true)`. Its supervisor shuts the application down. What happens?
+    choices:
+      - "`terminate/2` runs because supervisors always stop children gracefully"
+      - "`terminate/2` does not run: the supervisor's `:shutdown` exit signal kills the process immediately because it is not trapping exits"
+      - "`terminate/2` runs only if the child spec has `shutdown: :infinity`"
+      - "`terminate/2` runs, but with reason `:kill` instead of `:shutdown`"
+    answer: 1
+    explanation: |
+      A supervisor stops a child by sending `Process.exit(pid, :shutdown)`. A process that does not
+      trap exits dies **immediately** on any non-`:normal` exit signal, with no callback invoked.
+      Only a trapping GenServer turns the signal into an internal `{:EXIT, parent, :shutdown}` that
+      the behaviour converts into `terminate(:shutdown, state)` (within the `shutdown` timeout, after
+      which it is killed). `terminate/2` **is** called without trapping when the server itself
+      returns `{:stop, ...}`, raises, or receives `GenServer.stop/1`. Because it is never guaranteed
+      (`:brutal_kill`, `:kill`, VM crash), critical cleanup should rely on links/monitors held by
+      another process rather than on `terminate/2`.
+    tags: [terminate, trap_exit, shutdown]
+    source: https://elixirforum.com/t/supervisor-terminate-child-doesnt-call-terminate-callback-on-child/12949/3
+
+  - slug: elixir-gen-call-self-deadlock
+    kind: mcq
+    difficulty: middle
+    title: "Why does this GenServer hang?"
+    body: |
+      ```elixir
+      def handle_call(:total, _from, state) do
+        count = GenServer.call(self(), :count)
+        {:reply, count * 2, state}
+      end
+
+      def handle_call(:count, _from, state), do: {:reply, state.count, state}
+      ```
+
+      What happens on `GenServer.call(pid, :total)`?
+    choices:
+      - "It works: nested calls are queued and processed in order"
+      - "The server deadlocks: it is busy inside `handle_call(:total)` so it can never process `:count`; the inner call times out after 5 s and crashes the server"
+      - "The inner call is processed first because `self()` calls are prioritised"
+      - "It raises `ArgumentError` at compile time"
+    answer: 1
+    explanation: |
+      A GenServer processes one message at a time. While it is inside `handle_call(:total, ...)` it
+      is not reading its mailbox, so the `:count` request it just sent to itself sits there forever.
+      The inner `call` times out after 5 seconds and **exits the server** (which then also kills the
+      original caller). The fix is to call the internal function directly on `state`, never
+      `GenServer.call(self(), ...)`. The same deadlock happens between two servers that call each
+      other synchronously, which is why cycles of `call`s must be avoided (use `cast` or a message
+      in one direction, or restructure ownership).
+    tags: [call, deadlock]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-handle-continue-vs-send-self
+    kind: mcq
+    difficulty: middle
+    title: "Why prefer `{:continue, :load}` over `send(self(), :load)` in `init/1`?"
+    body: |
+      Both patterns let `init/1` return quickly and do heavy loading afterwards. What does
+      `handle_continue/2` guarantee that the `send(self(), ...)` trick does not?
+    choices:
+      - "`handle_continue` runs in a separate process so it cannot block the server"
+      - "`handle_continue` is guaranteed to run before any other message in the mailbox is processed; a self-sent message may be preceded by messages that arrived during `init/1`"
+      - "`handle_continue` retries automatically if it raises"
+      - "There is no difference; `handle_continue` is just syntax sugar"
+    answer: 1
+    explanation: |
+      Once `start_link` returns, callers may already be sending requests; if the server is named,
+      messages can even arrive while `init/1` runs. With `send(self(), :load)` those earlier
+      messages are **ahead** of `:load` in the mailbox, so a `call` might be handled with an
+      unloaded state. `{:ok, state, {:continue, :load}}` makes the behaviour invoke
+      `handle_continue(:load, state)` immediately after `init/1`, before touching the mailbox. The
+      same `{:continue, term}` can be returned from any callback to split work into steps.
+      `handle_continue` still runs in the server process, so it does block it; the point is
+      ordering, not concurrency.
+    tags: [handle_continue, init]
+    source: https://elixirschool.com/blog/til-genserver-handle-continue
+
+  - slug: elixir-gen-callback-timeout-semantics
+    kind: mcq
+    difficulty: middle
+    title: "What does the timeout in `{:ok, state, 10_000}` mean?"
+    body: |
+      ```elixir
+      def init(arg), do: {:ok, arg, 10_000}
+      ```
+    choices:
+      - "The server will stop itself after 10 seconds"
+      - "If no message arrives within 10 seconds, `handle_info(:timeout, state)` is invoked; any message resets the timer, and the timeout must be returned again to re-arm it"
+      - "Every callback is allowed at most 10 seconds before the server is killed"
+      - "`GenServer.call` to this server defaults to a 10 second timeout"
+    answer: 1
+    explanation: |
+      The optional last element of a callback return (`timeout`, `:hibernate` or
+      `{:continue, _}`) sets an **idle timeout**: if the mailbox stays empty for that long the
+      behaviour calls `handle_info(:timeout, state)`. Any message cancels it, and it is only
+      re-armed if the next callback returns a timeout again. This makes it unsuitable for periodic
+      work on a busy server (the timer keeps getting reset); use `Process.send_after/3` for that.
+      It is handy for "shut down after N ms of inactivity" caches or for `hibernate_after`-style
+      behaviour. It has nothing to do with the client-side `call` timeout.
+    tags: [timeout, handle_info]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-child-spec-defaults
+    kind: mcq
+    difficulty: middle
+    title: "What child spec does `use GenServer` generate by default?"
+    body: |
+      ```elixir
+      defmodule Worker do
+        use GenServer
+        def start_link(arg), do: GenServer.start_link(__MODULE__, arg)
+        # ...
+      end
+
+      Supervisor.start_link([{Worker, :arg}], strategy: :one_for_one)
+      ```
+
+      Which `child_spec/1` is derived?
+    choices:
+      - "`%{id: Worker, start: {Worker, :start_link, [:arg]}, restart: :permanent, shutdown: 5000, type: :worker}`"
+      - "`%{id: :arg, start: {Worker, :start, [:arg]}, restart: :transient}`"
+      - "`%{id: Worker, start: {Worker, :init, [:arg]}, restart: :temporary}`"
+      - "`use GenServer` does not generate a child spec; you must always write one"
+    answer: 0
+    explanation: |
+      `use GenServer` defines `child_spec/1` returning `%{id: __MODULE__, start: {__MODULE__,
+      :start_link, [arg]}}` and the supervisor fills in the defaults `restart: :permanent`,
+      `shutdown: 5000` and `type: :worker`. That is why the module must define `start_link/1`
+      taking exactly one argument. You can override at definition time with
+      `use GenServer, restart: :transient, shutdown: 10_000` or per instance with
+      `Supervisor.child_spec({Worker, :arg}, id: :worker_2)`. Note the `id` defaults to the module,
+      so starting two `Worker`s under one supervisor needs distinct ids.
+    tags: [child_spec, supervisor]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-counter-code
+    kind: code
+    difficulty: junior
+    title: "A Counter GenServer"
+    body: |
+      Implement `Counter` as a GenServer:
+
+      - `start_link/1` — `start_link(initial)` starts the server with an integer state and returns
+        `{:ok, pid}`.
+      - `inc/1` — increments by 1 asynchronously (`cast`), returns `:ok`.
+      - `inc_by/2` — `inc_by(pid, n)` increments by `n` synchronously and returns the **new** value.
+      - `get/1` — returns the current value.
+
+      ```elixir
+      {:ok, c} = Counter.start_link(5)
+      Counter.inc(c)
+      Counter.inc_by(c, 10)   # => 16
+      Counter.get(c)          # => 16
+      ```
+    starter_code: |
+      defmodule Counter do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        # client API
+
+        # server callbacks
+        @impl true
+        def init(initial), do: {:ok, initial}
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CounterTest do
+        use ExUnit.Case
+
+        test "starts with the initial value" do
+          {:ok, c} = Counter.start_link(5)
+          assert Counter.get(c) == 5
+        end
+
+        test "inc is async but ordered before a later get" do
+          {:ok, c} = Counter.start_link(0)
+          assert Counter.inc(c) == :ok
+          Counter.inc(c)
+          assert Counter.get(c) == 2
+        end
+
+        test "inc_by returns the new value" do
+          {:ok, c} = Counter.start_link(1)
+          assert Counter.inc_by(c, 10) == 11
+          assert Counter.inc_by(c, -1) == 10
+          assert Counter.get(c) == 10
+        end
+
+        test "is a GenServer with the expected state" do
+          {:ok, c} = Counter.start_link(3)
+          Counter.inc(c)
+          assert :sys.get_state(c) == 4
+        end
+      end
+    solution: |
+      defmodule Counter do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        def inc(pid), do: GenServer.cast(pid, :inc)
+        def inc_by(pid, n), do: GenServer.call(pid, {:inc_by, n})
+        def get(pid), do: GenServer.call(pid, :get)
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        @impl true
+        def handle_cast(:inc, n), do: {:noreply, n + 1}
+
+        @impl true
+        def handle_call({:inc_by, k}, _from, n), do: {:reply, n + k, n + k}
+        def handle_call(:get, _from, n), do: {:reply, n, n}
+      end
+    explanation: |
+      The module splits a **client API** (functions that run in the caller and send messages) from
+      **server callbacks** (functions that run in the server process and transform the state). The
+      test "inc is async but ordered" works without sleeping because the server's mailbox is FIFO:
+      the `get` call cannot be processed before the two earlier casts. `:sys.get_state/1` peeks at
+      the raw state, which is useful in tests and debugging only.
+    tags: [genserver, call, cast]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-kv-store-code
+    kind: code
+    difficulty: junior
+    title: "A key-value store GenServer"
+    body: |
+      Implement `KV`, a GenServer holding a map:
+
+      - `start_link/0` returns `{:ok, pid}` with an empty map.
+      - `put/3` — `put(pid, key, value)` stores the value synchronously, returns `:ok`.
+      - `get/2` — `get(pid, key)` returns the value or `nil`.
+      - `delete/2` — removes the key, returns `:ok`.
+      - `keys/1` — returns a sorted list of keys.
+
+      ```elixir
+      {:ok, kv} = KV.start_link()
+      KV.put(kv, :a, 1)
+      KV.get(kv, :a)   # => 1
+      KV.get(kv, :zz)  # => nil
+      ```
+    starter_code: |
+      defmodule KV do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, %{})
+
+        # your client functions and callbacks here
+
+        @impl true
+        def init(map), do: {:ok, map}
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule KVTest do
+        use ExUnit.Case
+
+        setup do
+          {:ok, kv} = KV.start_link()
+          %{kv: kv}
+        end
+
+        test "put and get", %{kv: kv} do
+          assert KV.put(kv, :a, 1) == :ok
+          assert KV.get(kv, :a) == 1
+          assert KV.get(kv, :missing) == nil
+        end
+
+        test "put overwrites", %{kv: kv} do
+          KV.put(kv, :a, 1)
+          KV.put(kv, :a, 2)
+          assert KV.get(kv, :a) == 2
+        end
+
+        test "delete and keys", %{kv: kv} do
+          KV.put(kv, :b, 1)
+          KV.put(kv, :a, 1)
+          KV.put(kv, :c, 1)
+          assert KV.keys(kv) == [:a, :b, :c]
+          assert KV.delete(kv, :b) == :ok
+          assert KV.keys(kv) == [:a, :c]
+          assert KV.get(kv, :b) == nil
+        end
+
+        test "servers are independent", %{kv: kv} do
+          {:ok, other} = KV.start_link()
+          KV.put(kv, :x, 1)
+          assert KV.get(other, :x) == nil
+        end
+      end
+    solution: |
+      defmodule KV do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, %{})
+
+        def put(pid, key, value), do: GenServer.call(pid, {:put, key, value})
+        def get(pid, key), do: GenServer.call(pid, {:get, key})
+        def delete(pid, key), do: GenServer.call(pid, {:delete, key})
+        def keys(pid), do: GenServer.call(pid, :keys)
+
+        @impl true
+        def init(map), do: {:ok, map}
+
+        @impl true
+        def handle_call({:put, k, v}, _from, map), do: {:reply, :ok, Map.put(map, k, v)}
+        def handle_call({:get, k}, _from, map), do: {:reply, Map.get(map, k), map}
+        def handle_call({:delete, k}, _from, map), do: {:reply, :ok, Map.delete(map, k)}
+        def handle_call(:keys, _from, map), do: {:reply, map |> Map.keys() |> Enum.sort(), map}
+      end
+    explanation: |
+      Using `call` for `put` and `delete` (instead of `cast`) gives callers confirmation and
+      backpressure, which is the right default. An interviewer may ask how you would make `keys/1`
+      cheaper on a huge map (keep an ETS table instead of a map in state, or let readers hit ETS
+      directly), and what happens to the data when the server crashes (it is gone: a restart begins
+      from `init/1` with an empty map).
+    tags: [genserver, map, call]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-call-timeout-late-reply
+    kind: mcq
+    difficulty: senior
+    title: "After catching a `GenServer.call` timeout, can the late reply still arrive?"
+    body: |
+      ```elixir
+      try do
+        GenServer.call(pid, :slow, 100)
+      catch
+        :exit, _ -> :gave_up
+      end
+      ```
+
+      The server finishes `:slow` after 2 seconds and replies. On Elixir 1.17 / OTP 26, what
+      happens to that reply?
+    choices:
+      - "It lands in the caller's mailbox as `{ref, reply}` and must be flushed manually, as the GenServer docs historically warned"
+      - "It is discarded by the VM: since OTP 24 `gen_server:call` uses a process alias that is deactivated on timeout, so the late reply is never delivered"
+      - "It is delivered to `handle_info/2` of the server"
+      - "The server crashes because the caller is no longer waiting"
+    answer: 1
+    explanation: |
+      Before OTP 24 the reply was tagged with a monitor reference and simply landed in the
+      caller's mailbox after the timeout, polluting it (a classic source of "unexpected message"
+      logs in `handle_info`). OTP 24 introduced **process aliases**: the call is tagged with an alias
+      that the caller deactivates when it gives up, so the VM drops the late reply. The caveat
+      stays: the server *did* the work and may have changed state, so catching the exit does not
+      undo anything; callers that catch timeouts must treat the outcome as unknown.
+    tags: [call, timeout, aliases]
+    source: https://www.erlang.org/doc/apps/stdlib/gen_server.html
+
+  - slug: elixir-gen-registry-via-unique
+    kind: mcq
+    difficulty: senior
+    title: "Which Registry can be used in a `{:via, Registry, ...}` name?"
+    body: |
+      ```elixir
+      Registry.start_link(keys: :duplicate, name: MyReg)
+      GenServer.start_link(Worker, [], name: {:via, Registry, {MyReg, "w1"}})
+      ```
+    choices:
+      - "Works: via tuples support both unique and duplicate registries"
+      - "Fails: only `keys: :unique` registries can back a via tuple, because a name must resolve to at most one process"
+      - "Works, but `GenServer.call` will broadcast to every registered process"
+      - "Fails because via names must be atoms"
+    answer: 1
+    explanation: |
+      A `:via` name must map to exactly one pid so `GenServer.call/cast` know where to send; a
+      duplicate-key registry can hold many pids per key and raises `ArgumentError` when used as a
+      via registry. `keys: :unique` gives you exactly that mapping, plus
+      `{:error, {:already_started, pid}}` from `start_link` when the key is taken, which is the
+      idiom for "get or start" per-entity processes. Duplicate registries are for **pub/sub**:
+      `Registry.register(MyReg, topic, nil)` in subscribers and `Registry.dispatch(MyReg, topic,
+      fn entries -> for {pid, _} <- entries, do: send(pid, msg) end)` in publishers.
+    tags: [registry, via, naming]
+    source: https://hexdocs.pm/elixir/Registry.html
+
+  - slug: elixir-gen-sys-get-state-debug
+    kind: mcq
+    difficulty: middle
+    title: "What is `:sys.get_state/1` for?"
+    body: |
+      Pick the most accurate description.
+    choices:
+      - "A public API that every GenServer should expose instead of writing a `:get` call"
+      - "A debugging helper that synchronously returns the internal state of any OTP process (gen_server, gen_statem); fine in tests and IEx, not for production code paths"
+      - "A way to read the state without sending a message, so it never blocks"
+      - "It returns the state as a string formatted by `format_status/2`"
+    answer: 1
+    explanation: |
+      `:sys` talks to the behaviour's system-message handler: `get_state/1`, `replace_state/2`,
+      `get_status/1`, `trace/2` (prints every message in and out), `statistics/2`. They go through
+      the mailbox like any call, so they also act as a barrier in tests. The docs state they are
+      "intended only to help with debugging": production code should use the module's own API so
+      the state layout can change freely. `format_status/1` is what `:sys.get_status` and crash
+      reports use to redact or trim the state, and `:sys.get_state` bypasses it.
+    tags: [sys, debugging]
+    source: https://www.erlang.org/doc/apps/stdlib/sys.html
+
+  - slug: elixir-gen-compile-env-vs-get-env
+    kind: mcq
+    difficulty: senior
+    title: "What does `Application.compile_env/3` protect you from?"
+    body: |
+      ```elixir
+      defmodule MyApp.Mailer do
+        @adapter Application.compile_env(:my_app, :mailer_adapter, MyApp.Mailer.Local)
+        def send(mail), do: @adapter.deliver(mail)
+      end
+      ```
+
+      Later, `config/runtime.exs` sets `config :my_app, mailer_adapter: MyApp.Mailer.SES`. What happens
+      at boot?
+    choices:
+      - "`@adapter` becomes `MyApp.Mailer.SES` because `compile_env` is re-evaluated at startup"
+      - "The application fails to boot with an error saying the compile-time value differs from the runtime value, so you must recompile"
+      - "Nothing; `compile_env` silently keeps the compile-time value"
+      - "`compile_env` raises at compile time because `runtime.exs` is not allowed to set that key"
+    answer: 1
+    explanation: |
+      `compile_env/3` reads the value **at compile time** (from `config.exs`/`dev.exs`, not
+      `runtime.exs`) and records the value Mix saw. On startup, Mix checks that the current
+      application environment still matches; a mismatch raises so you cannot silently run with a
+      stale compiled-in value. `Application.get_env/3` reads at **runtime** every call and sees
+      `runtime.exs`, which is why it is the default choice; use `compile_env` only for values that
+      genuinely must be baked into code (module attributes, macros). Using `get_env` inside a module
+      attribute compiles a stale value in with no check, which is the bug `compile_env` was created
+      to prevent.
+    tags: [application, config, compile_env]
+    source: https://hexdocs.pm/elixir/Application.html
+
+  - slug: elixir-gen-callbacks-overview
+    kind: open
+    difficulty: junior
+    title: "Walk me through the GenServer callbacks"
+    body: |
+      Name the GenServer callbacks, say which process each runs in, what triggers it, and what it
+      must return.
+    answer: |
+      - All callbacks run in the **server process**; the client API functions (`start_link`,
+        wrappers around `call`/`cast`) run in the caller.
+      - `init/1`: called by `start_link` with the argument; returns `{:ok, state}` (optionally with
+        a timeout, `:hibernate` or `{:continue, term}`), `:ignore`, or `{:stop, reason}`. The
+        starter blocks until it returns, so keep it fast.
+      - `handle_call/3`: synchronous requests; gets `(request, from, state)` and returns
+        `{:reply, reply, state}` or `{:noreply, state}` (reply later with `GenServer.reply(from, r)`),
+        or `{:stop, reason, reply, state}`.
+      - `handle_cast/2`: asynchronous requests; returns `{:noreply, state}` or `{:stop, reason, state}`.
+      - `handle_info/2`: any other message (`send`, timers, `:DOWN`, `:EXIT`); same returns as cast.
+      - `handle_continue/2`: runs immediately after a callback that returned `{:continue, term}`,
+        before the next message; same returns as cast.
+      - `terminate/2`: cleanup before exit (reason, state); only guaranteed when stopping from
+        inside or when trapping exits.
+      - `code_change/3`: migrate state during a hot code upgrade.
+      - `format_status/1`: shape the state shown in crash reports and `:sys.get_status`.
+      - `use GenServer` provides defaults for everything except `init/1`, and `@impl true` on each
+        callback lets the compiler check names and arities.
+    explanation: |
+      Follow-ups: "what is `from`?" (a `{pid, tag}` tuple identifying the caller for
+      `GenServer.reply/2`), "what happens if a callback raises?" (the server exits with the
+      exception as reason, callers in `call` exit too, and the supervisor restarts it).
+    tags: [callbacks, init, handle_call]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-when-not-cast
+    kind: open
+    difficulty: middle
+    title: "When should you NOT use `GenServer.cast`?"
+    body: |
+      The docs say casts should be used sparingly. Explain why, and describe cases where a cast
+      is genuinely the right choice.
+    answer: |
+      - A cast gives the sender **no feedback**: the message may have gone to a dead process, been
+        dropped on a net split, or crashed the server, and the sender will never know.
+      - No **backpressure**: senders can outrun the server and the mailbox grows without bound; a
+        `call` naturally throttles producers to the server's speed.
+      - Harder **ordering** guarantees across processes and harder tests (you need a barrier to
+        assert on the effect).
+      - A `call` is also cheap: the reply is one small message. Use `call` by default, even for
+        "fire-and-forget" writes, and return `:ok`.
+      - Casts are right when: the sender truly must not block or be coupled to the server's fate
+        (e.g. logging/metrics from a hot path, telemetry), losing the message is acceptable, the
+        caller **is** the server itself or a process it must not deadlock with, or you are
+        fanning out notifications to many subscribers (pub/sub) where waiting on each would
+        serialise the publisher.
+      - If you use casts, make them **idempotent** where possible (set a value rather than
+        increment) so a retry after an unknown outcome is safe.
+    explanation: |
+      Interviewers want the backpressure argument and the "unknown outcome" argument. A good extra
+      point: `cast` returning `:ok` even when the target does not exist means a typo in a registered
+      name is silent, while `call` exits with `:noproc`.
+    tags: [cast, backpressure]
+    source: https://elixirforum.com/t/genserver-docs-handle-cast-should-be-used-sparingly-why/4908
+
+  - slug: elixir-gen-handle-continue-use-case
+    kind: open
+    difficulty: middle
+    title: "What problem does `handle_continue/2` solve?"
+    body: |
+      Your GenServer needs to load a large dataset from the database before it can serve requests.
+      Show how you would structure `init/1` and explain the trade-offs.
+    answer: |
+      - `init/1` runs inside `start_link`, which **blocks the starter**. In a supervision tree that
+        means the supervisor, and therefore the whole application boot, waits; a slow or failing
+        `init/1` delays or aborts startup and can trip restart limits.
+      - Return `{:ok, %{data: nil}, {:continue, :load}}` from `init/1` and do the loading in
+        `handle_continue(:load, state)`, returning `{:noreply, %{state | data: loaded}}`.
+      - Guarantee: `handle_continue` runs **before any message** from the mailbox, so callers never
+        see the unloaded state; `start_link` returns right after `init/1`, so boot continues.
+      - It still runs in the server process, so requests queue behind the load; if that is a
+        problem, mark the state as `:loading` and reply `{:error, :not_ready}`, or do the load in a
+        `Task` and switch state in `handle_info` when the result arrives.
+      - A failure in `handle_continue` crashes the server after it has been started, which the
+        supervisor handles like any crash, instead of failing the parent's `start_link`.
+      - `{:continue, term}` can be returned from any callback to chain steps, e.g. a large
+        `handle_call` that replies first and then continues with housekeeping.
+    explanation: |
+      Follow-up: "why not do the loading lazily on first request?" (every first request pays the
+      cost and the server is not warm when the supervisor reports it as started). Also note it
+      exists since OTP 21 / Elixir 1.7.
+    tags: [handle_continue, init, boot]
+    source: https://elixirforum.com/t/when-to-use-handle-continue/24736
+
+  - slug: elixir-gen-reply-deferred
+    kind: open
+    difficulty: middle
+    title: "When would you return `{:noreply, state}` from `handle_call` and use `GenServer.reply/2`?"
+    body: |
+      Describe a situation where the server cannot answer a `call` right away, and show how the
+      deferred-reply mechanism works.
+    answer: |
+      - `handle_call/3` receives `from` (`{caller_pid, tag}`). Returning `{:noreply, state}` keeps the
+        caller blocked while the server goes on processing other messages; later any code in the
+        server (or another process you hand `from` to) calls `GenServer.reply(from, value)` to
+        unblock it.
+      - Typical uses: a request that depends on an **external event** (waiting for a TCP response, a
+        job completion, a `:DOWN` message); **batching** several callers and replying to all when a
+        batch completes; a **barrier/latch** that releases waiters when a condition is met.
+      - Store `from` in state (e.g. a list of waiters keyed by request id), reply in `handle_info`
+        when the event arrives.
+      - You must reply within the caller's timeout (default 5 s) or the caller exits; pass
+        `:infinity` or a longer timeout on the client side when waits are expected.
+      - If the server crashes while holding `from`, the caller is released by the monitor
+        `GenServer.call` placed on the server (it exits with the server's reason), so waiters do
+        not hang forever.
+      - `from` can be sent to another process; replying from a `Task` is valid and keeps the server
+        responsive.
+    explanation: |
+      A concrete follow-up is "implement a connection pool checkout that waits for a free
+      connection": store `from`s in a queue and reply when a connection is checked in. This is how
+      `DBConnection` and `Poolboy` style pools work.
+    tags: [handle_call, reply, from]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-single-server-bottleneck
+    kind: open
+    difficulty: senior
+    title: "A single GenServer has become a bottleneck. What are your options?"
+    body: |
+      A `RateLimiter` GenServer is called on every HTTP request. At 20k req/s its mailbox grows and
+      p99 latency spikes. Walk through how you would diagnose and redesign it.
+    answer: |
+      - A GenServer handles one message at a time: it is a **serialisation point**. Throughput is
+        bounded by the per-message callback cost plus mailbox overhead; every caller also pays a
+        message copy in and out.
+      - Diagnose: `Process.info(pid, [:message_queue_len, :reductions, :memory])`, `:observer`,
+        `:recon`, `:sys.statistics`; profile the callback (`:eprof`/`:fprof`, telemetry on call
+        duration). Check the callback is not doing I/O or heavy work (`handle_call` doing an HTTP
+        request is the usual culprit).
+      - Move reads out of the process: keep the data in **ETS** (`read_concurrency: true`,
+        `write_concurrency: true`) and use `:ets.update_counter/4` for atomic increments; the
+        GenServer then only owns the table and does housekeeping. Reads no longer touch the
+        mailbox at all.
+      - **Shard** the state across N processes keyed by `:erlang.phash2(key, n)`, via
+        `PartitionSupervisor` or a `Registry`; each shard is still serial but you get N-fold
+        throughput, at the cost of no global view.
+      - Offload long work to `Task.Supervisor.async_nolink` and reply later with `GenServer.reply`.
+      - Keep the state **small** and the messages small; a large state means slow GC pauses in
+        that one process.
+      - Use `:atomics`/`:counters` for pure counters: lock-free and no process at all.
+      - Make callers tolerant: `call` with a short timeout and fail-open/closed policy.
+    explanation: |
+      A senior answer separates the *coordination* (which one process can own) from the *data path*
+      (which should not go through a process). Mentioning `:ets.update_counter` or `:counters` for
+      a rate limiter is a strong signal.
+    tags: [performance, ets, sharding]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-stack-code
+    kind: code
+    difficulty: junior
+    title: "A Stack GenServer with `pop` returning `{:ok, v} | :empty`"
+    body: |
+      Implement `Stack` as a GenServer:
+
+      - `start_link/1` — `start_link(initial_list)` starts with the given list as the stack (head is
+        the top).
+      - `push/2` — pushes a value, returns `:ok` (synchronous).
+      - `pop/1` — removes and returns the top as `{:ok, value}`, or `:empty` when the stack is empty.
+      - `peek/1` — returns `{:ok, value}` or `:empty` without removing.
+      - `size/1` — number of elements.
+
+      ```elixir
+      {:ok, s} = Stack.start_link([:a])
+      Stack.push(s, :b)
+      Stack.pop(s)   # => {:ok, :b}
+      Stack.pop(s)   # => {:ok, :a}
+      Stack.pop(s)   # => :empty
+      ```
+    starter_code: |
+      defmodule Stack do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        # client API and callbacks here
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule StackTest do
+        use ExUnit.Case
+
+        test "push and pop are LIFO" do
+          {:ok, s} = Stack.start_link([])
+          assert Stack.push(s, 1) == :ok
+          Stack.push(s, 2)
+          assert Stack.pop(s) == {:ok, 2}
+          assert Stack.pop(s) == {:ok, 1}
+        end
+
+        test "pop and peek on empty return :empty" do
+          {:ok, s} = Stack.start_link([])
+          assert Stack.pop(s) == :empty
+          assert Stack.peek(s) == :empty
+          assert Stack.size(s) == 0
+        end
+
+        test "initial list head is the top; peek does not remove" do
+          {:ok, s} = Stack.start_link([:x, :y])
+          assert Stack.peek(s) == {:ok, :x}
+          assert Stack.size(s) == 2
+          assert Stack.pop(s) == {:ok, :x}
+          assert Stack.size(s) == 1
+        end
+
+        test "server survives popping an empty stack" do
+          {:ok, s} = Stack.start_link([])
+          Stack.pop(s)
+          assert Process.alive?(s)
+          Stack.push(s, :z)
+          assert Stack.pop(s) == {:ok, :z}
+        end
+      end
+    solution: |
+      defmodule Stack do
+        use GenServer
+
+        def start_link(initial), do: GenServer.start_link(__MODULE__, initial)
+
+        def push(pid, v), do: GenServer.call(pid, {:push, v})
+        def pop(pid), do: GenServer.call(pid, :pop)
+        def peek(pid), do: GenServer.call(pid, :peek)
+        def size(pid), do: GenServer.call(pid, :size)
+
+        @impl true
+        def init(initial), do: {:ok, initial}
+
+        @impl true
+        def handle_call({:push, v}, _from, stack), do: {:reply, :ok, [v | stack]}
+        def handle_call(:pop, _from, []), do: {:reply, :empty, []}
+        def handle_call(:pop, _from, [h | t]), do: {:reply, {:ok, h}, t}
+        def handle_call(:peek, _from, []), do: {:reply, :empty, []}
+        def handle_call(:peek, _from, [h | _] = s), do: {:reply, {:ok, h}, s}
+        def handle_call(:size, _from, stack), do: {:reply, length(stack), stack}
+      end
+    explanation: |
+      Pattern matching on the state in the function head (`[]` vs `[h | t]`) replaces conditionals
+      and keeps each clause tiny. The "survives popping an empty stack" test is the interview
+      point: a naive `[h | t] = stack` would raise `MatchError` and crash the server, which with
+      "let it crash" would be wrong here because an empty stack is an **expected** condition, not a
+      bug.
+    tags: [genserver, pattern-matching]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-rate-limiter-code
+    kind: code
+    difficulty: middle
+    title: "A per-key rate limiter GenServer"
+    body: |
+      Implement `RateLimiter`, a GenServer that allows at most `max` hits per key until the key is
+      reset (no time windows, to keep it deterministic):
+
+      - `start_link/1` — `start_link(max)` returns `{:ok, pid}`.
+      - `allow?/2` — `allow?(pid, key)` returns `true` and records a hit while the key has fewer
+        than `max` hits, otherwise `false` (and does not record anything).
+      - `hits/2` — `hits(pid, key)` returns the number of recorded hits for the key (0 if unknown).
+      - `reset/2` — `reset(pid, key)` clears the key's hits, returns `:ok`.
+
+      ```elixir
+      {:ok, rl} = RateLimiter.start_link(2)
+      RateLimiter.allow?(rl, "ip1")   # => true
+      RateLimiter.allow?(rl, "ip1")   # => true
+      RateLimiter.allow?(rl, "ip1")   # => false
+      RateLimiter.reset(rl, "ip1")
+      RateLimiter.allow?(rl, "ip1")   # => true
+      ```
+    starter_code: |
+      defmodule RateLimiter do
+        use GenServer
+
+        def start_link(max), do: GenServer.start_link(__MODULE__, max)
+
+        # client API
+
+        @impl true
+        def init(max), do: {:ok, %{max: max, hits: %{}}}
+
+        # callbacks
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RateLimiterTest do
+        use ExUnit.Case
+
+        test "allows up to max hits then denies" do
+          {:ok, rl} = RateLimiter.start_link(2)
+          assert RateLimiter.allow?(rl, "a") == true
+          assert RateLimiter.allow?(rl, "a") == true
+          assert RateLimiter.allow?(rl, "a") == false
+          assert RateLimiter.hits(rl, "a") == 2
+        end
+
+        test "keys are independent" do
+          {:ok, rl} = RateLimiter.start_link(1)
+          assert RateLimiter.allow?(rl, "a")
+          refute RateLimiter.allow?(rl, "a")
+          assert RateLimiter.allow?(rl, "b")
+          assert RateLimiter.hits(rl, "unknown") == 0
+        end
+
+        test "reset clears the key" do
+          {:ok, rl} = RateLimiter.start_link(1)
+          RateLimiter.allow?(rl, "a")
+          assert RateLimiter.reset(rl, "a") == :ok
+          assert RateLimiter.hits(rl, "a") == 0
+          assert RateLimiter.allow?(rl, "a")
+        end
+
+        test "check-and-record is atomic under concurrent callers" do
+          {:ok, rl} = RateLimiter.start_link(5)
+          results =
+            1..20
+            |> Enum.map(fn _ -> Task.async(fn -> RateLimiter.allow?(rl, "k") end) end)
+            |> Enum.map(&Task.await/1)
+          assert Enum.count(results, & &1) == 5
+          assert RateLimiter.hits(rl, "k") == 5
+        end
+      end
+    solution: |
+      defmodule RateLimiter do
+        use GenServer
+
+        def start_link(max), do: GenServer.start_link(__MODULE__, max)
+
+        def allow?(pid, key), do: GenServer.call(pid, {:allow?, key})
+        def hits(pid, key), do: GenServer.call(pid, {:hits, key})
+        def reset(pid, key), do: GenServer.call(pid, {:reset, key})
+
+        @impl true
+        def init(max), do: {:ok, %{max: max, hits: %{}}}
+
+        @impl true
+        def handle_call({:allow?, key}, _from, %{max: max, hits: hits} = state) do
+          count = Map.get(hits, key, 0)
+
+          if count < max do
+            {:reply, true, %{state | hits: Map.put(hits, key, count + 1)}}
+          else
+            {:reply, false, state}
+          end
+        end
+
+        def handle_call({:hits, key}, _from, state) do
+          {:reply, Map.get(state.hits, key, 0), state}
+        end
+
+        def handle_call({:reset, key}, _from, state) do
+          {:reply, :ok, %{state | hits: Map.delete(state.hits, key)}}
+        end
+      end
+    explanation: |
+      The whole point of putting the limiter in a process is the last test: "check count, then
+      increment" happens inside **one** `handle_call`, so 20 concurrent callers cannot all read 0
+      and all be allowed. Done with `Agent.get` followed by `Agent.update` it would race. A
+      follow-up is how to make this scale (an ETS table with `:ets.update_counter/4`, which is
+      atomic without a process) and how to add a time window (store `{count, window_start}` or
+      schedule `Process.send_after(self(), :sweep, interval)`).
+    tags: [genserver, atomicity, rate-limiting]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-ticker-send-after-code
+    kind: code
+    difficulty: middle
+    title: "A Ticker: periodic work with `Process.send_after` and `handle_info`"
+    body: |
+      Implement `Ticker`, a GenServer that sends `:tick` to a subscriber process at a fixed
+      interval using a `Process.send_after/3` loop (not `:timer.send_interval`):
+
+      - `start_link/2` — `start_link(interval_ms, subscriber_pid)` returns `{:ok, pid}` and
+        schedules the first tick.
+      - On each timer message the server sends `:tick` to the subscriber, increments a counter and
+        schedules the next tick.
+      - `count/1` — returns how many ticks have been sent so far.
+      - `stop/1` — stops the server normally (`GenServer.stop/1`) and cancels the pending timer in
+        `terminate/2`.
+
+      ```elixir
+      {:ok, t} = Ticker.start_link(10, self())
+      # ... after ~25 ms the caller has received :tick twice
+      Ticker.count(t)   # => 2
+      ```
+    starter_code: |
+      defmodule Ticker do
+        use GenServer
+
+        def start_link(interval, subscriber) do
+          GenServer.start_link(__MODULE__, {interval, subscriber})
+        end
+
+        def count(pid), do: GenServer.call(pid, :count)
+        def stop(pid), do: GenServer.stop(pid)
+
+        @impl true
+        def init({interval, subscriber}) do
+          # schedule the first tick
+        end
+
+        # handle_info(:tick, state), handle_call(:count, ...), terminate/2
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TickerTest do
+        use ExUnit.Case
+
+        test "delivers ticks to the subscriber repeatedly" do
+          {:ok, t} = Ticker.start_link(5, self())
+          assert_receive :tick, 500
+          assert_receive :tick, 500
+          assert_receive :tick, 500
+          assert Ticker.count(t) >= 3
+          Ticker.stop(t)
+        end
+
+        test "count matches ticks delivered when the interval is long" do
+          {:ok, t} = Ticker.start_link(5, self())
+          assert_receive :tick, 500
+          Ticker.stop(t)
+          refute Process.alive?(t)
+        end
+
+        test "stop cancels the timer so no ticks arrive afterwards" do
+          {:ok, t} = Ticker.start_link(5, self())
+          assert_receive :tick, 500
+          Ticker.stop(t)
+          # drain anything already in flight, then make sure nothing new comes
+          receive do :tick -> :ok after 0 -> :ok end
+          refute_receive :tick, 30
+        end
+
+        test "no tick before the first interval elapses" do
+          {:ok, t} = Ticker.start_link(200, self())
+          refute_receive :tick, 20
+          assert Ticker.count(t) == 0
+          Ticker.stop(t)
+        end
+      end
+    solution: |
+      defmodule Ticker do
+        use GenServer
+
+        def start_link(interval, subscriber) do
+          GenServer.start_link(__MODULE__, {interval, subscriber})
+        end
+
+        def count(pid), do: GenServer.call(pid, :count)
+        def stop(pid), do: GenServer.stop(pid)
+
+        @impl true
+        def init({interval, subscriber}) do
+          state = %{interval: interval, subscriber: subscriber, count: 0, timer: nil}
+          {:ok, schedule(state)}
+        end
+
+        @impl true
+        def handle_info(:tick, state) do
+          send(state.subscriber, :tick)
+          {:noreply, schedule(%{state | count: state.count + 1})}
+        end
+
+        @impl true
+        def handle_call(:count, _from, state), do: {:reply, state.count, state}
+
+        @impl true
+        def terminate(_reason, %{timer: timer}) do
+          if timer, do: Process.cancel_timer(timer)
+          :ok
+        end
+
+        defp schedule(state) do
+          %{state | timer: Process.send_after(self(), :tick, state.interval)}
+        end
+      end
+    explanation: |
+      Re-arming the timer at the end of `handle_info` guarantees ticks never pile up: a slow
+      handler just delays the next tick. The timer ref is kept in state so `terminate/2` can cancel
+      it; `GenServer.stop/1` *does* invoke `terminate/2` (the stop comes from inside the behaviour,
+      no trap_exit needed). Even without the cancel, a `send_after` targeting a pid that has died
+      is dropped by the VM, which is why tests cannot observe a difference, but cancelling is the
+      explicit, reviewable behaviour.
+    tags: [send_after, handle_info, timers]
+    source: https://hexdocs.pm/elixir/Process.html
+
+  - slug: elixir-gen-latch-deferred-reply-code
+    kind: code
+    difficulty: senior
+    title: "A Latch using `{:noreply, ...}` and `GenServer.reply/2`"
+    body: |
+      Implement `Latch`, a GenServer that blocks callers until it is opened:
+
+      - `start_link/0` returns `{:ok, pid}`; the latch starts closed.
+      - `await/1` — `await(pid)` is a **synchronous call** that does not return until the latch is
+        opened; once open it returns the value immediately for every later caller.
+      - `open/2` — `open(pid, value)` opens the latch with `value` and releases **all** waiting
+        callers (each gets `value`). It is a cast and returns `:ok`. Opening twice keeps the first
+        value.
+      - `open?/1` — `true | false`.
+
+      You must implement `await` with `{:noreply, state}` in `handle_call` and release waiters
+      with `GenServer.reply/2`.
+
+      ```elixir
+      {:ok, l} = Latch.start_link()
+      t = Task.async(fn -> Latch.await(l) end)   # blocks
+      Latch.open(l, :go)
+      Task.await(t)        # => :go
+      Latch.await(l)       # => :go (immediately)
+      ```
+    starter_code: |
+      defmodule Latch do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, :ok)
+
+        def await(pid), do: GenServer.call(pid, :await, :infinity)
+        def open(pid, value), do: GenServer.cast(pid, {:open, value})
+        def open?(pid), do: GenServer.call(pid, :open?)
+
+        @impl true
+        def init(:ok), do: {:ok, %{value: nil, open: false, waiters: []}}
+
+        # handle_call(:await, from, state): store `from` when closed
+        # handle_cast({:open, v}, state): GenServer.reply each waiter
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LatchTest do
+        use ExUnit.Case
+
+        test "await blocks until open, then returns the value" do
+          {:ok, l} = Latch.start_link()
+          refute Latch.open?(l)
+          t = Task.async(fn -> Latch.await(l) end)
+          refute_receive _, 20
+          assert Latch.open(l, :go) == :ok
+          assert Task.await(t) == :go
+          assert Latch.open?(l)
+        end
+
+        test "await after open returns immediately" do
+          {:ok, l} = Latch.start_link()
+          Latch.open(l, 42)
+          assert Latch.await(l) == 42
+        end
+
+        test "all waiters are released with the same value" do
+          {:ok, l} = Latch.start_link()
+          tasks = for _ <- 1..5, do: Task.async(fn -> Latch.await(l) end)
+          Latch.open(l, :all)
+          assert Enum.map(tasks, &Task.await/1) == [:all, :all, :all, :all, :all]
+        end
+
+        test "second open is ignored and waiters list is cleared" do
+          {:ok, l} = Latch.start_link()
+          Latch.open(l, :first)
+          Latch.open(l, :second)
+          assert Latch.await(l) == :first
+          assert :sys.get_state(l).waiters == []
+        end
+      end
+    solution: |
+      defmodule Latch do
+        use GenServer
+
+        def start_link, do: GenServer.start_link(__MODULE__, :ok)
+
+        def await(pid), do: GenServer.call(pid, :await, :infinity)
+        def open(pid, value), do: GenServer.cast(pid, {:open, value})
+        def open?(pid), do: GenServer.call(pid, :open?)
+
+        @impl true
+        def init(:ok), do: {:ok, %{value: nil, open: false, waiters: []}}
+
+        @impl true
+        def handle_call(:await, _from, %{open: true, value: v} = state), do: {:reply, v, state}
+        def handle_call(:await, from, state), do: {:noreply, %{state | waiters: [from | state.waiters]}}
+        def handle_call(:open?, _from, state), do: {:reply, state.open, state}
+
+        @impl true
+        def handle_cast({:open, _}, %{open: true} = state), do: {:noreply, state}
+
+        def handle_cast({:open, value}, state) do
+          Enum.each(state.waiters, &GenServer.reply(&1, value))
+          {:noreply, %{state | open: true, value: value, waiters: []}}
+        end
+      end
+    explanation: |
+      Returning `{:noreply, state}` from `handle_call` parks the caller without blocking the server,
+      which keeps handling `open?` and `open` messages; the stored `from` tuples are the tickets to
+      answer later with `GenServer.reply/2`. Interview points: the client passes `:infinity` because
+      the default 5 s call timeout would exit waiters; if the latch process died, waiters would be
+      released by the monitor `GenServer.call` holds (exit with `:noproc`/the crash reason) rather
+      than hanging; and the first test's `refute_receive _, 20` is a cheap way to show the task is
+      still blocked without sleeping arbitrarily.
+    tags: [handle_call, reply, noreply]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-loader-handle-continue-code
+    kind: code
+    difficulty: middle
+    title: "Deferred initialisation with `handle_continue/2`"
+    body: |
+      Implement `Loader`, a GenServer whose expensive loading happens **after** `init/1` returns:
+
+      - `start_link/1` — `start_link(loader_fun)` where `loader_fun` is a zero-arity function.
+        `init/1` must return immediately with state `%{data: :not_loaded}` and
+        `{:continue, :load}`; `handle_continue(:load, state)` then calls `loader_fun.()` and stores
+        the result under `:data`.
+      - `data/1` — returns the loaded data. Because `handle_continue` runs before any message, a
+        call issued right after `start_link` already sees the loaded value.
+      - `reload/1` — a cast that re-runs the loader via `{:noreply, state, {:continue, :load}}`.
+
+      ```elixir
+      {:ok, l} = Loader.start_link(fn -> [1, 2, 3] end)
+      Loader.data(l)   # => [1, 2, 3]
+      ```
+    starter_code: |
+      defmodule Loader do
+        use GenServer
+
+        def start_link(loader), do: GenServer.start_link(__MODULE__, loader)
+        def data(pid), do: GenServer.call(pid, :data)
+        def reload(pid), do: GenServer.cast(pid, :reload)
+
+        @impl true
+        def init(loader) do
+          # return quickly, continue with :load
+        end
+
+        # handle_continue/2, handle_call/3, handle_cast/2
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule LoaderTest do
+        use ExUnit.Case
+
+        test "data is loaded before the first call is served" do
+          {:ok, l} = Loader.start_link(fn -> [1, 2, 3] end)
+          assert Loader.data(l) == [1, 2, 3]
+        end
+
+        test "init does not run the loader; handle_continue does, in the server process" do
+          test_pid = self()
+          {:ok, l} = Loader.start_link(fn -> send(test_pid, {:loaded_in, self()}); :ok end)
+          assert_receive {:loaded_in, pid}
+          assert pid == l
+          assert :sys.get_state(l).data == :ok
+        end
+
+        test "reload runs the loader again" do
+          {:ok, agent} = Agent.start_link(fn -> 0 end)
+          loader = fn -> Agent.get_and_update(agent, &{&1 + 1, &1 + 1}) end
+          {:ok, l} = Loader.start_link(loader)
+          assert Loader.data(l) == 1
+          Loader.reload(l)
+          assert Loader.data(l) == 2
+        end
+
+        test "the init callback returns a continue tuple" do
+          assert {:ok, %{data: :not_loaded}, {:continue, :load}} = Loader.init(fn -> :x end)
+        end
+      end
+    solution: |
+      defmodule Loader do
+        use GenServer
+
+        def start_link(loader), do: GenServer.start_link(__MODULE__, loader)
+        def data(pid), do: GenServer.call(pid, :data)
+        def reload(pid), do: GenServer.cast(pid, :reload)
+
+        @impl true
+        def init(loader) do
+          {:ok, %{data: :not_loaded, loader: loader}, {:continue, :load}}
+        end
+
+        @impl true
+        def handle_continue(:load, state) do
+          {:noreply, %{state | data: state.loader.()}}
+        end
+
+        @impl true
+        def handle_call(:data, _from, state), do: {:reply, state.data, state}
+
+        @impl true
+        def handle_cast(:reload, state), do: {:noreply, state, {:continue, :load}}
+      end
+    explanation: |
+      `{:continue, :load}` tells the behaviour to invoke `handle_continue/2` right after the
+      current callback, **before** reading the mailbox, so `start_link` returns fast (good for
+      supervisor boot) and yet no caller can observe `:not_loaded`. The last test calls `init/1`
+      directly, a handy trick for unit-testing callbacks as pure functions. The `reload` cast shows
+      that `{:continue, _}` may be returned from any callback, not just `init/1`.
+    tags: [handle_continue, init]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-sessions-dynsup-registry-code
+    kind: code
+    difficulty: senior
+    title: "Per-entity processes with DynamicSupervisor + Registry"
+    body: |
+      Implement a per-session process system:
+
+      - `Sessions.start/0` — starts a `Registry` (`keys: :unique, name: Sessions.Registry`) and a
+        `DynamicSupervisor` (`name: Sessions.Supervisor, strategy: :one_for_one`). Returns `:ok`.
+      - `Sessions.get_or_start/1` — `get_or_start(id)` returns the pid of the `Sessions.Session`
+        GenServer for `id`, starting it under the DynamicSupervisor if needed. Calling it twice
+        with the same id must return the same pid (handle `{:error, {:already_started, pid}}`).
+      - `Sessions.touch/1` — `touch(id)` increments the session's counter (synchronously) and returns
+        the new count; starts the session if needed.
+      - `Sessions.count/1` — returns the counter, or `0` if no session process exists.
+
+      `Sessions.Session` is a GenServer registered as `{:via, Registry, {Sessions.Registry, id}}`
+      whose `start_link/1` takes the `id`.
+    starter_code: |
+      defmodule Sessions.Session do
+        use GenServer
+
+        def start_link(id) do
+          GenServer.start_link(__MODULE__, id, name: via(id))
+        end
+
+        def via(id), do: {:via, Registry, {Sessions.Registry, id}}
+
+        @impl true
+        def init(id), do: {:ok, %{id: id, count: 0}}
+        # handle_call for :touch and :count
+      end
+
+      defmodule Sessions do
+        def start do
+          # start Registry and DynamicSupervisor
+        end
+
+        def get_or_start(id) do
+          # DynamicSupervisor.start_child + handle already_started
+        end
+
+        def touch(id), do: :todo
+        def count(id), do: :todo
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SessionsTest do
+        use ExUnit.Case
+
+        setup_all do
+          :ok = Sessions.start()
+          :ok
+        end
+
+        test "get_or_start is idempotent per id" do
+          pid = Sessions.get_or_start("u1")
+          assert is_pid(pid)
+          assert Sessions.get_or_start("u1") == pid
+          assert Sessions.get_or_start("u2") != pid
+        end
+
+        test "touch increments per session" do
+          assert Sessions.touch("t1") == 1
+          assert Sessions.touch("t1") == 2
+          assert Sessions.touch("t2") == 1
+          assert Sessions.count("t1") == 2
+        end
+
+        test "count is 0 for unknown sessions and does not start one" do
+          assert Sessions.count("nobody") == 0
+          assert Registry.lookup(Sessions.Registry, "nobody") == []
+        end
+
+        test "sessions are supervised children registered via Registry" do
+          pid = Sessions.get_or_start("s1")
+          assert [{^pid, _}] = Registry.lookup(Sessions.Registry, "s1")
+          children = DynamicSupervisor.which_children(Sessions.Supervisor)
+          assert Enum.any?(children, fn {_, p, _, _} -> p == pid end)
+          assert GenServer.whereis(Sessions.Session.via("s1")) == pid
+        end
+      end
+    solution: |
+      defmodule Sessions.Session do
+        use GenServer
+
+        def start_link(id) do
+          GenServer.start_link(__MODULE__, id, name: via(id))
+        end
+
+        def via(id), do: {:via, Registry, {Sessions.Registry, id}}
+
+        @impl true
+        def init(id), do: {:ok, %{id: id, count: 0}}
+
+        @impl true
+        def handle_call(:touch, _from, state) do
+          state = %{state | count: state.count + 1}
+          {:reply, state.count, state}
+        end
+
+        def handle_call(:count, _from, state), do: {:reply, state.count, state}
+      end
+
+      defmodule Sessions do
+        def start do
+          {:ok, _} = Registry.start_link(keys: :unique, name: Sessions.Registry)
+          {:ok, _} = DynamicSupervisor.start_link(name: Sessions.Supervisor, strategy: :one_for_one)
+          :ok
+        end
+
+        def get_or_start(id) do
+          case DynamicSupervisor.start_child(Sessions.Supervisor, {Sessions.Session, id}) do
+            {:ok, pid} -> pid
+            {:error, {:already_started, pid}} -> pid
+          end
+        end
+
+        def touch(id) do
+          id |> get_or_start() |> GenServer.call(:touch)
+        end
+
+        def count(id) do
+          case Registry.lookup(Sessions.Registry, id) do
+            [{pid, _}] -> GenServer.call(pid, :count)
+            [] -> 0
+          end
+        end
+      end
+    explanation: |
+      This is the canonical "one process per entity" layout. The `Registry` turns an arbitrary id
+      into a name without creating atoms, the `DynamicSupervisor` owns the lifecycle, and racing
+      `start_child` calls are resolved by the unique registration: the loser gets
+      `{:error, {:already_started, pid}}` and simply uses that pid. In production you would add
+      `use GenServer, restart: :transient` so a session that stops itself (idle timeout via
+      `{:stop, :normal, state}`) is not restarted, and `touch/1` could call the via tuple directly
+      and start on `:noproc`.
+    tags: [dynamic-supervisor, registry, via]
+    source: https://hexdocs.pm/elixir/DynamicSupervisor.html
+
+  - slug: elixir-gen-agent-vs-genserver-vs-ets
+    kind: open
+    difficulty: middle
+    title: "Agent vs GenServer vs ETS for shared state"
+    body: |
+      You need to share a configuration map or a cache between many processes. Compare keeping it
+      in an Agent, a GenServer, or an ETS table. How do you choose?
+    answer: |
+      - **Agent**: a GenServer with no custom callbacks; you send functions that run in the agent.
+        Good for simple state owned by one process with few readers. Same serialisation as a
+        GenServer; logic lives in callers, so invariants are easy to break and heavy functions
+        block the agent.
+      - **GenServer**: state **plus behaviour**: validation, timers, monitors, deferred replies,
+        `handle_info`. Choose it as soon as the state has rules or reacts to events. Still a single
+        serial process: all reads and writes queue in one mailbox and each read copies the data out.
+      - **ETS**: an in-memory table owned by a process but readable (and writable) **directly from
+        any process** without messaging. Reads scale across schedulers (`read_concurrency: true`),
+        writes are atomic per operation (`insert`, `update_counter`), no copy for `lookup` beyond
+        the returned term. No transactions across keys, and the table dies with its owner, so have
+        a supervised GenServer own it (or use `:heir`).
+      - Rule of thumb: many readers / high read rate → ETS; writes that must be coordinated or
+        validated → GenServer owning the ETS table (reads bypass it, writes go through it);
+        tiny, rarely-read state → Agent.
+      - For read-mostly global data that changes rarely (config), `:persistent_term` beats ETS
+        (zero-copy reads) but every write triggers a global GC.
+    explanation: |
+      Follow-up: "how do you prevent the ETS table from vanishing when the owner crashes?" (named
+      table owned by a long-lived supervised process that does nothing else, or set `:heir`).
+      "Why is a GenServer cache a bottleneck even if the callback is trivial?" (every reader pays a
+      message round-trip and a copy, and all readers queue behind each other).
+    tags: [agent, ets, state]
+    source: https://hexdocs.pm/elixir/Agent.html
+
+  - slug: elixir-gen-dynsup-registry-design
+    kind: open
+    difficulty: middle
+    title: "Design: one process per user session"
+    body: |
+      You want a stateful process per logged-in user, started on demand and cleaned up when the
+      user is idle. Describe the OTP building blocks you would use and the lifecycle.
+    answer: |
+      - A **`DynamicSupervisor`** (strategy `:one_for_one`, optionally `max_children`) in the app
+        tree owns session processes started at runtime with `DynamicSupervisor.start_child/2`.
+      - A **`Registry`** with `keys: :unique` maps `user_id` to the pid; sessions register by
+        starting with `name: {:via, Registry, {SessionRegistry, user_id}}`. No atoms are created,
+        and registrations vanish when the process dies.
+      - "Get or start": call `start_child`; on `{:error, {:already_started, pid}}` use that pid.
+        This makes concurrent first requests safe without a lock.
+      - Session GenServer uses `use GenServer, restart: :transient` so a deliberate `:normal` /
+        `:shutdown` stop (idle timeout) is not restarted, while a crash is.
+      - Idle cleanup: return an idle `timeout` from each callback or re-arm `Process.send_after`,
+        and `{:stop, :normal, state}` in `handle_info(:timeout, _)`.
+      - Callers address the session via the via-tuple directly (`GenServer.call(via(id), req)`);
+        handle `:noproc` by starting it, or always go through `get_or_start`.
+      - For a cluster, swap `Registry` for a distributed registry (`:global`, Horde, `:pg`) and
+        accept the consistency trade-offs.
+    explanation: |
+      Expect follow-ups on "what if two nodes start the same session?" and "what happens to the
+      session's state on crash?" (it is lost: persist what matters, or treat the process as a
+      cache in front of the DB).
+    tags: [dynamic-supervisor, registry, design]
+    source: https://hexdocs.pm/elixir/DynamicSupervisor.html
+
+  - slug: elixir-gen-testing-genservers
+    kind: open
+    difficulty: middle
+    title: "How do you test a GenServer well?"
+    body: |
+      Describe your approach to testing a GenServer: starting it, asserting on behaviour, dealing
+      with asynchronous casts and timers, and avoiding flaky tests.
+    answer: |
+      - Start it with **`start_supervised!/1`** (or `start_supervised!({Mod, opts})`) so ExUnit
+        stops it at the end of every test in reverse order; no leaked processes, no
+        "already started" errors in the next test, and crashes are reported. Avoid naming the
+        process `__MODULE__` in tests that run `async: true`, or pass a per-test name.
+      - Test through the **public client API**, not by sending raw messages, so the test reads like
+        usage.
+      - After a `cast`, assert via a **`call`** (it is a barrier: the server processes messages in
+        order), or use `:sys.get_state/1` when there is no public read.
+      - For outputs sent to other processes, inject `self()` as the recipient and use
+        `assert_receive`/`refute_receive` with a timeout rather than `Process.sleep`.
+      - For timers, make the interval configurable (short in tests) or `send(pid, :tick)` yourself
+        to exercise `handle_info` directly.
+      - Test callbacks as pure functions when useful: `assert {:reply, 2, 2} = Counter.handle_call(:inc, nil, 1)`.
+      - Test crash behaviour explicitly: `Process.flag(:trap_exit, true)` (or a monitor) plus
+        `assert_receive {:EXIT, ^pid, reason}` after sending a bad message; and check the supervisor
+        restarts it (new pid under the same name).
+      - Keep integration tests of the supervision tree separate from unit tests of the server.
+    explanation: |
+      Follow-up: "why not `start_link` in the test body?" It works in a script, but if the server
+      crashes the test process is killed with a confusing error, and processes outlive the test if
+      it fails before stopping them. "How do you test a `call` timeout?" Pass a small timeout and
+      `catch_exit`.
+    tags: [testing, exunit, start_supervised]
+    source: https://hexdocs.pm/ex_unit/ExUnit.Callbacks.html
+
+  - slug: elixir-gen-application-behaviour
+    kind: open
+    difficulty: middle
+    title: "What does the `Application` behaviour do, and how does an app boot?"
+    body: |
+      Explain the role of `mod:` in `mix.exs`, the `start/2` and `stop/1` callbacks, and the order in
+      which things come up when you run `mix run` or a release.
+    answer: |
+      - `mix.exs` `application/0` returns `mod: {MyApp.Application, []}` plus `extra_applications`;
+        Mix compiles this into the `.app` resource file, which also lists the dependency
+        applications derived from `deps`.
+      - On boot the VM loads each application and starts them in **dependency order**: every
+        application in `applications`/deps is started before yours (`Application.ensure_all_started/1`
+        does the same thing on demand). Within your app, `start/2` runs, builds the child specs and
+        calls `Supervisor.start_link/2`; children start **in list order**, each `init/1` finishing
+        before the next starts, which is why ordering in `children` matters (Repo before anything
+        using it, Registry before processes using via-tuples, Endpoint last).
+      - `start(type, args)` must return `{:ok, pid}` of the top supervisor (or `{:ok, pid, state}`);
+        `type` is `:normal` except for distributed takeover/failover.
+      - `stop/1` runs **after** the supervision tree has been shut down (children stop in reverse
+        order); `prep_stop/1` runs before, if you need the tree alive during cleanup.
+      - Application env: `Application.get_env/3` at runtime (reads `config/runtime.exs`),
+        `compile_env/3` for values baked into code, checked for drift at boot.
+      - In a release there is no Mix: `config/runtime.exs` is evaluated at boot, the start order
+        comes from the generated boot script, and `start_phases` can sequence extra setup.
+      - Application restart types (`:permanent`, `:transient`, `:temporary`) control whether the
+        node is taken down when the application's top supervisor exits.
+    explanation: |
+      Follow-up: "why does `Application.get_env` in a module attribute cause bugs?" (it is read once
+      at compile time; use `compile_env` or read at runtime). "What is `:included_applications`?"
+      (apps whose supervision tree you start yourself inside your own tree).
+    tags: [application, boot, supervisor]
+    source: https://hexdocs.pm/elixir/Application.html
+
+  - slug: elixir-gen-anatomy-client-server
+    kind: theory
+    difficulty: junior
+    title: "Anatomy of a GenServer: client API vs server callbacks"
+    body: |
+      A GenServer module contains code that runs in **two different processes**:
+
+      ```elixir
+      defmodule Cache do
+        use GenServer
+
+        # --- client API: runs in the CALLER's process ---
+        def start_link(opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+        def get(key), do: GenServer.call(__MODULE__, {:get, key})
+        def put(key, val), do: GenServer.cast(__MODULE__, {:put, key, val})
+
+        # --- server callbacks: run in the SERVER process ---
+        @impl true
+        def init(state), do: {:ok, state}
+
+        @impl true
+        def handle_call({:get, key}, _from, state), do: {:reply, Map.get(state, key), state}
+
+        @impl true
+        def handle_cast({:put, key, val}, state), do: {:noreply, Map.put(state, key, val)}
+      end
+      ```
+
+      The client functions are plain functions that package a message and send it; the callbacks
+      transform the state in response. `use GenServer` injects default implementations for the
+      callbacks you do not write plus a `child_spec/1`, so `{Cache, []}` can be placed in a
+      supervisor's children list. `name: __MODULE__` registers a single instance under the module
+      name, which is convenient but means **only one** `Cache` can run per node; pass `name:` from
+      `opts` when you need several.
+
+      Keep the client thin: any computation in a client function happens in the caller
+      (parallel, no serialisation), anything in a callback happens in the single server process.
+    answer: |
+      **Q:** In `Cache.get/1`, which process evaluates `Map.get(state, key)`: the caller or the
+      server?
+      **A:** The server. `get/1` only sends `{:get, key}`; the `handle_call` clause runs in the
+      server process and the result is copied back in the reply message.
+    explanation: |
+      Follow-up: "why does `start_link/1` take exactly one argument?" Because the generated
+      `child_spec/1` calls `start_link(arg)` with the single term given in the children list.
+      `GenServer.whereis/1` resolves any name form to a pid, which is handy in tests.
+    tags: [genserver, client-server, child_spec]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-call-internals
+    kind: theory
+    difficulty: middle
+    title: "What `GenServer.call/3` actually does"
+    body: |
+      `GenServer.call(server, request, timeout)` is a small protocol built on `send`, `receive`,
+      monitors and references. Roughly:
+
+      ```elixir
+      # in the caller
+      ref = Process.monitor(server)          # since OTP 24: a monitor with an alias
+      send(server, {:"$gen_call", {self(), ref}, request})
+      receive do
+        {^ref, reply} ->
+          Process.demonitor(ref, [:flush]); reply
+        {:DOWN, ^ref, _, _, reason} ->
+          exit({reason, {GenServer, :call, [server, request, timeout]}})
+      after
+        timeout -> Process.demonitor(ref, [:flush]); exit({:timeout, {GenServer, :call, ...}})
+      end
+      ```
+
+      In the server, the behaviour loop receives `{:"$gen_call", from, request}`, invokes
+      `handle_call(request, from, state)` and, for `{:reply, reply, state}`, does
+      `send(caller, {ref, reply})`. Consequences:
+      - If the server is dead or dies mid-call, the monitor delivers `:DOWN` and the caller exits
+        immediately with `:noproc` or the crash reason; it does not wait for the timeout.
+      - The `ref` makes the receive selective, and because it was created just before the receive
+        the VM skips older mailbox entries (the "reference receive" optimisation).
+      - Since OTP 24 the ref is a **process alias**; on timeout the alias is deactivated so a late
+        reply is dropped by the VM instead of landing in the mailbox.
+      - `from` is `{pid, ref}`; `GenServer.reply(from, value)` is just `send(pid, {ref, value})`,
+        which is why it can be called from any process at any time.
+      - The same monitor is why calling a server on a disconnected node exits with `:nodedown`
+        rather than hanging.
+    answer: |
+      **Q:** Why does `GenServer.call` to a crashed server fail instantly instead of after 5 s?
+      **A:** The caller monitors the server for the duration of the call; the `:DOWN` message with
+      the exit reason arrives immediately and the caller exits with it.
+    explanation: |
+      Interviewers may extend this to `GenServer.multi_call/4`, which performs the same call on a
+      named server across several nodes through a middleman process and returns
+      `{replies, bad_nodes}`, discarding late answers.
+    tags: [call, monitors, internals]
+    source: https://www.erlang.org/doc/apps/stdlib/gen_server.html
+
+  - slug: elixir-gen-child-spec-restart-shutdown
+    kind: theory
+    difficulty: middle
+    title: "Child spec options: `restart`, `shutdown`, `type`"
+    body: |
+      A supervisor starts children from **child specifications**, maps like:
+
+      ```elixir
+      %{
+        id: MyWorker,                           # unique within the supervisor
+        start: {MyWorker, :start_link, [arg]},  # MFA the supervisor calls
+        restart: :permanent,                    # :permanent | :transient | :temporary
+        shutdown: 5_000,                        # :brutal_kill | integer ms | :infinity
+        type: :worker                           # :worker | :supervisor
+      }
+      ```
+
+      `restart` decides what happens when the child exits:
+      - `:permanent` (default): always restarted, even after a `:normal` exit.
+      - `:transient`: restarted only after an **abnormal** exit; `:normal`, `:shutdown` and
+        `{:shutdown, term}` are considered successful. Use for processes that may legitimately
+        finish (per-session servers, one-off jobs).
+      - `:temporary`: never restarted; the exit is not even counted toward restart intensity.
+
+      `shutdown` decides how the supervisor stops the child: it sends `Process.exit(pid, :shutdown)`
+      and waits that many milliseconds for the child to exit (only meaningful if the child **traps
+      exits** and runs `terminate/2`), then kills it. `:brutal_kill` sends `:kill` immediately;
+      `:infinity` waits forever and is the default for `type: :supervisor` so a subtree can drain.
+
+      `use GenServer, restart: :transient, shutdown: 10_000` sets these in the generated
+      `child_spec/1`; `Supervisor.child_spec(spec_or_module, overrides)` tweaks one instance.
+      Restart intensity (`max_restarts: 3, max_seconds: 5` by default) bounds how often a
+      supervisor restarts children before it gives up and exits itself, escalating the failure.
+    answer: |
+      **Q:** A `:transient` GenServer returns `{:stop, :normal, state}` after finishing its job.
+      Is it restarted, and does the supervisor log an error?
+      **A:** No and no: `:normal` is a successful exit for a transient child, and only reasons
+      other than `:normal`/`:shutdown`/`{:shutdown, _}` produce error reports.
+    explanation: |
+      Follow-ups: "why is `shutdown: :infinity` discouraged for workers?" (a stuck worker blocks
+      application shutdown forever), and "what happens on restart intensity exhaustion?" (the
+      supervisor exits with `:shutdown` and its own parent applies *its* restart policy).
+    tags: [child_spec, restart, shutdown, supervisor]
+    source: https://hexdocs.pm/elixir/Supervisor.html
+
+  - slug: elixir-gen-registry-pubsub-dispatch
+    kind: theory
+    difficulty: middle
+    title: "Registry as a local pub/sub with duplicate keys and `dispatch/3`"
+    body: |
+      Besides naming processes, `Registry` with `keys: :duplicate` is a fast node-local pub/sub:
+
+      ```elixir
+      # in the supervision tree
+      {Registry, keys: :duplicate, name: PubSub, partitions: System.schedulers_online()}
+
+      # subscriber (runs in the subscribing process)
+      {:ok, _} = Registry.register(PubSub, "orders:42", nil)
+
+      # publisher
+      Registry.dispatch(PubSub, "orders:42", fn entries ->
+        for {pid, _value} <- entries, do: send(pid, {:order_updated, 42})
+      end)
+      ```
+
+      Properties worth knowing:
+      - `register/3` must be called by the subscribing process; the registry links a partition to
+        it and **removes the entry when it dies**, so there are no dangling subscriptions.
+      - `dispatch/3` runs the function in the **publisher's** process, once per partition holding
+        entries; it is not called at all when nobody is subscribed. With `parallel: true` the
+        partitions are processed concurrently.
+      - The value slot (`nil` above) can carry filters or metadata the publisher can use to skip
+        subscribers without extra lookups.
+      - It is local to one node. For cluster-wide pub/sub use `Phoenix.PubSub` (which itself uses
+        `:pg` or Redis) and keep `Registry` for per-node fan-out.
+      - `partitions` spread the ETS tables across schedulers; `{:duplicate, :key}` partitioning is
+        better when there are many keys with few subscribers each.
+      - `Registry.lookup/2` returns `[{pid, value}]` for unique registries (0 or 1 entry) and the
+        full list for duplicates; `Registry.select/2` supports match specs for richer queries.
+    answer: |
+      **Q:** A subscriber process crashes. Who unsubscribes it, and can `dispatch` still send to it?
+      **A:** The registry removes its keys automatically when it detects the exit; there is a tiny
+      window where `dispatch` may still see the pid, but `send` to a dead pid is harmless.
+    explanation: |
+      Follow-up: "why not keep subscriber pids in a GenServer's state?" (you would have to monitor
+      each one and handle `:DOWN` yourself, and every publish would serialise through that
+      process).
+    tags: [registry, pubsub, dispatch]
+    source: https://hexdocs.pm/elixir/Registry.html
+
+  - slug: elixir-gen-stop-and-sys-debugging
+    kind: theory
+    difficulty: middle
+    title: "Stopping and inspecting a GenServer: `GenServer.stop` and `:sys`"
+    body: |
+      **Stopping.** `GenServer.stop(server, reason \\ :normal, timeout \\ :infinity)` sends a system
+      message; the behaviour runs `terminate(reason, state)` and exits with `reason`. It is
+      synchronous (returns `:ok` once the process is gone) and works **without** `trap_exit`,
+      because the stop comes from inside the behaviour loop rather than from an exit signal. Reasons
+      other than `:normal`, `:shutdown`, `{:shutdown, _}` produce an error report. Prefer it over
+      `Process.exit(pid, :shutdown)` in scripts and tests when you want `terminate/2` to run.
+
+      From inside a callback, `{:stop, reason, state}` (or `{:stop, reason, reply, state}` from
+      `handle_call`) does the same.
+
+      **Inspecting.** The `:sys` module talks to any OTP behaviour through system messages:
+
+      ```elixir
+      :sys.get_state(pid)                     # current state term
+      :sys.replace_state(pid, &%{&1 | n: 0})  # mutate state in place (debug only)
+      :sys.get_status(pid)                    # status, parent, dictionary, formatted state
+      :sys.trace(pid, true)                   # print every message in/out to stdout
+      :sys.statistics(pid, true); :sys.statistics(pid, :get)  # reductions, messages in/out
+      :sys.suspend(pid) / :sys.resume(pid)
+      ```
+
+      These go through the mailbox, so they are also **barriers**: after `:sys.get_state` returns,
+      every earlier message has been processed. They are meant for debugging and tests; production
+      code should expose a proper API, and `format_status/1` can redact sensitive state in
+      `get_status` output and crash logs (but not in `get_state`).
+    answer: |
+      **Q:** Why does `GenServer.stop/1` run `terminate/2` even when the server does not trap exits,
+      while a supervisor shutdown does not?
+      **A:** `stop` is a request handled by the behaviour loop itself, which calls `terminate/2`
+      before exiting; a supervisor sends an exit **signal**, which kills a non-trapping process
+      before any callback can run.
+    explanation: |
+      Follow-up: "what does `:sys.trace` cost?" (it formats every message, so never leave it on in
+      production; prefer `:dbg`/`:recon_trace` with limits). Also mention `:observer` and
+      `Process.info/2` as complementary tools.
+    tags: [stop, sys, debugging, terminate]
+    source: https://www.erlang.org/doc/apps/stdlib/sys.html
+
+  - slug: elixir-gen-state-machine-inside-genserver
+    kind: theory
+    difficulty: middle
+    title: "A state machine inside a GenServer"
+    body: |
+      Many servers are really state machines: a connection is `:disconnected | :connecting |
+      :connected`, an order is `:pending | :paid | :shipped`. In a GenServer you encode the state
+      name in the state term and pattern match on it in the callback heads:
+
+      ```elixir
+      defmodule Conn do
+        use GenServer
+
+        def init(_), do: {:ok, {:disconnected, %{retries: 0}}}
+
+        def handle_call(:send, _from, {:connected, data}),    do: {:reply, :ok, {:connected, data}}
+        def handle_call(:send, _from, {status, _} = state),   do: {:reply, {:error, status}, state}
+
+        def handle_info(:connect, {:disconnected, data}) do
+          # ... try to connect ...
+          {:noreply, {:connecting, data}}
+        end
+        def handle_info({:connected, sock}, {:connecting, data}), do: {:noreply, {:connected, Map.put(data, :sock, sock)}}
+        def handle_info(:connect, state), do: {:noreply, state}  # ignore in other states
+      end
+      ```
+
+      Guidelines:
+      - Put the state name **first** in the tuple (or a `status` field in a struct) so every clause
+        can match on it; transitions are explicit in the return value.
+      - Add a catch-all clause per message that ignores or rejects it in states where it is not
+        expected; otherwise an out-of-order message crashes the server with `FunctionClauseError`.
+      - Timeouts per state are done with `Process.send_after` and a stored timer ref that you cancel
+        on transition.
+      - Events that should be handled *later* (e.g. `:send` while `:connecting`) have to be queued
+        in state manually.
+
+      When the number of states and per-state timers grows, or you need to **postpone** events
+      until the next state, `:gen_statem` provides all of this natively (state functions, state
+      timeouts, `postpone`, state enter callbacks) and is the better tool.
+    answer: |
+      **Q:** How do you handle a `:send` request that arrives while the connection is still
+      `:connecting`?
+      **A:** Either reply `{:error, :connecting}` immediately from a clause matching that state, or
+      store `from` in the state and reply with `GenServer.reply/2` once `:connected` is reached
+      (what `gen_statem`'s `postpone` does for you).
+    explanation: |
+      Interviewers use this to check that candidates match on state in function heads instead of
+      writing `case state.status do` inside one giant clause, and that they know when to graduate
+      to `gen_statem`.
+    tags: [state-machine, pattern-matching, gen_statem]
+    source: https://hexdocs.pm/elixir/GenServer.html
+
+  - slug: elixir-gen-state-size-gc-hibernate
+    kind: theory
+    difficulty: senior
+    title: "State size, garbage collection and `:hibernate` in a GenServer"
+    body: |
+      A GenServer's state lives on **its own heap**, and that heap is garbage collected
+      independently of every other process. The consequences:
+
+      - GC cost is proportional to the **live data** of that process. A server holding a 500 MB map
+        pays long pauses every time its heap is collected, and only that process is paused.
+        Keeping bulk data in ETS keeps the server's heap small and GC fast.
+      - Every `{:reply, big_term, state}` **copies** `big_term` into the caller. Returning a large
+        structure from a `call` is often more expensive than the work that produced it. Return ids,
+        slices, or let callers read from ETS.
+      - Messages received into the state are copied in too; `message_queue_data: :off_heap` (an
+        option to `GenServer.start_link` via `spawn_opt`) keeps queued messages off the heap so a
+        burst of messages does not inflate GC work.
+      - After a burst, the heap stays large until the next GC. Returning `:hibernate` as the last
+        element of a callback (`{:noreply, state, :hibernate}`), or starting with
+        `hibernate_after: 15_000`, forces a full GC, compacts the heap and suspends the process until
+        the next message; wake-up rebuilds the stack. Use it for many mostly-idle servers (sessions,
+        channels), not for hot ones: hibernation costs at least two GCs.
+      - Refc binaries referenced from the state are only released when this process GCs; a quiet
+        server can pin gigabytes. `:erlang.garbage_collect(pid)` or hibernation frees them.
+      - Monitor with `Process.info(pid, [:memory, :heap_size, :total_heap_size, :message_queue_len])`.
+
+      ```elixir
+      def handle_cast({:ingest, chunk}, state) do
+        state = process(chunk, state)
+        {:noreply, state, :hibernate}   # drop the garbage from `chunk` right away
+      end
+      ```
+    answer: |
+      **Q:** A node has 100k idle WebSocket channel processes and memory is high even though
+      message rates are low. What do you try first?
+      **A:** Hibernate them after inactivity (`hibernate_after`), which runs a full GC and shrinks
+      each heap to the minimum; and check that each process's state does not hold large terms or
+      sub-binaries that keep refc binaries alive.
+    explanation: |
+      Follow-up: "why is per-process GC a feature and not a bug?" (no stop-the-world pauses, GC
+      work is naturally spread over schedulers, and short-lived processes free memory wholesale on
+      exit with no GC at all).
+    tags: [gc, memory, hibernate]
+    source: https://www.erlang.org/doc/apps/stdlib/gen_server.html
+
+  - slug: elixir-gen-gen-statem-concept
+    kind: open
+    difficulty: senior
+    title: "When would you use `:gen_statem` instead of a GenServer?"
+    body: |
+      Explain what `:gen_statem` offers over a GenServer with a `status` field, and sketch how a
+      state-function callback module looks.
+    answer: |
+      - `:gen_statem` is the OTP behaviour for state machines (replacement for `gen_fsm`). The
+        callback is driven by **(state, event)** pairs instead of by message kind.
+      - `callback_mode/0` returns `:state_functions` (one function per state, state must be an
+        atom: `connected(event_type, event, data)`) or `:handle_event_function` (one
+        `handle_event/4` for any state term). Adding `:state_enter` makes the engine call the
+        state function with `:enter` on every transition, ideal for logging or arming timers.
+      - Built-in **timeouts** per state: `{:state_timeout, ms, msg}` is cancelled automatically on
+        state change; `{{:timeout, name}, ms, msg}` are named generic timers; event timeouts
+        reset on any event. No manual `send_after` bookkeeping.
+      - **Postpone**: returning `{:next_state, s, data, [:postpone]}` keeps the event in a queue that
+        is retried after the next state change, so "handle `:send` once connected" is declarative.
+      - **Insert events** (`{:next_event, :internal, msg}`) to drive multi-step transitions, and
+        `{:reply, from, value}` actions to answer calls from anywhere.
+      - Return shapes: `{:next_state, state, data, actions}`, `{:keep_state, data, actions}`,
+        `{:repeat_state, ...}`, `{:stop, reason}`.
+      - Prefer it when there are more than two or three states with different valid events, when
+        events must be deferred, or when per-state timeouts matter: protocol clients
+        (connection handshakes), rate limiters with windows, order lifecycles. For a server with
+        one dominant state, a GenServer is simpler and more familiar to the team.
+      - It is Erlang (`:gen_statem`), used from Elixir with `@behaviour :gen_statem`; there is no
+        `use GenStatem` in the standard library, so you write `child_spec/1` yourself.
+    explanation: |
+      Follow-up: "can a GenServer postpone messages?" Not without re-sending them to itself or
+      storing them in state, which loses ordering guarantees; that is exactly the gap `gen_statem`
+      closes. One difference worth remembering: `:gen_statem.call/2` defaults to an `:infinity`
+      timeout, unlike `GenServer.call/2` which defaults to 5 s.
+    tags: [gen_statem, state-machine]
+    source: https://www.erlang.org/doc/apps/stdlib/gen_statem.html
+
+  - slug: elixir-gen-genstage-broadway-backpressure
+    kind: open
+    difficulty: senior
+    title: "What problem do GenStage and Broadway solve that a GenServer pipeline does not?"
+    body: |
+      You are building a pipeline that reads from a queue, enriches each message with an API call
+      and writes to a database. Why would you reach for GenStage or Broadway instead of chaining
+      GenServers with casts?
+    answer: |
+      - A chain of GenServers passing work with `cast` has **no backpressure**: a slow stage's
+        mailbox grows without bound while fast stages keep pushing. With `call` the producer blocks
+        on one consumer at a time, which is backpressure but no parallelism.
+      - **GenStage** inverts the flow: stages are `:producer`, `:producer_consumer` or `:consumer`;
+        **consumers ask for demand** (`max_demand`, refilled when outstanding demand falls to
+        `min_demand`) and a producer may only emit as many events as were requested
+        (`handle_demand/2`). Demand flows upstream, events flow downstream, so the slowest stage
+        governs the whole pipeline and nothing buffers unboundedly.
+      - Dispatchers (`DemandDispatcher`, `BroadcastDispatcher`, `PartitionDispatcher`) decide how
+        events are split across multiple consumers, giving you parallelism per stage.
+      - **Broadway** is a batteries-included pipeline on top of GenStage: pluggable producers
+        (SQS, RabbitMQ, Kafka, Google Pub/Sub), `handle_message/3` processors with configurable
+        concurrency, `handle_batch/4` batchers (group by size/timeout, e.g. bulk DB inserts),
+        automatic **acknowledgements** back to the source, rate limiting, graceful draining on
+        shutdown and failure handling (`handle_failed/2`).
+      - `Flow` is the data-parallel API (map/reduce/partition) over GenStage for in-memory or
+        file-based bulk processing.
+      - For the example: a Broadway pipeline with an SQS producer, processors doing the API call
+        with `concurrency: 20`, and a batcher writing 100 rows per insert; failures are acked or
+        re-queued per message.
+    explanation: |
+      Interviewers want "demand flows upstream" in some form, and the distinction between
+      GenStage (the primitive) and Broadway (the opinionated pipeline with acks and batching). A
+      nice extra: `Task.async_stream` with `max_concurrency` is a one-stage, fixed-window version
+      of the same idea.
+    tags: [genstage, broadway, backpressure]
+    source: https://hexdocs.pm/gen_stage/GenStage.html
+
+  - slug: elixir-gen-long-work-async-nolink
+    kind: open
+    difficulty: senior
+    title: "A `handle_call` makes a slow HTTP request. Why is that bad and how do you fix it?"
+    body: |
+      ```elixir
+      def handle_call({:fetch, url}, _from, state) do
+        {:reply, HTTP.get(url), state}
+      end
+      ```
+
+      Explain the consequences for other callers and show how you would restructure it with
+      `Task.Supervisor.async_nolink/2`.
+    answer: |
+      - While the server waits on the HTTP call it processes **nothing else**: every other
+        `call`/`cast`/`handle_info` queues up, callers hit their 5 s timeout and exit, and a single
+        slow upstream degrades every feature that touches this server. Timers and `:DOWN`
+        messages are also delayed.
+      - Ask first whether the request needs the server at all: if it only reads state, do the HTTP
+        call in the **caller** and send the result in; the server should own state, not I/O.
+      - Otherwise start the work in a task that is **not linked** to the server:
+        `task = Task.Supervisor.async_nolink(MyApp.TaskSup, fn -> HTTP.get(url) end)`, store
+        `%{task.ref => from}` in the state and return `{:noreply, state}` so the caller stays
+        blocked but the server is free.
+      - Handle the outcome in `handle_info`: `{ref, result}` on success, where you
+        `Process.demonitor(ref, [:flush])`, pop `from` and `GenServer.reply(from, result)`; and
+        `{:DOWN, ref, :process, _pid, reason}` on failure, where you reply `{:error, reason}`.
+      - `async_nolink` (not `Task.async`) because a crashing task must not take the server down;
+        the `Task.Supervisor` gives you a place in the tree and controlled shutdown.
+      - Bound concurrency: track in-flight tasks and reject or queue when above a limit; give the
+        client a longer `call` timeout or make the API asynchronous (`cast` + callback message).
+      - If many servers need this, factor the I/O into a pool (`Finch`) and keep the GenServer as
+        a thin coordinator.
+    explanation: |
+      Follow-up: "what if the caller times out before the task finishes?" The late
+      `GenServer.reply` is dropped by the alias mechanism on OTP 24+, but the server should still
+      clean up the `from` entry; consider passing the caller's deadline to the task. Also discuss
+      `handle_continue` versus a task: `continue` still blocks the server, so it is not a fix here.
+    tags: [task-supervisor, async_nolink, handle_info]
+    source: https://hexdocs.pm/elixir/Task.Supervisor.html
+
+  - slug: elixir-gen-terminate-pitfalls
+    kind: open
+    difficulty: senior
+    title: "Why should you not rely on `terminate/2` for critical cleanup?"
+    body: |
+      A team puts "flush buffered events to Kafka" in `terminate/2` and loses data during deploys.
+      List the ways `terminate/2` can be skipped and describe a robust design.
+    answer: |
+      - **Not trapping exits**: the supervisor's `:shutdown` signal kills the process instantly;
+        `terminate/2` only runs for externally caused exits when `Process.flag(:trap_exit, true)`
+        was set in `init/1`.
+      - **Shutdown timeout**: even when trapping, the child spec's `shutdown` (5000 ms default)
+        bounds the cleanup; if the mailbox is deep or the flush is slow, the supervisor sends
+        `:kill` and the callback is cut short. `:brutal_kill` skips it entirely.
+      - **`:kill` and VM death**: `Process.exit(pid, :kill)`, OOM, `kill -9`, power loss: no
+        callback ever runs.
+      - **Trapping exits has side effects**: linked processes crashing now arrive as `{:EXIT, ...}`
+        messages in `handle_info`, which you must handle or the server will not die with them.
+      - Robust design: make the state **durable incrementally** (flush on size/time thresholds via
+        `Process.send_after`, write-ahead to ETS owned by another process or to disk, or push
+        directly without buffering); treat `terminate/2` as best-effort.
+      - Put cleanup that *must* happen in another process that **monitors** this one and reacts to
+        `:DOWN` (e.g. a janitor process that releases locks or marks a session offline). Monitors
+        fire for every exit reason, including `:killed`.
+      - For deploys, size `shutdown` generously and order children so the flusher stops after its
+        producers (children stop in reverse start order), and use release `prep_stop` for
+        app-level draining.
+    explanation: |
+      A strong candidate mentions reverse shutdown order and the shutdown timeout, not just
+      `trap_exit`. Follow-up: "is `terminate/2` called when `init/1` returns `{:stop, reason}`?"
+      (no) and "when a callback raises?" (yes, with the exception as reason, since the exit
+      originates inside the behaviour).
+    tags: [terminate, trap_exit, shutdown]
+    source: https://elixirforum.com/t/genserver-terminate-2-not-called-despite-trap-exit-true/45827

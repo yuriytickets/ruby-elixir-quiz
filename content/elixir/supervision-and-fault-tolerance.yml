@@ -1,0 +1,1514 @@
+language: elixir
+topic: supervision-and-fault-tolerance
+items:
+  - slug: elixir-sup-let-it-crash-meaning
+    kind: open
+    difficulty: junior
+    title: "What does \"let it crash\" actually mean?"
+    body: |
+      An interviewer asks: *"Elixir people say 'let it crash'. Does that mean you don't handle errors?
+      What does the phrase really mean, and why does it work on the BEAM?"*
+    answer: |
+      - It does **not** mean "ignore errors". It means: handle the errors you expect and know how to recover from
+        in your code, and let everything *unexpected* terminate the process instead of writing defensive code for it.
+      - A crashed process is restarted by its supervisor **from a known-good initial state**, which is a much safer
+        recovery than trying to keep running with possibly corrupted state.
+      - It works because BEAM processes are isolated: a crash cannot corrupt another process's heap, and links/monitors
+        make failure observable instead of silent.
+      - Error-handling policy (what to restart, how often) lives in supervisors, separated from business logic, so the
+        business code stays small and readable.
+      - Caveat: restarting does not fix external causes (DB down, bad config), so you still need backoff, circuit breakers
+        and sane restart limits.
+    explanation: |
+      Follow-ups interviewers like: "Give an example of an error you *would* rescue" (a user-facing validation failure,
+      a `File.read` returning `{:error, :enoent}` you can report back); "What happens if the process keeps crashing?"
+      (restart intensity is exceeded, the supervisor itself exits and the failure escalates up the tree).
+      A common weak answer is "Elixir has no exceptions", which is wrong: `raise`/`rescue` exist, they are just used
+      sparingly.
+    tags: [let-it-crash, philosophy]
+    source: https://elixirforum.com/t/understanding-the-advantages-of-let-it-crash-term/9748/16
+
+  - slug: elixir-sup-one-for-one-semantics
+    kind: mcq
+    difficulty: junior
+    title: "Which children restart under :one_for_one?"
+    body: |
+      A supervisor is started with `strategy: :one_for_one` and children `[A, B, C]` (in that order).
+      Child `B` crashes. What does the supervisor do?
+    choices:
+      - "Restarts B only; A and C keep running untouched"
+      - "Terminates and restarts B and C (everything started after B)"
+      - "Terminates and restarts A, B and C"
+      - "Restarts B and, if it crashes again, restarts the whole group"
+    answer: 0
+    explanation: |
+      `:one_for_one` treats children as independent: only the crashed child is restarted. Restarting `B` and `C`
+      is `:rest_for_one`; restarting all three is `:one_for_all`. "Restart the whole group on a second crash" is not a real strategy; escalation
+      happens only when restart intensity (`max_restarts`/`max_seconds`) is exceeded.
+    tags: [strategy, one_for_one]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-rest-for-one-when
+    kind: open
+    difficulty: middle
+    title: "When would you choose :rest_for_one over :one_for_one?"
+    body: |
+      Explain what `:rest_for_one` does and give a concrete example from a real system where it is the right choice.
+      Why is child **order** important with this strategy?
+    answer: |
+      - On a crash of child N, the supervisor terminates children N+1..last (in reverse start order), then restarts
+        N and the terminated ones in start order. Children *before* N are untouched.
+      - Use it when later children depend on earlier ones: e.g. `[ConnectionManager, Cache, Consumer]` where the
+        cache holds state derived from the connection and the consumer subscribes to the cache. If the connection
+        manager restarts with fresh state, the dependents' state is stale, so they must restart too.
+      - Order is the dependency graph: put the thing others depend on first. Getting the order wrong either
+        restarts too much (dependency placed last) or leaves dependents holding references to a dead process.
+      - It is cheaper than `:one_for_all` because the independent "earlier" children keep their state.
+    explanation: |
+      Typical follow-up: "What about `Registry`?" Place a `Registry` before the processes that register in it;
+      with `:rest_for_one` a registry crash restarts everything that registered, which is exactly what you want
+      because their names are gone. Another follow-up: "How do you avoid needing `:rest_for_one`?" Make dependents
+      look things up lazily (via names/ETS) so they survive the dependency's restart, then `:one_for_one` suffices.
+    tags: [strategy, rest_for_one, design]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-one-for-all-use-case
+    kind: mcq
+    difficulty: middle
+    title: "When is :one_for_all the right strategy?"
+    body: |
+      Which situation is the best fit for `strategy: :one_for_all`?
+    choices:
+      - "Children are independent workers that handle unrelated TCP connections"
+      - "You want to restart as little as possible to minimize downtime"
+      - "Children are started dynamically at runtime from user requests"
+      - "Children share in-memory state that is only consistent when they all start from scratch together"
+    answer: 3
+    explanation: |
+      `:one_for_all` terminates every child and restarts them all when any one crashes. That is only justified when
+      the children form a unit whose combined state must be rebuilt together (e.g. a parser and the process holding
+      its parsed tables). Independent workers want `:one_for_one`; dynamic children need a `DynamicSupervisor`
+      (which only supports `:one_for_one`); "restart as little as possible" is the opposite of this strategy.
+    tags: [strategy, one_for_all]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-max-restarts-escalation
+    kind: mcq
+    difficulty: middle
+    title: "What happens when max_restarts is exceeded?"
+    body: |
+      A supervisor uses the defaults `max_restarts: 3, max_seconds: 5`. One child crashes four times within two
+      seconds. What happens?
+    choices:
+      - "The supervisor stops restarting that child but keeps running the others"
+      - "The supervisor logs a warning and doubles the restart delay (exponential backoff)"
+      - "The supervisor terminates all its children and exits with reason :shutdown, escalating to its own supervisor"
+      - "The child is marked :restarting and retried after max_seconds elapse"
+    answer: 2
+    explanation: |
+      Restart intensity is a tree-wide safety valve: more than `max_restarts` restarts in `max_seconds` means
+      "restarting is not fixing this", so the supervisor gives up, shuts down every child and exits with
+      `:shutdown`. Its parent then applies *its* strategy (restarting the whole subtree if the spec is
+      `:permanent`), and the failure can escalate all the way to the application root, taking the node down.
+      OTP supervisors have no built-in backoff; `:restarting` appears only transiently in
+      `which_children` for children currently being restarted.
+    tags: [max_restarts, escalation]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-child-spec-fields
+    kind: theory
+    difficulty: junior
+    title: "Anatomy of a child spec"
+    body: |
+      A child specification is a plain map that tells a supervisor how to start, stop and restart a child:
+
+      ```elixir
+      %{
+        id: MyWorker,                            # unique within this supervisor (required)
+        start: {MyWorker, :start_link, [arg]},   # MFA; must return {:ok, pid} | :ignore | {:error, _} (required)
+        restart: :permanent,                     # :permanent (default) | :transient | :temporary
+        shutdown: 5_000,                         # ms to wait after exit(:shutdown) | :brutal_kill | :infinity
+        type: :worker                            # :worker (default) | :supervisor
+      }
+      ```
+
+      - `restart` decides *whether* to restart: `:permanent` always, `:transient` only on abnormal exit
+        (anything but `:normal`, `:shutdown`, `{:shutdown, _}`), `:temporary` never.
+      - `shutdown` decides *how* to stop: send `exit(pid, :shutdown)`, wait up to N ms, then `:kill`.
+        Defaults: `5_000` for workers, `:infinity` for supervisors (so a subtree can drain its own children).
+      - `type: :supervisor` only matters for shutdown defaults and tooling; it does not change strategy.
+
+      You rarely write the map by hand: `use GenServer`/`use Supervisor`/`use Agent` inject `child_spec/1`, so
+      `{MyWorker, arg}` or `MyWorker` in a children list expands to it. `Supervisor.child_spec/2` overrides fields.
+    answer: |
+      **Q:** A worker spec has `restart: :transient`. It calls `GenServer.stop(pid, {:shutdown, :done})`. Is it restarted?
+      **A:** No. `{:shutdown, _}` counts as a normal exit for `:transient`, so it is removed, not restarted, and no
+      crash report is logged.
+    explanation: |
+      Interviewers probe the `:transient` subtlety a lot: it is the right setting for "run until done, but retry on
+      failure" workers. They also ask what happens with `shutdown: :brutal_kill` (no `terminate/2`, instant kill) and
+      why supervisors default to `:infinity` (otherwise a parent could kill a subtree mid-cleanup).
+    tags: [child_spec, restart, shutdown]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-transient-vs-temporary
+    kind: mcq
+    difficulty: junior
+    title: "Which restart value restarts only on abnormal exit?"
+    body: |
+      You have a worker that imports a file and should exit when done, but should be retried if it crashes
+      halfway. Which `restart:` value in its child spec expresses that?
+    choices:
+      - ":permanent"
+      - ":temporary"
+      - ":transient"
+      - ":on_error"
+    answer: 2
+    explanation: |
+      `:transient` restarts a child only when it exits with a reason other than `:normal`, `:shutdown` or
+      `{:shutdown, term}`. `:permanent` would restart it even after a successful `:normal` exit, looping forever;
+      `:temporary` never restarts, and its spec is deleted when it terminates. `:on_error` does not exist.
+    tags: [child_spec, restart]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-start-and-shutdown-order
+    kind: mcq
+    difficulty: junior
+    title: "In what order are children started and stopped?"
+    body: |
+      A `Supervisor` has children `[Repo, Cache, Endpoint]`. When the application shuts down normally, in what
+      order are the children terminated, and why that order?
+    choices:
+      - "Endpoint, Cache, Repo: reverse start order, so dependents stop before the things they depend on"
+      - "Repo, Cache, Endpoint: the same order they were started, so resources are freed as early as possible"
+      - "All three simultaneously, because shutdown sends exit signals in parallel"
+      - "Random order determined by which process responds to exit(:shutdown) first"
+    answer: 0
+    explanation: |
+      Children start in list order and stop in reverse order, one at a time: the supervisor sends `exit(:shutdown)`,
+      waits up to the child's `shutdown` timeout, then moves to the previous child. That way the `Endpoint` stops
+      accepting requests before the `Repo` it needs is gone. This is also why `:rest_for_one` works: the list order
+      is a dependency order.
+    tags: [shutdown, order]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-build-one-for-one-restart
+    kind: code
+    difficulty: middle
+    title: "Build a supervisor and prove a crashed child is restarted"
+    body: |
+      Implement module `PairSup` with:
+
+      - `start_link/0`: starts a `Supervisor` (linked to the caller, strategy `:one_for_one`) with two `Agent`
+        children holding the integer `0`. Their child ids must be `:left` and `:right`. Return `{:ok, sup_pid}`.
+      - `pid_of(sup, id)`: returns the current pid of the child with that id using `Supervisor.which_children/1`.
+
+      The two children are the *same module* (`Agent`), so you must give them distinct ids with
+      `Supervisor.child_spec/2`.
+
+      ```elixir
+      {:ok, sup} = PairSup.start_link()
+      PairSup.pid_of(sup, :left)   #=> #PID<...>
+      ```
+    starter_code: |
+      defmodule PairSup do
+        def start_link do
+          # TODO: two Agent children (ids :left and :right), strategy :one_for_one
+        end
+
+        def pid_of(sup, id) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PairSupTest do
+        use ExUnit.Case
+
+        test "starts two agents with distinct ids" do
+          {:ok, sup} = PairSup.start_link()
+          left = PairSup.pid_of(sup, :left)
+          right = PairSup.pid_of(sup, :right)
+          assert is_pid(left) and is_pid(right)
+          assert left != right
+          assert Agent.get(left, & &1) == 0
+          assert %{active: 2, specs: 2} = Supervisor.count_children(sup)
+        end
+
+        test "a killed child is restarted with a new pid, sibling untouched" do
+          {:ok, sup} = PairSup.start_link()
+          left = PairSup.pid_of(sup, :left)
+          right = PairSup.pid_of(sup, :right)
+          ref = Process.monitor(left)
+          Process.exit(left, :kill)
+          assert_receive {:DOWN, ^ref, :process, ^left, :killed}
+          new_left = PairSup.pid_of(sup, :left)
+          assert is_pid(new_left) and new_left != left
+          assert PairSup.pid_of(sup, :right) == right
+          assert Agent.get(new_left, & &1) == 0
+        end
+      end
+    solution: |
+      defmodule PairSup do
+        def start_link do
+          children = [
+            Supervisor.child_spec({Agent, fn -> 0 end}, id: :left),
+            Supervisor.child_spec({Agent, fn -> 0 end}, id: :right)
+          ]
+
+          Supervisor.start_link(children, strategy: :one_for_one)
+        end
+
+        def pid_of(sup, id) do
+          {^id, pid, _type, _mods} =
+            sup |> Supervisor.which_children() |> List.keyfind(id, 0)
+
+          pid
+        end
+      end
+    explanation: |
+      Two children of the same module collide on `id` (the default id is the module name), so
+      `Supervisor.child_spec/2` with an `id:` override is the idiomatic fix. `which_children/1` returns
+      `{id, pid | :restarting | :undefined, type, modules}` tuples. The restarted agent holds `0` again: a restart
+      means fresh initial state, which is the whole point of "let it crash".
+    tags: [supervisor, child_spec, which_children]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-supervisor-init-module-based
+    kind: open
+    difficulty: middle
+    title: "Module-based supervisor vs Supervisor.start_link(children, opts)"
+    body: |
+      Elixir lets you start a supervisor inline with `Supervisor.start_link(children, strategy: ...)` or define a
+      module with `use Supervisor` and an `init/1` that calls `Supervisor.init/2`. When do you pick each, and what
+      does the module-based form give you?
+    answer: |
+      - Inline `Supervisor.start_link/2` is fine for the application root and quick trees: fewer files, nothing to name.
+      - Module-based (`use Supervisor`, `start_link/1`, `init/1` returning `Supervisor.init(children, strategy: ...)`)
+        is better when the supervisor is itself a child of another supervisor: it gets an automatic `child_spec/1`
+        with `type: :supervisor` and `shutdown: :infinity`, so you can list it as `{MySup, arg}`.
+      - The module can compute children from `init_arg` (configuration, number of partitions), be named, and expose
+        helper functions (`start_worker/1`) next to the tree definition.
+      - `init/1` runs inside the supervisor process, so it must not block (no network calls); it only returns specs.
+      - Either way the semantics are identical; the difference is packaging and reusability.
+    explanation: |
+      Follow-up: "What does `use Supervisor` inject?" A `child_spec/1` with `type: :supervisor`, `shutdown: :infinity`,
+      `restart: :permanent` and `start: {__MODULE__, :start_link, [arg]}`. Candidates who return a bare children list
+      from `init/1` (instead of `Supervisor.init/2`) get a `{:bad_return, ...}` error, a common mistake.
+    tags: [module-based, Supervisor.init]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-dynamic-supervisor-pool
+    kind: code
+    difficulty: middle
+    title: "A DynamicSupervisor-backed worker pool"
+    body: |
+      Implement module `AgentPool` as a `DynamicSupervisor` wrapper:
+
+      - `start_link/0`: starts a `DynamicSupervisor` registered under the name `AgentPool`, `strategy: :one_for_one`.
+      - `start_worker(initial)`: starts an `Agent` child holding `initial` under the supervisor with
+        `restart: :temporary` and returns `{:ok, pid}`.
+      - `stop_worker(pid)`: terminates that child; returns `:ok`.
+      - `count/0`: number of currently running workers (integer).
+
+      ```elixir
+      {:ok, _} = AgentPool.start_link()
+      {:ok, w} = AgentPool.start_worker(5)
+      Agent.get(w, & &1)   #=> 5
+      AgentPool.count()    #=> 1
+      ```
+    starter_code: |
+      defmodule AgentPool do
+        def start_link do
+          # TODO: DynamicSupervisor named AgentPool
+        end
+
+        def start_worker(initial) do
+          # TODO: temporary Agent child
+        end
+
+        def stop_worker(pid) do
+          # TODO
+        end
+
+        def count do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AgentPoolTest do
+        use ExUnit.Case
+
+        test "starts, counts and stops workers" do
+          {:ok, _sup} = AgentPool.start_link()
+          assert AgentPool.count() == 0
+          {:ok, a} = AgentPool.start_worker(1)
+          {:ok, b} = AgentPool.start_worker(2)
+          assert Agent.get(a, & &1) == 1
+          assert Agent.get(b, & &1) == 2
+          assert AgentPool.count() == 2
+          assert AgentPool.stop_worker(a) == :ok
+          assert AgentPool.count() == 1
+          assert AgentPool.stop_worker(a) == {:error, :not_found}
+        end
+
+        test "temporary workers are not restarted after a crash" do
+          {:ok, _sup} = AgentPool.start_link()
+          {:ok, w} = AgentPool.start_worker(:x)
+          ref = Process.monitor(w)
+          Process.exit(w, :kill)
+          assert_receive {:DOWN, ^ref, :process, ^w, :killed}
+          assert AgentPool.count() == 0
+        end
+      end
+    solution: |
+      defmodule AgentPool do
+        def start_link do
+          DynamicSupervisor.start_link(name: __MODULE__, strategy: :one_for_one)
+        end
+
+        def start_worker(initial) do
+          spec = Supervisor.child_spec({Agent, fn -> initial end}, restart: :temporary)
+          DynamicSupervisor.start_child(__MODULE__, spec)
+        end
+
+        def stop_worker(pid) do
+          DynamicSupervisor.terminate_child(__MODULE__, pid)
+        end
+
+        def count do
+          DynamicSupervisor.count_children(__MODULE__).active
+        end
+      end
+    explanation: |
+      A `DynamicSupervisor` starts with no children; `start_child/2` adds them at runtime and only `:one_for_one`
+      is supported because dynamic children are by definition independent. Children are addressed by pid, not id
+      (the spec's `id` is ignored). `terminate_child/2` returns `{:error, :not_found}` for an unknown pid, which the
+      first test relies on. With `restart: :temporary` a crashed worker simply disappears; use `:transient` if a
+      crashed worker should be retried.
+    tags: [DynamicSupervisor, pool]
+    source: https://elixir.hexdocs.pm/DynamicSupervisor.html
+
+  - slug: elixir-sup-partition-supervisor-purpose
+    kind: mcq
+    difficulty: senior
+    title: "What problem does PartitionSupervisor solve?"
+    body: |
+      Elixir 1.14 added `PartitionSupervisor`. Which statement best describes why you would put a
+      `DynamicSupervisor` under it?
+    choices:
+      - "To allow the DynamicSupervisor to use :rest_for_one for its dynamic children"
+      - "To persist the list of dynamic children across restarts so they are re-created automatically"
+      - "To spread the children across nodes in a cluster using consistent hashing"
+      - "To run N copies of the DynamicSupervisor (by default one per scheduler) and route start_child calls by key, removing the single-process bottleneck"
+    answer: 3
+    explanation: |
+      A single `DynamicSupervisor` is one process, so every `start_child` is serialized through its mailbox; under
+      heavy churn (thousands of starts per second) it becomes a bottleneck. `PartitionSupervisor` starts N instances
+      of a child spec and lets you address one via `{:via, PartitionSupervisor, {name, key}}`, where the key (often
+      `self()`) picks a partition. It is node-local, does not change strategies, and does not persist children.
+      Measure first: if your hot path goes through `Registry` lookups rather than the supervisor, partitioning the
+      supervisor will not help.
+    tags: [PartitionSupervisor, scalability]
+    source: https://elixir.hexdocs.pm/PartitionSupervisor.html
+
+  - slug: elixir-sup-task-async-nolink-wrapper
+    kind: code
+    difficulty: middle
+    title: "Run untrusted work without crashing the caller"
+    body: |
+      Implement `SafeRun.run(sup, fun, timeout \\ 1_000)` where `sup` is a running `Task.Supervisor`.
+      Run `fun` in a supervised task that is **not linked** to the caller and return:
+
+      - `{:ok, result}` when the function returns normally,
+      - `{:error, :crashed}` when it raises or exits,
+      - `{:error, :timeout}` when it does not finish within `timeout` ms (the task must be shut down).
+
+      ```elixir
+      {:ok, sup} = Task.Supervisor.start_link()
+      SafeRun.run(sup, fn -> 1 + 1 end)             #=> {:ok, 2}
+      SafeRun.run(sup, fn -> raise "boom" end)      #=> {:error, :crashed}
+      ```
+    starter_code: |
+      defmodule SafeRun do
+        def run(sup, fun, timeout \\ 1_000) do
+          # TODO: Task.Supervisor.async_nolink + Task.yield/Task.shutdown
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SafeRunTest do
+        use ExUnit.Case
+
+        setup do
+          {:ok, sup} = Task.Supervisor.start_link()
+          %{sup: sup}
+        end
+
+        test "returns the result", %{sup: sup} do
+          assert SafeRun.run(sup, fn -> :math.pow(2, 10) end) == {:ok, 1024.0}
+        end
+
+        test "a raise does not crash the caller", %{sup: sup} do
+          assert SafeRun.run(sup, fn -> raise "boom" end) == {:error, :crashed}
+          assert Process.alive?(self())
+        end
+
+        test "an exit does not crash the caller", %{sup: sup} do
+          assert SafeRun.run(sup, fn -> exit(:bad) end) == {:error, :crashed}
+        end
+
+        test "times out and kills the task", %{sup: sup} do
+          parent = self()
+          result = SafeRun.run(sup, fn -> send(parent, {:task, self()}); Process.sleep(:infinity) end, 20)
+          assert result == {:error, :timeout}
+          assert_receive {:task, task_pid}
+          ref = Process.monitor(task_pid)
+          assert_receive {:DOWN, ^ref, :process, ^task_pid, _}
+          assert Task.Supervisor.children(sup) == []
+        end
+      end
+    solution: |
+      defmodule SafeRun do
+        def run(sup, fun, timeout \\ 1_000) do
+          task = Task.Supervisor.async_nolink(sup, fun)
+
+          case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+            {:ok, result} -> {:ok, result}
+            {:exit, _reason} -> {:error, :crashed}
+            nil -> {:error, :timeout}
+          end
+        end
+      end
+    explanation: |
+      `Task.async/1` links the task to the caller, so a raise in the task takes the caller down (unless it traps
+      exits). `Task.Supervisor.async_nolink/2` only monitors, so the caller gets `{:exit, reason}` from `Task.yield/2`
+      instead of dying. `Task.yield/2` returns `nil` on timeout, in which case `Task.shutdown/2` kills the task and
+      returns any reply that raced in. This `yield || shutdown` idiom is straight from the `Task` docs.
+    tags: [Task.Supervisor, async_nolink, isolation]
+    source: https://elixir.hexdocs.pm/Task.Supervisor.html
+
+  - slug: elixir-sup-task-async-crashes-caller
+    kind: open
+    difficulty: middle
+    title: "Task.async vs Task.Supervisor.async_nolink vs start_child"
+    body: |
+      Compare `Task.async/1`, `Task.Supervisor.async_nolink/2` and `Task.Supervisor.start_child/2`. For each:
+      who is linked to whom, what happens on a crash, and when would you pick it?
+    answer: |
+      - `Task.async/1`: spawns a task **linked** to the caller and monitored. A crash in either kills the other.
+        Use it for "this work is part of my computation and I cannot proceed without it" (fan-out then `await`).
+        You must `await`/`yield` it; the reply is always sent.
+      - `Task.Supervisor.async_nolink/2`: task runs under a `Task.Supervisor`, is **not linked** to the caller, only
+        monitored. On a crash the caller gets a `:DOWN` message / `{:exit, reason}` from `yield`, and keeps running.
+        Use it when the caller must survive failures (a GenServer offloading work, calling flaky external APIs).
+      - `Task.Supervisor.start_child/2`: fire-and-forget, linked only to the supervisor, no reply. Use it for side
+        effects (send an email, write a log) where nobody waits for the result; `restart: :temporary` by default,
+        can be `:transient` to retry on crash.
+      - All supervised variants get a clean shutdown when the tree stops, unlike a bare `Task.start/1`.
+      - `Task.async` crashes propagate because the whole point is that the caller is responsible for the task's
+        outcome; `async_nolink` moves that responsibility to the supervisor and the `:DOWN` handling.
+    explanation: |
+      Follow-ups: "What happens if you call `Task.async` inside a GenServer and the task crashes?" The GenServer
+      crashes too, and its supervisor restarts it, losing its state; that is the classic motivation for
+      `async_nolink` plus `handle_info({ref, result}, state)` and `handle_info({:DOWN, ref, ...}, state)`.
+      "What does `Task.await` do on timeout?" It exits the caller with `{:timeout, ...}`, killing a linked task.
+    tags: [Task, async_nolink, links]
+    source: https://elixir.hexdocs.pm/Task.html
+
+  - slug: elixir-sup-trap-exit-terminate
+    kind: theory
+    difficulty: middle
+    title: "When does terminate/2 run?"
+    body: |
+      `terminate/2` is **not** a reliable destructor. It runs only when the GenServer process itself decides to
+      exit *in a controlled way*:
+
+      - a callback returns `{:stop, reason, state}`, raises, or returns a bad value;
+      - the parent supervisor sends `exit(pid, :shutdown)` **and** the process traps exits.
+
+      Without `Process.flag(:trap_exit, true)` an incoming exit signal from the supervisor kills the process
+      immediately; `terminate/2` never runs. `shutdown: :brutal_kill` skips it unconditionally, and an external
+      `Process.exit(pid, :kill)` cannot be trapped at all.
+
+      ```elixir
+      def init(arg) do
+        Process.flag(:trap_exit, true)   # now exit(:shutdown) from the supervisor becomes a message
+        {:ok, open_resources(arg)}
+      end
+
+      def terminate(_reason, state), do: close_resources(state)
+      ```
+
+      Trapping exits also means `{:EXIT, pid, reason}` messages from linked processes land in `handle_info/2`
+      instead of crashing you, so you must handle them (or you silently swallow failures). The rule from the
+      docs: if cleanup *must* happen, do it from another process with a monitor (`Process.monitor/1` + `:DOWN`)
+      rather than relying on `terminate/2`.
+    answer: |
+      **Q:** A GenServer without `trap_exit` holds a file handle and is stopped by its supervisor during
+      deployment. Does `terminate/2` close the file?
+      **A:** No. The `:shutdown` exit signal kills it instantly, so `terminate/2` is skipped. The file handle is
+      cleaned up only because ports/files are tied to the owning process; for anything else, trap exits or use
+      a monitor in another process.
+    explanation: |
+      Interviewers then ask: "Why not always trap exits?" Because it changes link semantics: crashes of linked
+      processes (e.g. a `Task.async`) become messages you must handle, and a forgotten `:EXIT` clause means a
+      silent failure. Trap exits deliberately, in processes that own external resources.
+    tags: [terminate, trap_exit, GenServer]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-sup-shutdown-reason-not-logged
+    kind: mcq
+    difficulty: middle
+    title: "Which exit reasons are treated as \"clean\"?"
+    body: |
+      A `:transient` GenServer stops with `{:stop, {:shutdown, :done}, state}`. Which statement is correct?
+    choices:
+      - "It is restarted and a crash report is logged, because the reason is not :normal"
+      - "It is not restarted and nothing is logged, because {:shutdown, _} counts as a clean exit like :normal and :shutdown"
+      - "It is not restarted, but Logger emits an error report with the reason"
+      - "The supervisor exits too, because only :normal is allowed from a child"
+    answer: 1
+    explanation: |
+      Three reasons are "clean": `:normal`, `:shutdown` and `{:shutdown, term}`. For them GenServer does not log,
+      `:transient` children are not restarted, and linked processes are not killed (unless they are the one sending
+      `:shutdown`). Any other reason is a crash: it is logged, restarts a `:transient` child, and propagates through
+      links. Using `{:shutdown, reason}` is the idiom for "I'm stopping on purpose, here is why" without noise.
+    tags: [exit-reason, shutdown, logging]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-sup-registry-lifecycle
+    kind: open
+    difficulty: middle
+    title: "Where does Registry go in the tree, and what happens when a registered process dies?"
+    body: |
+      You name GenServers with `{:via, Registry, {MyApp.Registry, user_id}}`. Explain how the registry tracks
+      those processes, what happens to an entry when the process crashes, and where you place the registry in the
+      supervision tree relative to the processes that use it.
+    answer: |
+      - `Registry` is an ETS-backed, local (single-node) key-value store; `start_link/1` starts a supervisor with
+        one partition process per `:partitions` (default 1).
+      - `register/3` (which `:via` does for you) **links** the calling process to the partition owner. When the
+        registered process exits, the partition gets the exit signal and removes its keys, so no stale entries
+        accumulate. The docs warn this cleanup is asynchronous, so a lookup right after a crash may briefly return
+        a dead pid; callers must tolerate `noproc`.
+      - Place the registry **before** the supervisor that starts the named processes (e.g. children
+        `[{Registry, keys: :unique, name: MyApp.Registry}, MyApp.SessionSupervisor]`). If the registry crashes,
+        every registration is gone, so with `:one_for_one` the sessions would keep running unreachable by name;
+        with `:rest_for_one` they are restarted and re-register, which is usually what you want.
+      - For `:via` you need `keys: :unique`; a second start with the same key returns
+        `{:error, {:already_started, pid}}`, which your `start_worker` should treat as success/idempotent.
+    explanation: |
+      Follow-ups: "Why is `Registry` faster than `:global`?" It is node-local and ETS-based: lookups bypass any
+      process. "How do you scale it?" `partitions: System.schedulers_online()` for write-heavy registries.
+      "Can two processes register the same unique key?" No; use `keys: :duplicate` for pub/sub style fan-out.
+    tags: [Registry, via, naming]
+    source: https://elixir.hexdocs.pm/Registry.html
+
+  - slug: elixir-sup-error-kernel-pattern
+    kind: theory
+    difficulty: senior
+    title: "The error kernel"
+    body: |
+      The **error kernel** is the small part of a system that must *never* crash because nothing can restart it
+      meaningfully: the root supervisor, the processes holding the only copy of critical state, the thing that
+      owns connections everyone else needs. Everything else is expendable and placed *below* it.
+
+      Design rules that fall out of it:
+
+      - Push risk to the leaves. Parsing untrusted input, talking to flaky networks, running user callbacks: all of
+        that happens in short-lived or easily restartable workers at the bottom of the tree.
+      - Keep kernel processes **dumb**. A process holding the ETS table of sessions should do nothing but own the
+        table; business logic lives in workers that can die freely.
+      - Supervisors themselves are the purest kernel: they contain no application logic, just restart policy.
+      - A subtree's restart intensity is its "blast radius" setting: a leaf supervisor may tolerate 10 restarts
+        in 5 s; the root should almost never see a restart at all, because that means a whole subsystem failed.
+
+      ```text
+      App.Supervisor (kernel: no logic)
+      ├── Repo                     (kernel-ish: stateful, everyone depends on it)
+      ├── SessionStore             (owns ETS table, no logic)
+      ├── Registry
+      └── SessionSupervisor        (DynamicSupervisor, :one_for_one)
+          └── Session * N          (expendable: crash freely)
+      ```
+    answer: |
+      **Q:** Where would you put a worker that keeps retrying a connection to a third-party API that may be down
+      for hours?
+      **A:** At a leaf, under its own supervisor with generous `max_restarts`, or better, as a process that
+      backs off internally instead of crashing. If it sat near the root, its repeated crashes would exceed the
+      root's restart intensity and take the whole node down for a problem the node cannot fix.
+    explanation: |
+      This is the vocabulary senior candidates are expected to know from Joe Armstrong's thesis. Interviewers pair
+      it with: "Why is a database pool placed high in the tree?" (many dependents, expensive to rebuild, rarely at
+      fault) and "Why do crash loops often end with the VM exiting?" (escalation up to the application master).
+    tags: [error-kernel, design, blast-radius]
+    source: https://elixirforum.com/t/understanding-the-advantages-of-let-it-crash-term/9748/16
+
+  - slug: elixir-sup-restart-storms
+    kind: open
+    difficulty: senior
+    title: "Restart storms and cascading failures"
+    body: |
+      Production incident: the database becomes unreachable for 30 seconds. Within a few seconds the whole Elixir
+      node shuts down and is restarted by the orchestrator, repeatedly. Explain the mechanism that turned a DB
+      blip into a node crash loop, and how you would redesign the tree so it survives the outage.
+    answer: |
+      - Mechanism: workers that call the DB crash on `DBConnection.ConnectionError`; their supervisor restarts them
+        with fresh state; they immediately hit the DB again and crash again. Within `max_seconds` (5 s) the
+        supervisor exceeds `max_restarts` (3), exits with `:shutdown`, its parent restarts the subtree, which
+        repeats, until the root supervisor exceeds its intensity and the application stops; with a `:permanent`
+        application the VM exits. The orchestrator restarts the container and the loop continues while the DB is down.
+      - Restarts are instantaneous: OTP supervisors have no backoff, so a crash loop burns through intensity in
+        milliseconds ("restart storm").
+      - Fixes:
+        - Do not crash on *expected* external failures: return `{:error, _}`, or let a connection owner back off
+          with increasing `Process.send_after` delays (that is what `DBConnection`/`Ecto` pools already do: the pool
+          stays up and callers get an error instead of a crash).
+        - Isolate the risky workers under their own supervisor with tuned intensity, so they can crash-loop
+          without touching the error kernel.
+        - Add a circuit breaker (a process/ETS flag that short-circuits calls after N failures and half-opens
+          after a cooldown) so thousands of callers do not pile up on a dead dependency.
+        - Make `init/1` cheap and never let it depend on the external service; connect lazily via
+          `handle_continue` so restarts are not themselves blocked.
+    explanation: |
+      Strong candidates mention that `max_restarts`/`max_seconds` are per supervisor and that the defaults assume
+      restarts are *rare*. They may also mention the "fuse" library as the Erlang circuit-breaker reference, and
+      that Phoenix/Ecto apps usually survive DB outages precisely because the pool does not crash, only queries fail.
+    tags: [restart-storm, cascading-failure, circuit-breaker]
+    source: https://elixirforum.com/t/supervisors-workers-max-restarts/16358
+
+  - slug: elixir-sup-genserver-call-timeout-crash
+    kind: mcq
+    difficulty: middle
+    title: "What happens to the caller when GenServer.call times out?"
+    body: |
+      Process `P` does `GenServer.call(server, :slow)` with the default timeout. The server takes 8 seconds to reply.
+      What happens?
+    choices:
+      - "P exits with {:timeout, {GenServer, :call, ...}} after 5 seconds; the server keeps working and its reply later lands in P's mailbox if P survived"
+      - "GenServer.call returns {:error, :timeout} after 5 seconds and the late reply is dropped"
+      - "The server is killed after 5 seconds because it violated the call contract"
+      - "Both P and the server crash because call creates a temporary link between them"
+    answer: 0
+    explanation: |
+      `call/3` has a 5000 ms default; on timeout the *caller* exits (`exit({:timeout, ...})`), not the server.
+      That exit is a crash, so if `P` is a GenServer it gets restarted by its supervisor, and the busy server never
+      notices. If the caller catches the exit (`catch :exit, _`) the late reply `{ref, result}` still arrives and
+      must be discarded. Blocking `call`s from supervisors or from `init/1` are a classic way to freeze an entire
+      tree during a restart.
+    tags: [GenServer.call, timeout, propagation]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-sup-ets-update-counter
+    kind: code
+    difficulty: middle
+    title: "An ETS-backed counter with atomic increments"
+    body: |
+      Implement module `HitCounter`:
+
+      - `new/0`: creates a **public** ETS `:set` table and returns its tid.
+      - `incr(table, key, by \\ 1)`: atomically adds `by` to the counter stored under `key` (starting from 0 if the
+        key is absent) and returns the new value. Use `:ets.update_counter/4` so concurrent callers never lose
+        increments.
+      - `get(table, key)`: returns the current value or `0`.
+
+      ```elixir
+      t = HitCounter.new()
+      HitCounter.incr(t, "/home")      #=> 1
+      HitCounter.incr(t, "/home", 5)   #=> 6
+      HitCounter.get(t, "/missing")    #=> 0
+      ```
+    starter_code: |
+      defmodule HitCounter do
+        def new do
+          # TODO
+        end
+
+        def incr(table, key, by \\ 1) do
+          # TODO: :ets.update_counter/4 with a default object
+        end
+
+        def get(table, key) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule HitCounterTest do
+        use ExUnit.Case
+
+        test "increments from zero" do
+          t = HitCounter.new()
+          assert HitCounter.get(t, "/x") == 0
+          assert HitCounter.incr(t, "/x") == 1
+          assert HitCounter.incr(t, "/x", 5) == 6
+          assert HitCounter.get(t, "/x") == 6
+        end
+
+        test "concurrent increments are not lost" do
+          t = HitCounter.new()
+          1..50
+          |> Task.async_stream(fn _ -> Enum.each(1..20, fn _ -> HitCounter.incr(t, :k) end) end, max_concurrency: 8)
+          |> Stream.run()
+          assert HitCounter.get(t, :k) == 1000
+        end
+
+        test "keys are independent" do
+          t = HitCounter.new()
+          HitCounter.incr(t, :a)
+          HitCounter.incr(t, :b, 2)
+          assert {HitCounter.get(t, :a), HitCounter.get(t, :b)} == {1, 2}
+        end
+      end
+    solution: |
+      defmodule HitCounter do
+        def new do
+          :ets.new(:hit_counter, [:set, :public, write_concurrency: true])
+        end
+
+        def incr(table, key, by \\ 1) do
+          :ets.update_counter(table, key, {2, by}, {key, 0})
+        end
+
+        def get(table, key) do
+          case :ets.lookup(table, key) do
+            [{^key, n}] -> n
+            [] -> 0
+          end
+        end
+      end
+    explanation: |
+      `:ets.update_counter/4` is atomic and isolated: the read-modify-write happens inside the table, so concurrent
+      callers cannot interleave the way `lookup` + `insert` would. The fourth argument is the default object inserted
+      when the key is missing. The table must be `:public` for other processes to write; it dies with the process
+      that created it (here the test process), which is exactly why long-lived tables are owned by a dedicated
+      process in a supervision tree.
+    tags: [ets, update_counter, atomic]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-sup-child-spec-builder
+    kind: code
+    difficulty: junior
+    title: "Build a transient child spec"
+    body: |
+      Implement `Specs.transient(module, arg, id)` returning a child-spec **map** for a worker that:
+
+      - is identified by `id`,
+      - starts with `module.start_link(arg)`,
+      - is restarted only on abnormal exit,
+      - gets 10 seconds to shut down cleanly before being killed.
+
+      Also implement `Specs.start_two(module)` that starts a `:one_for_one` supervisor with two `:transient`
+      children of `module` (argument `nil`) whose ids are `:first` and `:second`, and returns `{:ok, sup}`.
+      Build the specs with your own `transient/3`; `module` will be `Agent`-compatible (its `start_link/1` takes a
+      zero-arity function).
+
+      ```elixir
+      Specs.transient(MyWorker, :cfg, :w1)
+      #=> %{id: :w1, start: {MyWorker, :start_link, [:cfg]}, restart: :transient, shutdown: 10_000}
+      ```
+    starter_code: |
+      defmodule Specs do
+        def transient(module, arg, id) do
+          # TODO
+        end
+
+        def start_two(module) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule SpecsTest do
+        use ExUnit.Case
+
+        test "builds the map" do
+          spec = Specs.transient(Agent, :cfg, :w1)
+          assert spec.id == :w1
+          assert spec.start == {Agent, :start_link, [:cfg]}
+          assert spec.restart == :transient
+          assert spec.shutdown == 10_000
+        end
+
+        test "spec is accepted by Supervisor.child_spec/2" do
+          spec = Specs.transient(Agent, fn -> 1 end, :w1)
+          assert %{id: :w1, restart: :transient} = Supervisor.child_spec(spec, [])
+        end
+
+        test "starts two transient agents" do
+          {:ok, sup} = Specs.start_two(Agent)
+          kids = Supervisor.which_children(sup)
+          assert Enum.sort(Enum.map(kids, &elem(&1, 0))) == [:first, :second]
+          assert %{active: 2} = Supervisor.count_children(sup)
+        end
+      end
+    solution: |
+      defmodule Specs do
+        def transient(module, arg, id) do
+          %{
+            id: id,
+            start: {module, :start_link, [arg]},
+            restart: :transient,
+            shutdown: 10_000
+          }
+        end
+
+        def start_two(module) do
+          children = [
+            transient(module, fn -> nil end, :first),
+            transient(module, fn -> nil end, :second)
+          ]
+
+          Supervisor.start_link(children, strategy: :one_for_one)
+        end
+      end
+    explanation: |
+      Only `id` and `start` are required; `restart` defaults to `:permanent`, `shutdown` to `5_000` for workers and
+      `type` to `:worker`. Writing the map by hand is what `use GenServer`'s generated `child_spec/1` does for you.
+      Two children of the same module need distinct ids, otherwise `Supervisor.start_link/2` exits with
+      "more than one child specification has the id".
+    tags: [child_spec, transient]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-state-survives-in-ets
+    kind: code
+    difficulty: senior
+    title: "GenServer state that survives a crash"
+    body: |
+      A GenServer's state is lost when it crashes and is restarted. Implement `DurableCounter` so the count
+      survives restarts by keeping it in an ETS table **owned by another process**:
+
+      - `start_link(table)`: starts the GenServer with a public ETS `table` (created elsewhere). On `init`, read
+        `{:count, n}` from the table (default `0`).
+      - `incr(pid)`: increments the count, writes `{:count, new}` to the table, returns the new value.
+      - `value(pid)`: returns the current count.
+      - `crash(pid)`: makes the server exit abnormally (e.g. `GenServer.cast(pid, :crash)` then raise).
+
+      ```elixir
+      t = :ets.new(:c, [:public])
+      {:ok, pid} = DurableCounter.start_link(t)
+      DurableCounter.incr(pid)   #=> 1
+      ```
+    starter_code: |
+      defmodule DurableCounter do
+        use GenServer
+
+        def start_link(table), do: GenServer.start_link(__MODULE__, table)
+        def incr(pid), do: GenServer.call(pid, :incr)
+        def value(pid), do: GenServer.call(pid, :value)
+        def crash(pid), do: GenServer.cast(pid, :crash)
+
+        # TODO: init/1, handle_call/3, handle_cast/2
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule DurableCounterTest do
+        use ExUnit.Case
+
+        test "counts" do
+          t = :ets.new(:dc1, [:public])
+          {:ok, pid} = DurableCounter.start_link(t)
+          assert DurableCounter.incr(pid) == 1
+          assert DurableCounter.incr(pid) == 2
+          assert DurableCounter.value(pid) == 2
+        end
+
+        test "count survives a crash and restart under a supervisor" do
+          t = :ets.new(:dc2, [:public])
+          spec = %{id: :counter, start: {DurableCounter, :start_link, [t]}}
+          {:ok, sup} = Supervisor.start_link([spec], strategy: :one_for_one)
+          [{:counter, pid, _, _}] = Supervisor.which_children(sup)
+          DurableCounter.incr(pid)
+          DurableCounter.incr(pid)
+          DurableCounter.incr(pid)
+          ref = Process.monitor(pid)
+          DurableCounter.crash(pid)
+          assert_receive {:DOWN, ^ref, :process, ^pid, reason}
+          refute reason in [:normal, :shutdown]
+          [{:counter, new_pid, _, _}] = Supervisor.which_children(sup)
+          assert is_pid(new_pid) and new_pid != pid
+          assert DurableCounter.value(new_pid) == 3
+          assert DurableCounter.incr(new_pid) == 4
+        end
+      end
+    solution: |
+      defmodule DurableCounter do
+        use GenServer
+
+        def start_link(table), do: GenServer.start_link(__MODULE__, table)
+        def incr(pid), do: GenServer.call(pid, :incr)
+        def value(pid), do: GenServer.call(pid, :value)
+        def crash(pid), do: GenServer.cast(pid, :crash)
+
+        @impl true
+        def init(table) do
+          count =
+            case :ets.lookup(table, :count) do
+              [{:count, n}] -> n
+              [] -> 0
+            end
+
+          {:ok, {table, count}}
+        end
+
+        @impl true
+        def handle_call(:incr, _from, {table, count}) do
+          :ets.insert(table, {:count, count + 1})
+          {:reply, count + 1, {table, count + 1}}
+        end
+
+        def handle_call(:value, _from, {_table, count} = state), do: {:reply, count, state}
+
+        @impl true
+        def handle_cast(:crash, _state), do: raise("boom")
+      end
+    explanation: |
+      The pattern: the *logic* process is expendable, the *data* lives in a table owned by a stable process (a
+      dedicated "table owner" GenServer near the top of the tree, or an owner that sets `heir:` so the table is
+      handed to a survivor when it dies). The restarted server rebuilds its state in `init/1`, which must therefore
+      be idempotent. The trade-off is that corrupted state also survives the restart, so persist only data you trust
+      and validate it on load. Alternatives: a database, or re-deriving state from an event log.
+    tags: [ets, state, restart, heir]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-sup-handle-continue-init
+    kind: mcq
+    difficulty: middle
+    title: "Why use handle_continue instead of doing work in init/1?"
+    body: |
+      A GenServer needs to load a large dataset from a database when it starts. A colleague proposes doing it in
+      `init/1`. What is the strongest argument for returning `{:ok, state, {:continue, :load}}` and loading in
+      `handle_continue/2` instead?
+    choices:
+      - "handle_continue runs in a separate process, so the load happens in parallel with the supervisor"
+      - "init/1 blocks the supervisor (and thus the whole tree's startup / restart) until it returns; handle_continue runs after start_link has returned, inside the server, but before any other message is processed"
+      - "Exceptions raised in handle_continue are rescued automatically, while exceptions in init crash the supervisor"
+      - "init/1 cannot call other GenServers, but handle_continue can"
+    answer: 1
+    explanation: |
+      `start_link` is synchronous: the supervisor waits for `init/1` to return, so a slow `init` delays every
+      sibling started after it and freezes restarts. `handle_continue` runs in the same process immediately after
+      `init` returns, *before* any message from the mailbox, so there is no race where a client calls a half-ready
+      server. It is also better than `send(self(), :load)`, which can be preceded by messages from other processes.
+      Exceptions in `handle_continue` crash the server like any callback.
+    tags: [handle_continue, init, startup]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-sup-duplicate-child-id
+    kind: mcq
+    difficulty: junior
+    title: "Starting the same module twice without unique ids"
+    body: |
+      ```elixir
+      children = [{Agent, fn -> 0 end}, {Agent, fn -> 1 end}]
+      Supervisor.start_link(children, strategy: :one_for_one)
+      ```
+      What happens?
+    choices:
+      - "Both agents start; the supervisor auto-suffixes the ids to Agent_1 and Agent_2"
+      - "Only the first agent starts; the second spec is silently ignored"
+      - "start_link fails with a bad child specification error: more than one child has the id Agent"
+      - "It works, but Supervisor.which_children/1 only reports one child"
+    answer: 2
+    explanation: |
+      Both tuples expand to `Agent.child_spec/1`, whose default `id` is the module `Agent`. Ids must be unique per
+      supervisor, so `Supervisor.start_link/2` exits with "more than one child specification has the id: Agent"
+      and the error message tells you to use `Supervisor.child_spec({Agent, arg}, id: :my_agent_1)`. Nothing is
+      auto-suffixed or silently dropped.
+    tags: [child_spec, id]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-state-loss-and-heir
+    kind: theory
+    difficulty: senior
+    title: "Restarts lose state: where to keep it"
+    body: |
+      The most common supervision mistake: putting precious state in the same process that does risky work.
+      When it crashes, the supervisor restarts it from `init/1`, and the state is gone.
+
+      Options, in order of complexity:
+
+      1. **Make the state derivable**: `init/1` rebuilds it from the database or from other processes. Restart cost
+         goes up, but there is nothing extra to maintain.
+      2. **Split process roles**: a dumb owner process holds the ETS table and does nothing else (so it never
+         crashes); workers read/write the `:public` table and may crash freely.
+      3. **ETS `heir`**: the owner creates the table with `{:heir, heir_pid, data}`. When the owner dies, the table is
+         transferred and the heir receives `{:"ETS-TRANSFER", tid, from_pid, data}`; it can hand the table back to
+         the restarted owner with `:ets.give_away/3`.
+      4. **Persist externally** (DB, disk via `:dets`, Redis) when state must survive the VM.
+
+      ```elixir
+      # owner (crashable) process
+      table = :ets.new(:cache, [:named_table, :public, {:heir, keeper_pid, :cache}])
+
+      # keeper
+      def handle_info({:"ETS-TRANSFER", tid, _from, _data}, state), do: {:noreply, Map.put(state, :orphan, tid)}
+      ```
+
+      Rule of thumb: separate "who owns the data" from "who does the work", and keep `init/1` idempotent so a
+      restarted process can resume from whatever already exists (an existing named table, a half-written file).
+    answer: |
+      **Q:** Why not just make the worker trap exits and save state in `terminate/2`?
+      **A:** `terminate/2` does not run on `:kill`, `:brutal_kill`, VM crash or when the process is killed by a
+      linked process while not trapping; and a process that crashed with a bug may have *corrupt* state you do not
+      want to save. Keep state outside the crashing process instead.
+    explanation: |
+      Interviewers often extend this: "The table is `:named_table` and `init/1` runs again after a crash of the
+      owner: what breaks?" `:ets.new` raises `ArgumentError` because the name exists (if an heir still holds it), so
+      `init/1` must check `:ets.whereis/1` first; that is what idempotent init means in practice.
+    tags: [ets, heir, state, idempotent-init]
+    source: https://www.erlang.org/doc/apps/stdlib/ets.html
+
+  - slug: elixir-sup-init-blocking-tree
+    kind: open
+    difficulty: senior
+    title: "A slow init/1 froze the whole deploy. Why?"
+    body: |
+      During a deploy, the application takes 90 seconds to boot and some health checks fail. You find a GenServer
+      whose `init/1` calls an external API with a 30 s timeout, retried three times. Explain exactly why this
+      blocks the whole application, what else it affects at runtime, and how you fix it.
+    answer: |
+      - Startup is sequential: `Application.start` calls the root supervisor's `start_link`, which starts each child
+        with a synchronous `start_link` and waits for `init/1` to return before starting the next child. A 90 s
+        `init` delays every sibling listed after it, and the endpoint (usually last) is not listening yet, so the
+        health check fails.
+      - The same applies to **restarts**: if that process crashes in production, the supervisor is blocked inside
+        the restart for up to 90 s; with `:one_for_one` the other children run, but the supervisor cannot handle any
+        other exit or `which_children` call meanwhile. With `:rest_for_one`/`:one_for_all` dependents are down too.
+      - Timeouts in `init` also count against restart intensity if they end in a crash, so a slow dependency can
+        trigger a restart storm at boot.
+      - Fix: return quickly from `init/1` and do the work in `handle_continue/2` (or a `send_after`/timer loop with
+        backoff), serve a degraded state until data arrives, and never retry synchronously inside `init`.
+        If the dependency is truly required, fail fast with `{:stop, reason}` and surface a clear error instead of
+        hanging. Consider the GenServer `:timeout` start option to bound `init`.
+    explanation: |
+      Follow-up: "What if clients call the server before `handle_continue` has run?" They cannot: `handle_continue`
+      is processed before any message in the mailbox. A weaker design, `send(self(), :load)` in `init`, has a race
+      with messages that arrived earlier (e.g. from a registration broadcast).
+    tags: [init, startup, handle_continue]
+    source: https://elixir.hexdocs.pm/GenServer.html
+
+  - slug: elixir-sup-monitor-for-cleanup
+    kind: mcq
+    difficulty: middle
+    title: "Link or monitor for cleaning up after another process?"
+    body: |
+      A `SessionManager` GenServer tracks per-user `Session` processes it does not start itself and must remove
+      their entries when they die, without ever being taken down by them. Which mechanism is right?
+    choices:
+      - "Process.link/1: the manager gets {:EXIT, pid, reason} messages when a session dies"
+      - "Process.flag(:trap_exit, true) alone, without linking, so exits become messages"
+      - "A periodic Process.alive?/1 sweep every few seconds"
+      - "Process.monitor/1: the manager gets a {:DOWN, ref, :process, pid, reason} message and is never affected by the session's exit"
+    answer: 3
+    explanation: |
+      Monitors are one-directional and never kill the monitoring process; `:DOWN` arrives with the reason, even
+      `:noproc` if the pid was already dead when you monitored it. Links are bidirectional and only turn into
+      `{:EXIT, ...}` messages if you trap exits, which also changes how your *own* supervisor's shutdown is
+      handled. `trap_exit` without a link does nothing. Polling with `alive?` is racy and wasteful. This is the
+      same mechanism supervisors (links) vs `Task.async_nolink` (monitors) rely on.
+    tags: [monitor, link, cleanup]
+    source: https://www.erlang.org/doc/system/ref_man_processes.html
+
+  - slug: elixir-sup-application-tree-root
+    kind: theory
+    difficulty: middle
+    title: "The Application is the root of the tree"
+    body: |
+      Every OTP application with processes has a callback module (`mod: {MyApp.Application, []}` in `mix.exs`)
+      whose `start/2` starts the **root supervisor** and returns `{:ok, pid}`:
+
+      ```elixir
+      defmodule MyApp.Application do
+        use Application
+
+        def start(_type, _args) do
+          children = [
+            MyApp.Repo,
+            {Phoenix.PubSub, name: MyApp.PubSub},
+            MyAppWeb.Endpoint
+          ]
+          Supervisor.start_link(children, strategy: :one_for_one, name: MyApp.Supervisor)
+        end
+      end
+      ```
+
+      The root supervisor is linked to the *application master*, a process the runtime starts per application.
+      If the root supervisor exits (restart intensity exceeded), the application is considered failed; for an
+      application started as `:permanent` (the default for applications listed in a release) the whole VM shuts
+      down, which is the end of the escalation chain: "if we cannot restart our way out, crash the node and let the
+      orchestrator restart it from scratch".
+
+      Stopping is the mirror image. `Application.stop/1` (or `System.stop/0` on SIGTERM / `:init.stop/0`) runs
+      `prep_stop/1` if defined, terminates the root supervisor (which stops children in reverse order,
+      recursively), then calls `stop/1`. Applications stop in the reverse of their start order, so your app stops
+      before `:logger` and `:kernel`.
+    answer: |
+      **Q:** What is the difference between `:init.stop/0` and `System.halt/0`?
+      **A:** `:init.stop` performs a graceful shutdown: every application is stopped in reverse order, every
+      supervisor terminates its children with their `shutdown` timeouts, `terminate/2` callbacks run for processes
+      trapping exits. `System.halt` (`:erlang.halt`) kills the VM immediately with no cleanup.
+    explanation: |
+      Interviewers ask "what does `use Application` give you?" (a default `stop/1` and `child_spec`, but **not**
+      `start/2`) and "why is `Repo` first and `Endpoint` last?" (start order = dependency order; shutdown is reverse
+      so in-flight requests finish before the DB pool goes away).
+    tags: [Application, root, shutdown]
+    source: https://elixir.hexdocs.pm/Application.html
+
+  - slug: elixir-sup-tree-design-db-pool
+    kind: open
+    difficulty: senior
+    title: "Design the supervision tree for a chat service"
+    body: |
+      Design the supervision tree for a service with: an Ecto repo, a Phoenix endpoint, per-room GenServers
+      started on demand, a process that keeps a cache of room metadata in ETS, and background jobs that call a
+      flaky third-party API. For each part say where it goes, which strategy, which restart value, and why.
+    answer: |
+      - Root supervisor `:one_for_one` (children are independent subsystems). Order: `Repo` first (everyone depends
+        on it, and `DBConnection` already handles reconnects without crashing), then `Registry`, then the ETS cache
+        owner, then the room supervisor, then the job supervisor, then `Endpoint` last so it only accepts traffic
+        once everything is up.
+      - `Repo`: `:permanent`, high in the tree; expensive to rebuild and rarely the thing at fault. Do not put it
+        under a `:one_for_all` with anything.
+      - Cache owner: a tiny GenServer that creates a `:named_table, :public` ETS table and does nothing else; readers
+        hit ETS directly, so the owner almost never crashes. If its data must survive its own restart, set an `heir`
+        or make `init/1` repopulate from the repo.
+      - Rooms: `DynamicSupervisor` (optionally under `PartitionSupervisor` if room churn is high), children
+        `:transient` or `:temporary`, named via `{:via, Registry, {Rooms, id}}`. A room crash restarts just that
+        room; the registry must be started before the rooms.
+      - Background jobs: `Task.Supervisor` with `start_child` and `restart: :temporary` or `:transient`, in their own
+        subtree with relaxed `max_restarts`, plus backoff/circuit breaking inside the job, so the flaky API cannot
+        exhaust the root's restart intensity.
+      - Endpoint: `:permanent`, last; it is a supervisor itself with `shutdown: :infinity` so it can drain requests.
+      - Everything risky at the leaves, everything stateful near the top: that is the error kernel.
+    explanation: |
+      Good candidates explain the *why* of order (shutdown is reverse: endpoint stops first, repo last), mention
+      `:rest_for_one` only where a real dependency exists (Registry -> rooms) and reject `:one_for_all` at the root.
+      Follow-up: "Where does `Phoenix.PubSub` go?" Before the endpoint and before anything that subscribes.
+    tags: [design, tree, db-pool]
+    source: https://www.erlang.org/doc/system/design_principles.html
+
+  - slug: elixir-sup-which-children-undefined
+    kind: mcq
+    difficulty: junior
+    title: "Reading Supervisor.which_children/1"
+    body: |
+      `Supervisor.which_children(sup)` returns `[{:worker_a, :undefined, :worker, [MyWorker]}]`.
+      What does `:undefined` in the pid position mean?
+    choices:
+      - "The child spec is invalid and the supervisor could not parse it"
+      - "The child is a temporary child that has finished"
+      - "The child is not running right now: it was terminated with terminate_child/2 (or start returned :ignore) but its spec is still kept"
+      - "The child is being restarted at this moment"
+    answer: 2
+    explanation: |
+      The pid slot is `:undefined` when the spec exists but no process is running (after `terminate_child/2`, or
+      when the start function returned `:ignore`); you can bring it back with `restart_child/2`. `:restarting`
+      is the value shown for a child mid-restart. Temporary children that finish have their spec deleted, so they
+      disappear from the list entirely. `count_children/1` summarizes the same data as
+      `%{specs: n, active: n, workers: n, supervisors: n}`.
+    tags: [which_children, count_children]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-restart-child-temporary
+    kind: mcq
+    difficulty: middle
+    title: "restart_child/2 on a temporary child"
+    body: |
+      A child with `restart: :temporary` is stopped with `Supervisor.terminate_child(sup, :job)`. Later you call
+      `Supervisor.restart_child(sup, :job)`. What is returned?
+    choices:
+      - "{:ok, pid}: the child is started again from its spec"
+      - "{:error, :not_found}: terminating a temporary child deletes its spec, so there is nothing to restart"
+      - "{:error, :running}: temporary children cannot be restarted by anyone but the supervisor"
+      - "{:ok, :undefined}: the spec exists but temporary children are never started by restart_child"
+    answer: 1
+    explanation: |
+      `terminate_child/2` keeps the spec for `:permanent` and `:transient` children (they show up as `:undefined`
+      in `which_children/1`) but **deletes** it for `:temporary` ones, so `restart_child/2` cannot find it. To run
+      it again, add it with `start_child/2`. `{:ok, :undefined}` is returned when the restarted child's start
+      function returns `:ignore`.
+    tags: [restart_child, terminate_child, temporary]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-rescue-vs-supervisor
+    kind: open
+    difficulty: middle
+    title: "When should you rescue, and when let the supervisor handle it?"
+    body: |
+      Elixir has `try/rescue`, `catch`, `with` and `{:ok, _} | {:error, _}` tuples, plus supervisors.
+      Give an interviewer your decision rule: which failures do you handle in code, which do you let crash,
+      and what are the signs that someone is rescuing too much?
+    answer: |
+      - Handle in code what is **expected and recoverable at that point**: invalid user input, a missing file, an
+        HTTP 404, a `{:error, changeset}`. These are return values, not exceptions; use `with`/pattern matching.
+      - Rescue exceptions only at boundaries where you can translate them into something meaningful: a web
+        request (return 500 and keep the connection process alive), a job runner that must record the failure, or
+        when wrapping a library that raises for expected conditions (`Jason.decode!` -> `Jason.decode`).
+      - Let crash: bugs (`FunctionClauseError`, `KeyError`, `MatchError` on an unexpected shape), corrupt state,
+        and failures of *other* processes you depend on. A rescue there hides the bug and keeps a process alive
+        with state you no longer trust; the supervisor restart is the correct recovery.
+      - Never rescue to "keep the loop going" in a GenServer; if the state might be wrong, crash and restart.
+      - Signs of over-rescuing: `rescue _ -> nil`, logging-and-continuing with no recovery, catch-all `catch :exit`
+        around `GenServer.call`, business logic wrapped in `try` "just in case", or an `:EXIT` handler that ignores
+        the reason.
+    explanation: |
+      Follow-up: "Why does `GenServer.call` *exit* rather than return an error on timeout?" Because the caller's
+      request may have been processed; the safe default is to treat it as a failure of the caller's operation. If
+      you genuinely need to tolerate it (optional cache), `catch :exit, _` is acceptable, but then discard the late
+      reply. Candidates who say "Elixir has no exceptions" or "always rescue in production" are red flags.
+    tags: [rescue, error-handling, philosophy]
+    source: https://elixirforum.com/t/understanding-the-advantages-of-let-it-crash-term/9748/16
+
+  - slug: elixir-sup-circuit-breaker-fuse
+    kind: theory
+    difficulty: senior
+    title: "Circuit breakers: when restarting is the wrong tool"
+    body: |
+      Supervisors recover from **internal** faults (bugs, corrupted state). They do nothing for **external**
+      faults: a dependency that is down stays down no matter how many times you restart the caller. For those
+      you need a **circuit breaker** (the Erlang `fuse` library popularized the term "fuse" on the BEAM):
+
+      - **Closed**: calls go through; failures are counted in a window (e.g. 5 failures in 10 s).
+      - **Open** (fuse blown): calls fail immediately with `{:error, :circuit_open}` without touching the
+        dependency; no timeouts pile up, no process crashes, no restart intensity consumed.
+      - **Half-open**: after a cooldown, one trial call is allowed; success closes the breaker, failure re-opens it.
+
+      A minimal BEAM implementation is an ETS table with the state per dependency, written by a small GenServer
+      that receives failure reports and uses `Process.send_after/3` for the cooldown; callers read ETS (no
+      bottleneck). The caller's code becomes:
+
+      ```elixir
+      case Breaker.ask(:payments) do
+        :ok -> do_call() |> Breaker.report(:payments)
+        :blown -> {:error, :unavailable}
+      end
+      ```
+
+      Combine with: timeouts on every external call, bounded retries with jittered backoff, and bulkheads (a
+      separate pool / `Task.Supervisor` per dependency so one slow API cannot exhaust shared resources).
+    answer: |
+      **Q:** The payment API is down and you have 2 000 request processes blocked in `GenServer.call` to a single
+      `PaymentClient` GenServer with a 5 s timeout. What happens without a breaker, and with one?
+      **A:** Without: each caller exits with `{:timeout, ...}` after 5 s, so request processes crash, the client's
+      mailbox fills with stale requests it keeps processing, latency spikes everywhere. With: after the first few
+      failures the breaker opens, callers fail fast with a controlled error, the client mailbox stays empty, and a
+      single probe call per cooldown detects recovery.
+    explanation: |
+      Interviewers expect you to separate "fault inside my process" (restart) from "fault in the world" (back off,
+      degrade). Mentioning `fuse`, `:telemetry` events for breaker state changes and bulkheads is a strong answer.
+    tags: [circuit-breaker, fuse, external-failure]
+    source: https://elixirforum.com/t/supervisors-workers-max-restarts/16358
+
+  - slug: elixir-sup-global-names-netsplit
+    kind: open
+    difficulty: senior
+    title: "A singleton registered with :global after a netsplit"
+    body: |
+      You run a 3-node cluster and register a scheduler process with `{:global, :scheduler}` so that exactly one
+      runs cluster-wide. Explain what happens during a network partition and after it heals, what the failure
+      modes are, and what a safer design looks like.
+    answer: |
+      - During the partition each side sees the other nodes as down (`:nodedown`). The side that lost the scheduler
+        has no `:scheduler` name any more; its supervisor (or a `:global.whereis_name` check) starts a new one.
+        Now **two** schedulers run, one per partition: split brain. Any "exactly once" guarantee is gone.
+      - When the partition heals, `:global` detects the name conflict and resolves it with the registration's
+        resolve function (default `:global.random_exit_name/3` kills one of the two processes at random). Whichever
+        survives may not be the one with the most recent state; work done by the killed one may be lost or
+        duplicated.
+      - This is CAP in practice: a global name is a consistency mechanism and must give up availability or
+        consistency under partition; `:global` chooses availability-ish behaviour then forcibly reconciles.
+      - Safer designs: accept at-least-once and make the work idempotent (dedupe by job id in the DB), use a
+        database lock/lease (`SELECT ... FOR UPDATE SKIP LOCKED`, advisory locks, or a `locked_until` row) as the
+        source of truth instead of process identity, or use a library built for this (`Highlander`-style
+        singleton over `:global`, or a leader election with a quorum). Monitor `:net_kernel` node events and
+        emit alerts on `:global` conflicts.
+    explanation: |
+      Follow-ups: "How is `Registry` different?" It is strictly node-local, so there is no conflict to resolve but
+      also no cluster-wide uniqueness. "What about `:pg`?" Process groups replicate membership eventually and
+      allow duplicates by design, so they are fine for pub/sub but not for singletons.
+    tags: [global, netsplit, distributed]
+    source: https://www.erlang.org/doc/system/distributed.html
+
+  - slug: elixir-sup-observability-tools
+    kind: open
+    difficulty: senior
+    title: "A production node is misbehaving: how do you look inside?"
+    body: |
+      A node is at 95% CPU and memory keeps growing, but nothing is logged. You can open a remote shell
+      (`bin/app remote`). Walk the interviewer through the tools you would use and what each tells you about
+      the supervision tree and processes.
+    answer: |
+      - `:observer.start()` (needs a GUI, or `observer_cli` for a terminal): the Applications tab draws the live
+        supervision tree; the Processes tab sorts by reductions, memory and message queue length, which finds
+        the hot or stuck process in seconds.
+      - `Process.info(pid, [:message_queue_len, :memory, :reductions, :current_function, :status])`: a growing
+        mailbox means a bottleneck GenServer; a huge binary count means a binary leak.
+      - `:sys.get_state(pid)` / `:sys.get_status(pid)`: inspect a GenServer's state and status (use `format_status/1`
+        to redact secrets); `:sys.trace(pid, true)` to log every message; `:sys.statistics`.
+      - `Supervisor.which_children/1` and `count_children/1` from the root down: find `:undefined` or constantly
+        changing pids (a restart loop) or an unexpected number of dynamic children.
+      - `recon` (Fred Hebert): `:recon.proc_count(:memory, 10)`, `:recon.bin_leak(10)`, `:recon_trace` for safe,
+        rate-limited tracing in production; `:recon_alloc` for allocator-level memory.
+      - `:erlang.system_monitor/2` with `long_gc`, `large_heap`, `busy_port`, `long_schedule` to get messages about
+        pathological processes; `:erlang.statistics(:run_queue)` for scheduler backlog.
+      - `:telemetry` metrics already emitted by Phoenix/Ecto/VM (`vm.memory`, `vm.total_run_queue_lengths`) should
+        have alerted first; check the dashboards, then drill in with the shell.
+    explanation: |
+      Follow-up: "Why nothing in the logs?" Because nothing crashed; a process that simply cannot keep up never
+      produces a crash report. That is why mailbox length and run queue metrics belong in every dashboard.
+      Mentioning `format_status` and the danger of `:sys.get_state` on a huge state (it copies it) earns points.
+    tags: [observer, recon, sys, debugging]
+    source: https://www.erlang.org/doc/system/profiling.html
+
+  - slug: elixir-sup-health-checks-heartbeat
+    kind: theory
+    difficulty: senior
+    title: "Liveness, readiness and heartbeats"
+    body: |
+      Supervisors detect one thing: a process **died**. They cannot see a process that is alive but useless: stuck
+      in a long `receive`, deadlocked in a call cycle, or spinning with a corrupt state that never raises.
+      For those you add health checks, at three levels:
+
+      - **Process heartbeat**: a watchdog sends `:ping` and expects `:pong` within a deadline; on miss it calls
+        `Process.exit(pid, :kill)` (untrappable) and lets the supervisor do the restart. This turns "hung" into
+        "crashed", which the tree knows how to handle.
+        ```elixir
+        def handle_info(:tick, %{worker: pid} = s) do
+          case GenServer.call(pid, :ping, 1_000) do
+            :pong -> :ok
+          catch
+            :exit, _ -> Process.exit(pid, :kill)
+          end
+          Process.send_after(self(), :tick, 5_000)
+          {:noreply, s}
+        end
+        ```
+      - **Node-level readiness** (HTTP `/health` for Kubernetes): check that the root supervisor has all expected
+        children (`Supervisor.count_children/1`), that `Repo` answers `SELECT 1`, and that the endpoint is bound.
+        Readiness should go red when a dependency is down; liveness should go red only when the VM itself is
+        wedged, otherwise the orchestrator restarts a healthy node for a DB blip.
+      - **Cluster-level**: `:net_kernel.monitor_nodes(true)` for `:nodedown`/`:nodeup` and `:global` conflicts.
+
+      Key subtlety: a `GenServer.call` ping from inside the supervision tree must not run *in the supervisor*
+      (it would block the tree); put the watchdog in its own worker.
+    answer: |
+      **Q:** Why does a heartbeat use `Process.exit(pid, :kill)` rather than `GenServer.stop/1`?
+      **A:** A hung process cannot process the stop message; `:kill` is a signal that cannot be trapped and needs
+      no cooperation, and the supervisor sees a `:killed` exit (abnormal), so a `:transient`/`:permanent` child is
+      restarted.
+    explanation: |
+      This is where "let it crash" meets operations: supervisors handle crashes, so the trick for hangs is to
+      convert them into crashes. Interviewers also like the liveness-vs-readiness distinction and the warning
+      against restarting the node for an external dependency failure.
+    tags: [health-check, heartbeat, watchdog]
+    source: https://elixir.hexdocs.pm/Supervisor.html
+
+  - slug: elixir-sup-code-change-pointer
+    kind: mcq
+    difficulty: senior
+    title: "What is GenServer.code_change/3 for?"
+    body: |
+      Which statement about `code_change/3` is correct?
+    choices:
+      - "It is called during a hot code upgrade (release upgrade via :sys.change_code) to transform the running state to the new module version's shape; a plain restart never calls it"
+      - "It is called by the supervisor on every restart so the new process can migrate the old state"
+      - "It is called automatically whenever a module is recompiled with mix compile in dev"
+      - "It is called when the child spec's :modules list changes"
+    answer: 0
+    explanation: |
+      Hot code upgrades (appup/relup, not supported out of the box by `mix release`) suspend the process, call
+      `code_change(old_vsn, state, extra)` so the state can be converted, then resume with the new code. Restarts
+      do not involve it at all: a restarted process starts from `init/1`. Recompiling in dev loads the new module
+      version but does not call `code_change`; a process executing old code keeps using it until it makes a fully
+      qualified call. The `:modules` key in a child spec exists so the release handler knows which processes to
+      suspend.
+    tags: [code_change, hot-upgrade]
+    source: https://www.erlang.org/doc/system/code_loading.html
+
+  - slug: elixir-sup-crash-reports-logger
+    kind: theory
+    difficulty: middle
+    title: "Reading a crash report"
+    body: |
+      When a GenServer exits with an abnormal reason, the OTP `logger` (OTP 21+, integrated with Elixir's
+      `Logger`) emits a **crash report** and the supervisor emits a **supervisor report**:
+
+      ```text
+      [error] GenServer #PID<0.213.0> terminating
+      ** (ArithmeticError) bad argument in arithmetic expression
+          (my_app 0.1.0) lib/my_app/counter.ex:17: MyApp.Counter.handle_call/3
+          (stdlib 5.2) gen_server.erl:1095: :gen_server.try_handle_call/4
+      Last message (from #PID<0.201.0>): {:add, "x"}
+      State: %{count: 3}
+      [error] Child MyApp.Counter of Supervisor MyApp.Supervisor terminated
+      ** (exit) an exception was raised: ...
+      Pid: #PID<0.213.0>
+      Start Call: MyApp.Counter.start_link([])
+      Restart: :permanent  Shutdown: 5000  Type: :worker
+      ```
+
+      What to read, in order: the exception and stack frame, the **last message** (what triggered it), the
+      **state** (what it was working with), then the supervisor report: which child, which supervisor, and
+      whether it will be restarted. If the same report repeats and is followed by `reached max restart intensity`,
+      you are looking at a restart storm climbing the tree.
+
+      Reports are **not** emitted for `:normal`, `:shutdown` or `{:shutdown, _}` exits. Secrets in state can be
+      redacted with the `format_status/1` callback. Elixir's `Logger` config `handle_otp_reports` /
+      `handle_sasl_reports` (progress reports) control which OTP reports are forwarded; crash reports are on by
+      default, progress reports are off.
+    answer: |
+      **Q:** A `:transient` GenServer vanished from the tree and there is no crash report at all. What are the
+      likely causes?
+      **A:** It exited with a clean reason: a callback returned `{:stop, :normal, state}`, or a linked process
+      (a `Task.async`, a port) exited with `:shutdown` and the server did not trap exits, so it died with reason
+      `:shutdown`. Clean reasons are not logged and do not restart a `:transient` child, so the only trace is the
+      `:undefined` pid in `which_children/1` or a monitor's `:DOWN` message.
+    explanation: |
+      Interviewers may hand you a real crash report and ask what you would look at first: the last message and
+      state are the fastest route to a reproduction. Knowing that clean exit reasons are silent explains why a
+      "silently disappearing" process is usually a `:normal` exit from a `{:stop, :normal, state}` or a linked
+      process exiting cleanly.
+    tags: [logger, crash-report, debugging]
+    source: https://elixir.hexdocs.pm/Logger.html
+
+  - slug: elixir-sup-shutdown-timeouts-tradeoffs
+    kind: open
+    difficulty: senior
+    title: "Choosing shutdown values: 5000, :infinity or :brutal_kill?"
+    body: |
+      Deploys of your app take minutes because stopping the tree is slow, and sometimes the orchestrator kills the
+      container before shutdown completes. Explain how a supervisor stops a child, what the `shutdown` value
+      controls, why supervisors default to `:infinity`, and how you would tune the tree for fast but safe shutdown.
+    answer: |
+      - Shutdown is sequential and in reverse start order: for each child the supervisor sends `exit(pid, :shutdown)`
+        and waits. With an integer `shutdown`, if the child has not exited after N ms it is sent `:kill`. With
+        `:brutal_kill` it is killed immediately. With `:infinity` the supervisor waits forever.
+      - A child that does not trap exits dies instantly on `:shutdown`; the timeout only matters for children that
+        trap exits and run `terminate/2`. So long shutdowns come from `terminate/2` implementations (draining
+        queues, flushing buffers, closing connections) multiplied by the number of children, serialized.
+      - Supervisors default to `:infinity` so a parent never kills a subtree while *its* children are still running
+        their own shutdown sequence; using an integer for a child supervisor risks killing workers mid-cleanup.
+        Use `:infinity` for workers only when they truly must finish (e.g. committing a transaction), and bound the
+        work inside `terminate/2` instead.
+      - Tuning: keep `terminate/2` short and bounded; let cheap, stateless workers use `:brutal_kill` or stop
+        trapping exits; move slow draining to a dedicated process started *late* in the tree (so it stops *first*)
+        with an explicit budget; make the orchestrator's grace period larger than the sum of the worst-case
+        shutdown path; handle SIGTERM so `System.stop/0` runs the graceful path rather than `:erlang.halt`.
+      - Phoenix: the endpoint stops first (it is last in the tree) and stops accepting connections; in-flight
+        requests get the `shutdown` window of the acceptor/connection supervisors to finish.
+    explanation: |
+      Follow-up: "What does `:shutdown` do to a `Task.Supervisor` child?" Tasks default to `shutdown: 5000` and
+      do not trap exits, so they die immediately; if a task must finish, give it `shutdown: :infinity` or make it
+      trap exits and handle the `:EXIT`. Candidates who think `shutdown` is a timeout for `init/1` or for
+      `GenServer.call` get this wrong.
+    tags: [shutdown, terminate, deploy]
+    source: https://elixir.hexdocs.pm/Supervisor.html

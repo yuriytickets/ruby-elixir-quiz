@@ -1,0 +1,1392 @@
+language: elixir
+topic: macros-and-metaprogramming
+items:
+  - slug: elixir-macro-ast-three-element-tuple
+    kind: mcq
+    difficulty: junior
+    title: "What does `quote do: sum(1, 2)` return?"
+    body: |
+      In IEx you run:
+
+      ```elixir
+      quote do: sum(1, 2)
+      ```
+
+      Which value comes back?
+    choices:
+      - "`{:sum, [], [1, 2]}`"
+      - "`{:sum, [1, 2]}`"
+      - "`[:sum, 1, 2]`"
+      - "`\"sum(1, 2)\"`"
+    answer: 0
+    explanation: |
+      Every non-literal Elixir expression is represented as a three-element tuple `{form, metadata, arguments}`:
+      the function/operator name (or another tuple for remote calls), a keyword list of metadata such as `line:`,
+      and the list of arguments. `{:sum, [1, 2]}` is a two-element tuple, which happens to be a *literal* that
+      quotes to itself, so it is not a call. `Macro.to_string/1` is what turns an AST back into `"sum(1, 2)"`.
+    tags: [ast, quote]
+    source: https://elixir.hexdocs.pm/quote-and-unquote.html
+
+  - slug: elixir-macro-literals-own-ast
+    kind: mcq
+    difficulty: junior
+    title: "Which of these does NOT quote to itself?"
+    body: |
+      Some values are their own AST: `quote do: value` returns the value unchanged.
+      Which one of the following is **not** a literal and therefore gets a different representation when quoted?
+    choices:
+      - "`:ok`"
+      - "`{1, 2}`"
+      - "`{1, 2, 3}`"
+      - "`[1, 2, 3]`"
+    answer: 2
+    explanation: |
+      Atoms, numbers, strings, lists and two-element tuples quote to themselves. A three-element tuple is
+      ambiguous with the `{form, meta, args}` call shape, so it is represented as `{:{}, [], [1, 2, 3]}`.
+      Maps also get a wrapper: `quote do: %{a: 1}` gives `{:%{}, [], [a: 1]}`. This is why `Macro.escape/1`
+      exists: it converts a runtime map or large tuple into its quoted form before you inject it with `unquote`.
+    tags: [ast, quote, literals]
+    source: https://elixir.hexdocs.pm/quote-and-unquote.html
+
+  - slug: elixir-macro-unquote-vs-unquote-splicing
+    kind: mcq
+    difficulty: junior
+    title: "`unquote` vs `unquote_splicing` inside a list"
+    body: |
+      ```elixir
+      inner = [2, 3]
+      a = quote do: [1, unquote(inner), 4]
+      b = quote do: [1, unquote_splicing(inner), 4]
+      {Macro.to_string(a), Macro.to_string(b)}
+      ```
+
+      What is the result?
+    choices:
+      - "`{\"[1, 2, 3, 4]\", \"[1, 2, 3, 4]\"}`"
+      - "`{\"[1, [2, 3], 4]\", \"[1, 2, 3, 4]\"}`"
+      - "`{\"[1, [2, 3], 4]\", \"[1, [2, 3], 4]\"}`"
+      - "A `CompileError`: `unquote_splicing` only works at the end of a list"
+    answer: 1
+    explanation: |
+      `unquote/1` injects the value as a single element, so the inner list stays nested. `unquote_splicing/1`
+      injects the *elements* of a list into the surrounding list, flattening one level. It is also what you use
+      for argument lists, e.g. `fun(unquote_splicing(args))`. It can appear anywhere in the list, not only at the end.
+    tags: [unquote, unquote_splicing]
+    source: https://elixir.hexdocs.pm/quote-and-unquote.html
+
+  - slug: elixir-macro-require-before-use
+    kind: mcq
+    difficulty: junior
+    title: "Why does calling a macro fail without `require`?"
+    body: |
+      ```elixir
+      defmodule Unless do
+        defmacro macro_unless(clause, do: expr) do
+          quote do
+            if !unquote(clause), do: unquote(expr)
+          end
+        end
+      end
+
+      Unless.macro_unless(true, do: IO.puts("never"))
+      ```
+
+      Running this (outside the `Unless` module) raises
+      `** (CompileError) you must require Unless before invoking the macro Unless.macro_unless/2`. Why?
+    choices:
+      - "Macros are private by default; `require` makes them public"
+      - "Macros run at compile time, so the compiler must be told to load and compile `Unless` first; `require` is that explicit, lexical opt-in"
+      - "`require` imports all functions and macros into the current scope, which the macro needs"
+      - "Macros can only be called from inside other macros"
+    answer: 1
+    explanation: |
+      A macro expands while the *caller* is being compiled, so its defining module must already be compiled and
+      available. `require` makes that compile-time dependency explicit and lexically scoped. It does not import
+      anything (that is `import`), and macros defined with `defmacro` are public. `use Unless` would also work,
+      because `use` expands to `require Unless` plus a call to `Unless.__using__/1`.
+    tags: [require, defmacro]
+    source: https://elixir.hexdocs.pm/macros.html
+
+  - slug: elixir-macro-special-forms-vs-macros
+    kind: mcq
+    difficulty: middle
+    title: "Which of these is a special form rather than a macro?"
+    body: |
+      Elixir's syntax is small: most control-flow keywords are macros defined in `Kernel`, while a handful are
+      *special forms* in `Kernel.SpecialForms` that cannot be overridden or expanded further.
+
+      Which one is a special form?
+    choices:
+      - "`if`"
+      - "`unless`"
+      - "`case`"
+      - "`&&`"
+    answer: 2
+    explanation: |
+      `case`, `cond`, `with`, `for`, `receive`, `try`, `fn`, `quote`, `unquote`, `__MODULE__`, `__ENV__`, `alias`,
+      `import` and `require` are special forms: the compiler understands them directly and `Macro.expand/2` returns
+      them unchanged. `if`, `unless`, `&&`, `||`, `and`, `or`, `def`, `defmodule`, `|>` and `in` are ordinary macros
+      in `Kernel`. For example `Macro.expand_once(quote(do: a && b), __ENV__)` yields a `case` expression that
+      matches `x when x in [false, nil] -> x; _ -> b`.
+    tags: [special-forms, kernel]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-macro-hygiene-variable-leak
+    kind: mcq
+    difficulty: middle
+    title: "Does a variable set inside a macro leak into the caller?"
+    body: |
+      ```elixir
+      defmodule Hygiene do
+        defmacro no_interference do
+          quote do: a = 1
+        end
+      end
+
+      defmodule HygieneTest do
+        require Hygiene
+
+        def go do
+          a = 13
+          Hygiene.no_interference()
+          a
+        end
+      end
+
+      HygieneTest.go()
+      ```
+    choices:
+      - "`1` - the macro's assignment overwrites the caller's `a`"
+      - "`13` - macros are hygienic; the macro's `a` lives in a different context"
+      - "A `CompileError` because `a` is defined twice"
+      - "`nil` because the macro's `a` shadows the caller's `a` until the end of the function"
+    answer: 1
+    explanation: |
+      Variables defined inside `quote` carry the macro's module as their context (the third element of the variable
+      tuple, e.g. `{:a, [], Hygiene}`), while the caller's `a` has context `HygieneTest`/`nil`. They are different
+      variables, so the caller still sees `13`. To intentionally touch the caller's variable you must write
+      `var!(a) = 1` in the quote. Note Elixir would also warn that the macro's `a` is unused.
+    tags: [hygiene, var!]
+    source: https://elixir.hexdocs.pm/macros.html
+
+  - slug: elixir-macro-bind-quoted-evaluation-once
+    kind: mcq
+    difficulty: middle
+    title: "What does `bind_quoted` fix in this macro?"
+    body: |
+      ```elixir
+      defmacro squared(x) do
+        quote do
+          unquote(x) * unquote(x)
+        end
+      end
+
+      squared(expensive_call())
+      ```
+
+      A reviewer says "use `bind_quoted`". What problem are they pointing at?
+    choices:
+      - "`expensive_call()` is evaluated twice, because the AST is pasted into the quote twice; `bind_quoted: [x: x]` evaluates it once and binds the result"
+      - "`unquote` is not allowed more than once in a `quote` block"
+      - "Without `bind_quoted` the macro is not hygienic and `x` leaks"
+      - "`bind_quoted` makes the macro run at runtime instead of compile time"
+    answer: 0
+    explanation: |
+      `unquote(x)` injects the *expression* `expensive_call()`, so the expansion is literally
+      `expensive_call() * expensive_call()`: two calls, and two different values if the call has side effects.
+      With `quote bind_quoted: [x: x] do x * x end` the generated code is `x = expensive_call(); x * x`, so the
+      argument is evaluated exactly once. `bind_quoted` also disables `unquote` inside the block, which the docs
+      recommend whenever you only need to inject values.
+    tags: [bind_quoted, unquote]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html#quote/2
+
+  - slug: elixir-macro-use-expands-to
+    kind: mcq
+    difficulty: junior
+    title: "What does `use Feature, option: :value` expand to?"
+    body: |
+      ```elixir
+      defmodule Example do
+        use Feature, option: :value
+      end
+      ```
+    choices:
+      - "`import Feature` followed by `Feature.init(option: :value)`"
+      - "`require Feature` followed by `Feature.__using__(option: :value)`, whose returned AST is injected into `Example`"
+      - "`alias Feature` and a `@behaviour Feature` declaration"
+      - "A call to `Feature.start_link(option: :value)` when `Example` starts"
+    answer: 1
+    explanation: |
+      `use` is a macro in `Kernel`. It requires the module and then invokes its `__using__/1` macro with the given
+      options; whatever quoted code `__using__` returns is inserted at the call site. That is why `use GenServer`
+      can define default callbacks, `use ExUnit.Case` can import `test`, and so on. Because `use` can inject
+      arbitrary code, the official anti-pattern guide says to prefer `import`/`alias` when they suffice and to
+      document what `__using__` injects.
+    tags: [use, __using__]
+    source: https://hexdocs.pm/elixir/alias-require-and-import.html
+
+  - slug: elixir-macro-escape-when-needed
+    kind: mcq
+    difficulty: middle
+    title: "When do you need `Macro.escape/1`?"
+    body: |
+      ```elixir
+      defmacro defconfig(map) do
+        quote do
+          def config, do: unquote(???)
+        end
+      end
+      ```
+
+      The macro is called as `defconfig(%{retries: 3})` in one case and, in another, the macro *itself* builds a
+      map at compile time: `cfg = %{retries: 3}` then wants to inject `cfg`. In which case is `Macro.escape` needed?
+    choices:
+      - "In both cases; maps can never be unquoted directly"
+      - "Only when injecting a value computed at compile time (the `cfg` map), because macro arguments already arrive as AST"
+      - "Only when the macro argument is a map literal written by the caller"
+      - "Never; `unquote` escapes values automatically"
+    answer: 1
+    explanation: |
+      Macro arguments are already quoted expressions (the caller's `%{retries: 3}` arrives as `{:%{}, [], [retries: 3]}`),
+      so `unquote(map)` is correct. But a map you *construct inside* the macro is a runtime value, not AST; unquoting
+      it directly yields an invalid quoted expression. `Macro.escape(cfg)` converts it to `{:%{}, [], [...]}` first.
+      Atoms, numbers, strings, lists and 2-tuples do not need escaping because they are their own AST.
+    tags: [Macro.escape, unquote]
+    source: https://elixir.hexdocs.pm/Macro.html
+
+  - slug: elixir-macro-register-attribute-accumulate
+    kind: mcq
+    difficulty: middle
+    title: "What does `accumulate: true` change about a module attribute?"
+    body: |
+      ```elixir
+      defmodule Fields do
+        Module.register_attribute(__MODULE__, :fields, accumulate: true)
+        @fields :name
+        @fields :email
+        def all, do: @fields
+      end
+
+      Fields.all()
+      ```
+    choices:
+      - "`[:name, :email]`"
+      - "`[:email, :name]`"
+      - "`:email` - the last write wins, as with any attribute"
+      - "`{:name, :email}`"
+    answer: 1
+    explanation: |
+      Without registration, a module attribute is a single value and each `@fields` write replaces the previous one.
+      With `accumulate: true` every write is *prepended* to a list, so reading `@fields` gives `[:email, :name]`
+      (newest first). DSLs such as Ecto's `field` or ExUnit's `test` rely on this to collect declarations and then
+      generate code from the accumulated list in `@before_compile`. Call `Enum.reverse/1` if declaration order matters.
+    tags: [module-attributes, register_attribute, dsl]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-macro-before-compile-vs-after-compile
+    kind: mcq
+    difficulty: senior
+    title: "Which hook can still inject code into the module?"
+    body: |
+      You are writing a DSL that collects `field` declarations in an accumulating attribute and wants to define
+      `__struct__/0` and `fields/0` from them once the user has finished writing the module body.
+
+      Which compile hook should generate that code?
+    choices:
+      - "`@after_compile` - it receives the module's bytecode and can patch it"
+      - "`@on_definition` - it fires for every `def` and can append definitions"
+      - "`@before_compile` - its `__before_compile__/1` macro runs after the body is evaluated and its returned AST is injected at the end of the module"
+      - "`@on_load` - it runs when the module is loaded into the VM"
+    answer: 2
+    explanation: |
+      `@before_compile Mod` calls `Mod.__before_compile__(env)` after the module body has been evaluated (so all
+      attributes are populated) but before compilation; if it is a macro, the quoted code it returns is appended to
+      the module. `@after_compile` receives `env` and the binary *after* compilation: you can inspect or validate, but
+      not add definitions. `@on_definition` is invoked for each function clause as it is defined and is purely
+      observational (it must be a function, not a macro). `@on_load` is a runtime hook, mainly used for NIFs.
+    tags: [before_compile, after_compile, on_definition, dsl]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-macro-caller-vs-env
+    kind: mcq
+    difficulty: middle
+    title: "`__CALLER__` vs `__ENV__` inside a macro"
+    body: |
+      Inside `defmacro log_here(msg)` you want to embed the file and line *of the code that invoked the macro*
+      into the generated expression.
+
+      Which one gives you that information?
+    choices:
+      - "`__ENV__` - it always describes the current compilation environment"
+      - "`__CALLER__` - inside a macro body it is the `Macro.Env` of the call site; `__ENV__` would be the macro's own environment"
+      - "`__MODULE__` - it returns the caller's module, from which file and line can be derived"
+      - "Neither; the only way is `quote location: :keep`"
+    answer: 1
+    explanation: |
+      `__CALLER__` is only available inside macro bodies and holds the `Macro.Env` of the invocation point
+      (`__CALLER__.module`, `.file`, `.line`, `.function`, `.aliases`...). `__ENV__` in the macro body refers to the
+      environment of the macro definition, which is rarely what you want. `location: :keep` solves a different
+      problem: it makes stack traces of code *generated by* the macro point at the quote block instead of the caller.
+    tags: [__CALLER__, __ENV__, Macro.Env]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-macro-code-my-unless
+    kind: code
+    difficulty: junior
+    title: "Write an `unless`-like macro"
+    body: |
+      Define `MyUnless.my_unless/2`, a macro that evaluates its `do` block only when the condition is falsy
+      (`nil` or `false`) and returns `nil` otherwise. The block must **not** be evaluated when the condition is truthy,
+      which is exactly why this has to be a macro and not a function.
+
+      ```elixir
+      require MyUnless
+      MyUnless.my_unless(1 > 2, do: :ran)   #=> :ran
+      MyUnless.my_unless(true, do: :ran)    #=> nil
+      ```
+    starter_code: |
+      defmodule MyUnless do
+        defmacro my_unless(condition, do: block) do
+          # TODO: build the AST with quote/unquote
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MyUnlessTest do
+        use ExUnit.Case
+        require MyUnless
+
+        test "runs the block when the condition is falsy" do
+          assert MyUnless.my_unless(false, do: :ran) == :ran
+          assert MyUnless.my_unless(nil, do: :ran) == :ran
+        end
+
+        test "returns nil when the condition is truthy" do
+          assert MyUnless.my_unless(1 < 2, do: :ran) == nil
+        end
+
+        test "does not evaluate the block when the condition is truthy" do
+          MyUnless.my_unless(true, do: send(self(), :evaluated))
+          refute_received :evaluated
+        end
+      end
+    solution: |
+      defmodule MyUnless do
+        defmacro my_unless(condition, do: block) do
+          quote do
+            if unquote(condition), do: nil, else: unquote(block)
+          end
+        end
+      end
+    explanation: |
+      The macro receives `condition` and `block` as quoted expressions, not values, and returns a new quoted `if`.
+      A plain function `fun_unless(cond, expr)` would receive `expr` already evaluated, so `send(self(), :evaluated)`
+      would run regardless. Kernel's own `unless` was implemented this way (and is deprecated in favour of `if !cond`
+      since Elixir 1.18). Interviewers often follow up with "what does `Macro.expand_once/2` show for a call?"
+    tags: [defmacro, quote, unquote]
+    source: https://elixir.hexdocs.pm/macros.html
+
+  - slug: elixir-macro-code-assert-ok
+    kind: code
+    difficulty: middle
+    title: "An `assert_ok` macro that unwraps `{:ok, value}`"
+    body: |
+      Define `AssertOk.assert_ok/1`, a macro that evaluates an expression, returns `value` if the result is
+      `{:ok, value}`, and raises `ArgumentError` with a message containing `inspect(result)` otherwise.
+      The macro must be hygienic: any variable it binds internally must not leak into the caller.
+
+      ```elixir
+      require AssertOk
+      AssertOk.assert_ok({:ok, 42})       #=> 42
+      AssertOk.assert_ok({:error, :nope}) #=> ** (ArgumentError) expected {:ok, _}, got: {:error, :nope}
+      ```
+    starter_code: |
+      defmodule AssertOk do
+        defmacro assert_ok(expr) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AssertOkTest do
+        use ExUnit.Case
+        require AssertOk
+
+        test "returns the unwrapped value" do
+          assert AssertOk.assert_ok({:ok, 42}) == 42
+          assert AssertOk.assert_ok(Map.fetch(%{a: 1}, :a)) == 1
+        end
+
+        test "raises with the offending value in the message" do
+          assert_raise ArgumentError, ~r/got: \{:error, :nope\}/, fn ->
+            AssertOk.assert_ok({:error, :nope})
+          end
+        end
+
+        test "does not leak variables into the caller" do
+          value = :mine
+          AssertOk.assert_ok({:ok, :theirs})
+          assert value == :mine
+        end
+      end
+    solution: |
+      defmodule AssertOk do
+        defmacro assert_ok(expr) do
+          quote do
+            case unquote(expr) do
+              {:ok, value} -> value
+              other -> raise ArgumentError, "expected {:ok, _}, got: " <> inspect(other)
+            end
+          end
+        end
+      end
+    explanation: |
+      The `value` and `other` bound inside the quote belong to the `AssertOk` context, so the caller's `value`
+      stays untouched: that is macro hygiene at work. Note that `expr` is unquoted exactly once; unquoting it
+      twice (say, once to check and once to return) would evaluate the expression twice. This is the pattern behind
+      ExUnit's own `assert {:ok, v} = fun()` and many test helpers.
+    tags: [defmacro, hygiene, case]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html#quote/2
+
+  - slug: elixir-macro-code-defvalidator-dsl
+    kind: code
+    difficulty: senior
+    title: "A `rule` DSL built on accumulating attributes and `@before_compile`"
+    body: |
+      Implement a `Validator` module that can be `use`d to declare rules and generates functions from them:
+
+      ```elixir
+      defmodule AgeCheck do
+        use Validator
+        rule :positive, &(&1 > 0)
+        rule :adult, &(&1 >= 18)
+      end
+
+      AgeCheck.rules()    #=> [:positive, :adult]   (declaration order)
+      AgeCheck.errors(10) #=> [:adult]              (names of failing rules, in order)
+      AgeCheck.valid?(20) #=> true
+      ```
+
+      Requirements: `__using__/1` must register `@rules` with `Module.register_attribute(..., accumulate: true)`
+      and set `@before_compile Validator`; `rule/2` is a macro that stores the rule; `__before_compile__/1` injects
+      `rules/0`, `errors/1` and `valid?/1`. The rule argument is an anonymous function or capture.
+    starter_code: |
+      defmodule Validator do
+        defmacro __using__(_opts) do
+          # TODO: import rule/2, register the accumulating attribute, set @before_compile
+        end
+
+        defmacro rule(name, fun) do
+          # TODO: store the rule in @rules
+        end
+
+        defmacro __before_compile__(env) do
+          # TODO: read @rules via Module.get_attribute and generate rules/0, errors/1, valid?/1
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AgeCheck do
+        use Validator
+        rule :positive, &(&1 > 0)
+        rule :adult, &(&1 >= 18)
+      end
+
+      defmodule NameCheck do
+        use Validator
+        rule :present, fn s -> s != "" end
+      end
+
+      defmodule ValidatorDslTest do
+        use ExUnit.Case
+
+        test "rules are listed in declaration order" do
+          assert AgeCheck.rules() == [:positive, :adult]
+          assert NameCheck.rules() == [:present]
+        end
+
+        test "errors returns the names of failing rules" do
+          assert AgeCheck.errors(10) == [:adult]
+          assert AgeCheck.errors(-1) == [:positive, :adult]
+          assert AgeCheck.errors(30) == []
+        end
+
+        test "valid? is true only when every rule passes" do
+          assert AgeCheck.valid?(20)
+          refute AgeCheck.valid?(5)
+          refute NameCheck.valid?("")
+        end
+      end
+    solution: |
+      defmodule Validator do
+        defmacro __using__(_opts) do
+          quote do
+            import Validator, only: [rule: 2]
+            Module.register_attribute(__MODULE__, :rules, accumulate: true)
+            @before_compile Validator
+          end
+        end
+
+        defmacro rule(name, fun) do
+          # store the *AST* of the function; anonymous functions themselves cannot live in attributes
+          quote do
+            @rules {unquote(name), unquote(Macro.escape(fun))}
+          end
+        end
+
+        defmacro __before_compile__(env) do
+          rules = env.module |> Module.get_attribute(:rules) |> Enum.reverse()
+          names = Enum.map(rules, fn {name, _} -> name end)
+
+          checks =
+            for {name, fun_ast} <- rules do
+              quote do: {unquote(name), unquote(fun_ast).(value)}
+            end
+
+          quote do
+            def rules, do: unquote(names)
+
+            def errors(value) do
+              for {name, false} <- unquote(checks), do: name
+            end
+
+            def valid?(value), do: errors(value) == []
+          end
+        end
+      end
+    explanation: |
+      This is the shape of every attribute-driven DSL (Ecto `field`, ExUnit `test`, Plug `plug`):
+      `use` sets up an accumulating attribute and a `@before_compile` hook; each DSL call appends to the attribute;
+      the hook reads it (via `Module.get_attribute/2` on `env.module`) once the body is done and generates code.
+      Two subtleties candidates miss: accumulated values come back newest-first, and anonymous functions cannot be
+      stored in attributes or injected with `unquote`, so the macro stores the *quoted* function (`Macro.escape(fun)`)
+      and the hook unquotes that AST back into real code.
+    tags: [dsl, register_attribute, before_compile, __using__]
+    source: https://elixir.hexdocs.pm/domain-specific-languages.html
+
+  - slug: elixir-macro-code-timed
+    kind: code
+    difficulty: middle
+    title: "A `timed` macro returning `{microseconds, result}`"
+    body: |
+      Define `Timed.timed/1`, a macro that measures how long an expression takes using `:timer.tc/1` and returns
+      `{microseconds, result}`. The expression must be evaluated lazily, inside the timing, and only once.
+
+      ```elixir
+      require Timed
+      {micros, 3} = Timed.timed(1 + 2)
+      ```
+    starter_code: |
+      defmodule Timed do
+        defmacro timed(expr) do
+          # TODO: wrap expr in a fn and hand it to :timer.tc/1
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TimedTest do
+        use ExUnit.Case
+        require Timed
+
+        test "returns the result of the expression" do
+          assert {_micros, 3} = Timed.timed(1 + 2)
+          assert {_micros, :ok} = Timed.timed(Process.sleep(1))
+        end
+
+        test "returns elapsed microseconds as a non-negative integer" do
+          {micros, _} = Timed.timed(Enum.sum(1..1000))
+          assert is_integer(micros) and micros >= 0
+        end
+
+        test "evaluates the expression exactly once" do
+          Timed.timed(send(self(), :tick))
+          assert_received :tick
+          refute_received :tick
+        end
+      end
+    solution: |
+      defmodule Timed do
+        defmacro timed(expr) do
+          quote do
+            :timer.tc(fn -> unquote(expr) end)
+          end
+        end
+      end
+    explanation: |
+      `:timer.tc/1` takes a zero-arity function and returns `{elapsed_micros, result}`. Wrapping `unquote(expr)`
+      in `fn -> ... end` is what delays evaluation until inside the timer; a plain function `timed(expr)` would
+      receive the already-computed value and always report roughly zero. Variables from the caller are still visible
+      inside the generated closure because the unquoted AST keeps the caller's variable contexts.
+    tags: [defmacro, timer, erlang-interop]
+    source: https://elixir.hexdocs.pm/macros.html
+
+  - slug: elixir-macro-code-prewalk-swap-plus
+    kind: code
+    difficulty: middle
+    title: "Rewrite every `+` into `-` with `Macro.prewalk`"
+    body: |
+      Implement `AstRewrite.swap/1`: given a quoted expression, return a new AST in which every binary `+` call has
+      been replaced with `-`. Other operators and the metadata must be left untouched.
+
+      ```elixir
+      ast = quote do: 10 + 3
+      AstRewrite.swap(ast) |> Macro.to_string()   #=> "10 - 3"
+      AstRewrite.swap(ast) |> Code.eval_quoted()  #=> {7, []}
+      ```
+    starter_code: |
+      defmodule AstRewrite do
+        def swap(ast) do
+          # TODO: Macro.prewalk/2 with a clause for {:+, meta, [a, b]}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AstRewriteTest do
+        use ExUnit.Case
+
+        test "turns a single + into -" do
+          ast = AstRewrite.swap(quote do: 10 + 3)
+          assert Macro.to_string(ast) == "10 - 3"
+          assert {7, _} = Code.eval_quoted(ast)
+        end
+
+        test "walks nested expressions" do
+          ast = AstRewrite.swap(quote do: 1 + 2 + 3)
+          assert {-4, _} = Code.eval_quoted(ast)
+        end
+
+        test "leaves other operators and metadata alone" do
+          original = quote line: 7, do: 2 * 3
+          assert AstRewrite.swap(original) == original
+          {:-, meta, _} = AstRewrite.swap(quote line: 9, do: 1 + 1)
+          assert meta[:line] == 9
+        end
+      end
+    solution: |
+      defmodule AstRewrite do
+        def swap(ast) do
+          Macro.prewalk(ast, fn
+            {:+, meta, [a, b]} -> {:-, meta, [a, b]}
+            node -> node
+          end)
+        end
+      end
+    explanation: |
+      `Macro.prewalk/2` visits every node parent-first and replaces it with whatever the function returns, so a
+      two-clause anonymous function is enough: rewrite `{:+, meta, [a, b]}` and pass everything else through.
+      Keeping `meta` preserves line numbers, which matters for error messages in generated code. `postwalk` would
+      also work here; the order only matters when the rewrite depends on already-transformed children. This is the
+      same tool `mix format --migrate`, Credo and linters use to analyse or transform code.
+    tags: [Macro.prewalk, ast, Code.eval_quoted]
+    source: https://elixir.hexdocs.pm/Macro.html
+
+  - slug: elixir-macro-code-sigil-i
+    kind: code
+    difficulty: junior
+    title: "A custom `~i` sigil that parses integers"
+    body: |
+      Define `IntSigil.sigil_i/2` so that `~i(1 2 3)` returns the list of integers `[1, 2, 3]`.
+      With the `s` modifier (`~i(1 2 3)s`) it should return their sum instead.
+
+      ```elixir
+      import IntSigil
+      ~i(10 20)   #=> [10, 20]
+      ~i(10 20)s  #=> 30
+      ```
+    starter_code: |
+      defmodule IntSigil do
+        def sigil_i(string, modifiers) do
+          # TODO: split on whitespace, parse, honour the ?s modifier
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule IntSigilTest do
+        use ExUnit.Case
+        import IntSigil
+
+        test "parses whitespace separated integers" do
+          assert ~i(1 2 3) == [1, 2, 3]
+          assert ~i(-4   7) == [-4, 7]
+        end
+
+        test "empty input gives an empty list" do
+          assert ~i() == []
+        end
+
+        test "the s modifier sums the values" do
+          assert ~i(10 20 5)s == 35
+        end
+      end
+    solution: |
+      defmodule IntSigil do
+        def sigil_i(string, modifiers) do
+          ints = string |> String.split() |> Enum.map(&String.to_integer/1)
+          if ?s in modifiers, do: Enum.sum(ints), else: ints
+        end
+      end
+    explanation: |
+      A sigil is just a function (or macro) named `sigil_<char>` that receives the content as a binary and the
+      modifiers as a list of character codes, so `~i(1 2)s` compiles to `sigil_i("1 2", [?s])`. Lowercase sigils
+      allow interpolation and escapes; uppercase ones (`~S`, `~W`) pass the raw text. Built-ins like `~r` and `~D`
+      are defined as macros in `Kernel` so they can do their work at compile time, but a plain function is enough
+      here. Since Elixir 1.15, multi-letter uppercase sigils such as `~HTML` are allowed too.
+    tags: [sigils, sigil_i]
+    source: https://elixir.hexdocs.pm/sigils.html
+
+  - slug: elixir-macro-code-defguard-is-adult
+    kind: code
+    difficulty: junior
+    title: "Define a custom guard with `defguard`"
+    body: |
+      Define `Guards.is_adult/1` using `defguard` so it can be used both inside `when` clauses and as a normal
+      boolean expression. It must be true only for integers greater than or equal to 18.
+
+      ```elixir
+      require Guards
+      Guards.is_adult(21)   #=> true
+      def label(age) when Guards.is_adult(age), do: :adult
+      ```
+    starter_code: |
+      defmodule Guards do
+        # TODO: defguard is_adult(age) when ...
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule GuardsTest do
+        use ExUnit.Case
+        require Guards
+
+        def label(age) when Guards.is_adult(age), do: :adult
+        def label(_), do: :minor
+
+        test "works inside a when clause" do
+          assert label(18) == :adult
+          assert label(17) == :minor
+          assert label("18") == :minor
+        end
+
+        test "works as a plain expression" do
+          assert Guards.is_adult(40)
+          refute Guards.is_adult(17.9)
+          refute Guards.is_adult(nil)
+        end
+      end
+    solution: |
+      defmodule Guards do
+        defguard is_adult(age) when is_integer(age) and age >= 18
+      end
+    explanation: |
+      `defguard` is a macro that defines another macro, which is why the caller needs `require Guards`. The
+      compiler checks at definition time that the body uses only guard-safe expressions (`is_integer/1`, `and`,
+      comparisons...). Because a guard cannot raise, `"18" >= 18` is simply `false` thanks to Erlang term ordering,
+      and `is_integer/1` guards against the string case. `defguardp` gives you a private version for use inside the
+      module only.
+    tags: [defguard, guards]
+    source: https://elixir.hexdocs.pm/Kernel.html#defguard/1
+
+  - slug: elixir-macro-open-function-first
+    kind: open
+    difficulty: middle
+    title: "When should you write a macro, and when should you refuse to?"
+    body: |
+      A colleague proposes a macro `with_retries(n, do: block)` that retries a block `n` times.
+      Argue for or against, and give the general rule you use to decide whether something should be a macro.
+    answer: |
+      - Default answer: write a function. `with_retries(n, fn -> ... end)` does the job; the closure already delays
+        evaluation, which is the only thing the macro would buy you.
+      - Macros are justified only when a function *cannot* do it: the code must run at compile time
+        (`Logger` purging, `defguard`), it needs the caller's unevaluated AST (`assert` introspection, `dbg`),
+        it must define things in the caller's module (`def`, `field`, `plug` DSLs), or it needs the call-site
+        environment (`__CALLER__`, file/line).
+      - Costs: a `require` for every caller, a compile-time dependency that triggers recompilation of callers
+        (`mix xref graph --label compile`), worse error messages and stack traces, harder debugging (you must
+        `Macro.expand` to see what runs), hygiene surprises, slower compiles for large expansions.
+      - The official guides say "macros should only be used as a last resort" and "data > functions > macros".
+      - Even when you do need a macro, keep it thin: generate a call to a plain function that holds the logic so
+        the logic is testable and usable without the macro.
+    explanation: |
+      Follow-ups: "Which Elixir core constructs are macros and why?" (`if`, `|>`, `def`, `assert`), "What does a
+      macro cost the compiler?" (compile-time deps, expansion on each call site), and "How would you test the
+      macro?" (test the function it delegates to; `Macro.expand_once` + `Macro.to_string` for the expansion).
+      Candidates who reach for macros to save typing, rather than for compile-time needs, are a red flag.
+    tags: [design, anti-patterns]
+    source: https://elixir.hexdocs.pm/macro-anti-patterns.html
+
+  - slug: elixir-macro-open-use-vs-import
+    kind: open
+    difficulty: middle
+    title: "Explain `use`, and why 'use instead of import' is listed as an anti-pattern"
+    body: |
+      What exactly happens when a module says `use MyLib`? When should a library author provide `__using__/1`
+      versus telling users to `import` or `alias`?
+    answer: |
+      - `use MyLib, opts` expands to `require MyLib` followed by `MyLib.__using__(opts)`; the AST returned by
+        `__using__/1` is injected into the caller's module body.
+      - It can therefore do anything: `import` itself, `alias` modules, set `@behaviour`, register attributes,
+        define functions (often marked `defoverridable`), add `@before_compile` hooks.
+      - That power is the problem: the reader cannot know what `use` did without reading the library, it can
+        define functions that clash with the user's, and it propagates compile-time dependencies into every
+        caller.
+      - Provide `__using__/1` only when you need to define functions/attributes/callbacks in the caller
+        (`use GenServer`, `use ExUnit.Case`, `use Ecto.Schema`). If users only need your macros or functions,
+        tell them to `import` (or `require` for macros) and keep the module explicit.
+      - If you do provide it, document in `@moduledoc` exactly what it injects and accept options rather than
+        hard-coding behaviour.
+    explanation: |
+      Follow-up: "What does `use GenServer` inject?" (`@behaviour GenServer`, default `child_spec/1`, `init/1`,
+      `handle_*` fallbacks, all `defoverridable`). Common mistake: saying `use` is "like `import` but also runs
+      setup", it is strictly `require` + macro call, nothing about importing is implied.
+    tags: [use, __using__, anti-patterns]
+    source: https://elixir.hexdocs.pm/macro-anti-patterns.html
+
+  - slug: elixir-macro-open-hygiene-var-bang
+    kind: open
+    difficulty: middle
+    title: "What is macro hygiene, and when would you break it with `var!`?"
+    body: |
+      Explain how Elixir keeps a macro's variables from colliding with the caller's, how `var!/1` and
+      `Macro.var/2` fit in, and give one legitimate use of intentionally unhygienic variables.
+    answer: |
+      - Every variable in the AST is `{name, meta, context}`. Variables written inside `quote` get the macro
+        module as context; the caller's variables have their own. Same name + different context = different
+        variable, so a macro cannot accidentally read or overwrite `a` in the caller.
+      - Imports and aliases are hygienic too: a function called inside `quote` resolves against the macro
+        module's imports, not the caller's; `alias!/1` reaches the caller's aliases.
+      - `var!(name)` (and `var!(name, context)`) opts out: the variable is resolved in the caller's context, so
+        `var!(a) = 1` assigns the caller's `a`. `Macro.var(:a, nil)` builds the same unhygienic variable node
+        programmatically, useful when generating names in a loop.
+      - Legitimate uses: DSLs that expose a well-known binding, e.g. Plug/Phoenix tests exposing `conn`,
+        ExUnit's `assert_receive` binding pattern variables for the test, or a `with_tempfile(path, do: ...)`
+        macro deliberately giving the block access to `path`.
+      - Each unhygienic variable is a public API contract: document it, and never leak helper temporaries.
+    explanation: |
+      Follow-up: "Why does `quote` inside a macro give variables a `:counter` in metadata?" (each expansion of the
+      macro gets fresh variables so two calls in one function do not clash). Common mistake: thinking hygiene means
+      the macro cannot see caller variables at all; it can, when the *caller* passes them as arguments and they are
+      unquoted, because the unquoted AST keeps the caller's context.
+    tags: [hygiene, var!, Macro.var]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html#quote/2
+
+  - slug: elixir-macro-open-exunit-assert-introspection
+    kind: open
+    difficulty: senior
+    title: "How can ExUnit's `assert` print `left:` and `right:` for a failed `==`?"
+    body: |
+      `assert 1 + 1 == 3` fails with:
+
+      ```
+      Assertion with == failed
+      code:  assert 1 + 1 == 3
+      left:  2
+      right: 3
+      ```
+
+      A plain function receiving `false` could not know any of that. Explain how `assert` works and what else
+      being a macro lets it do.
+    answer: |
+      - `assert` is a macro, so it receives the *AST* of `1 + 1 == 3`: `{:==, meta, [lhs_ast, rhs_ast]}`.
+      - It pattern-matches on the operator at compile time and generates code that evaluates `lhs` and `rhs`
+        separately into hygienic variables, then compares them and, on failure, raises
+        `ExUnit.AssertionError` carrying the original expression (`Macro.to_string`), `left` and `right`.
+      - For `=` it generates a `case`: `assert {:ok, v} = fun()` binds `v` in the test (an intentional
+        hygiene escape, the pattern's variables are the caller's) and reports a `MatchError`-style diff on failure.
+      - It also recognises `match?`, `in`, `=~`, and plain truthy expressions; the formatter uses `left`/`right`
+        to render diffs for maps, lists and strings.
+      - Because the expansion happens at compile time, there is no runtime cost beyond the comparison itself.
+    explanation: |
+      Follow-ups: "Why does `assert x > 1 and y` not give left/right for both?" (only the top-level operator is
+      inspected), "How would you write `assert_ok`?" (match in a `case` inside `quote`). This question separates
+      candidates who have read ExUnit's source from those who have only used it.
+    tags: [exunit, assert, ast]
+    source: https://ex-unit.hexdocs.pm/ExUnit.Assertions.html
+
+  - slug: elixir-macro-open-compile-time-deps
+    kind: open
+    difficulty: senior
+    title: "Why do macros cause recompilation cascades, and how do you diagnose them?"
+    body: |
+      After adding a shared `MyApp.Helpers` module with a few macros, every change to it recompiles 300 files.
+      Explain what is happening and how you would investigate and reduce it.
+    answer: |
+      - Invoking a macro (or calling a function in the module body, or `@attr Mod.fun()`) creates a
+        *compile-time dependency*: the caller must be recompiled whenever the macro module changes, because the
+        expansion is baked into the caller's bytecode. Runtime calls inside function bodies only create runtime
+        dependencies, which never force recompilation.
+      - `use`, `import`+macro, `require`+macro, structs in patterns (export deps) and `@before_compile` all add
+        such edges, and they are transitive ("compile-connected").
+      - Diagnose with `mix xref graph --label compile-connected`, `--format stats` for the most depended-on
+        files, `--format cycles` for cycles, and `mix xref graph --sink lib/my_app/helpers.ex --label compile`.
+      - Reduce: keep macro modules tiny and stable, generate calls to plain functions in a separate module
+        (so the logic lives behind a runtime dep), avoid passing module names to macros used in the body
+        (`Macro.expand_literals/2` trick from the anti-pattern guide), use `alias`/`import` instead of `use`,
+        and never put `Module.concat`/dynamic names where the compiler cannot track them.
+      - `mix compile --verbose` / `MIX_DEBUG=1` show what is recompiled and why.
+    explanation: |
+      Follow-up: "What is an export dependency?" (depending on a struct or public API: recompiled only when the
+      API changes). Mistake: believing `alias` creates a compile-time dependency; it does not, only using the
+      module at compile time does.
+    tags: [xref, compile-time-deps, performance]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Xref.html
+
+  - slug: elixir-macro-open-logger-macro-purge
+    kind: open
+    difficulty: middle
+    title: "Why is `Logger.debug/2` a macro, and what does that enable?"
+    body: |
+      Explain why `Logger.debug(...)`, `Logger.info(...)` etc. are macros that require `require Logger`,
+      and what `compile_time_purge_matching` does.
+    answer: |
+      - Being macros lets the log call be *removed at compile time*: with
+        `config :logger, compile_time_purge_matching: [[level_lower_than: :info]]` every `Logger.debug` expands
+        to `:ok`, so there is zero runtime cost, not even argument evaluation.
+      - It also lets them capture caller metadata (`module`, `function`, `file`, `line`, `mfa`) from `__CALLER__`
+        without you passing it, and lazily evaluate the message: the arguments are only evaluated when the
+        runtime level allows the message (pass a zero-arity function for expensive messages).
+      - `require Logger` is needed precisely because they are macros.
+      - Purging is per-compile: changing the config requires recompiling (`mix deps.compile logger --force`
+        for deps, or `mix compile --force`), and purging ignores runtime level changes made with
+        `Logger.configure/1`.
+      - `Logger.bare_log/3` is the plain function alternative: always evaluates its arguments, no purge, no
+        automatic location metadata.
+    explanation: |
+      Follow-up: "How is this different from setting `level: :info` at runtime?" (runtime level still evaluates
+      the call and checks the level in ETS; purge removes the call). Common mistake: assuming `Logger.debug` with
+      an expensive interpolated string is free in production when only the runtime level is set.
+    tags: [logger, compile-time]
+    source: https://logger.hexdocs.pm/Logger.html
+
+  - slug: elixir-macro-open-eval-quoted-in-macro
+    kind: open
+    difficulty: senior
+    title: "Why is calling `Code.eval_quoted/1` inside a macro a bad idea?"
+    body: |
+      A macro receives an expression, wants to "see its value" to decide what code to generate, and calls
+      `Code.eval_quoted(expr)` in the macro body. Explain what goes wrong and what the correct approaches are.
+    answer: |
+      - Macro arguments are AST, not values. At expansion time the expression may reference variables, function
+        arguments or module functions that do not exist yet; `eval_quoted` has no bindings and the module is
+        still being compiled, so it either raises or evaluates something different from what the caller means.
+      - It also makes expansion depend on compile-time side effects and environment, so behaviour differs
+        between `mix compile` and a release, and the macro cannot be reasoned about from its call site.
+      - Correct approaches: pattern-match on the *shape* of the AST when the decision is purely syntactic
+        (literal atom vs variable); otherwise generate code that makes the decision at runtime
+        (`case unquote(expr) do ... end`); if a value is needed at compile time, require a literal and document it,
+        or compute it from `Macro.expand/2` + literals only; use `bind_quoted` to evaluate once at runtime.
+      - When a macro genuinely needs a computed value (lookup tables, generated clauses), compute it from data
+        that is available at compile time (module attributes, files via `@external_resource`), then inject it
+        with `Macro.escape/1`.
+      - The `Code` docs explicitly call this bad practice; `eval_quoted` is for scripts, IEx and tooling.
+    explanation: |
+      Follow-up: "What is the difference between `Macro.expand/2` and `Code.eval_quoted/1`?" (expand rewrites
+      macros/aliases into core forms without running anything; eval runs the code). Mistake: using `eval_quoted` to
+      "unwrap" a literal that `unquote` would have handled directly.
+    tags: [Code.eval_quoted, Macro.escape, anti-patterns]
+    source: https://elixir.hexdocs.pm/Code.html
+
+  - slug: elixir-macro-open-defoverridable-defaults
+    kind: open
+    difficulty: middle
+    title: "How does `use GenServer` provide default callbacks you can still override?"
+    body: |
+      After `use GenServer` you only write `init/1` and `handle_call/3`, yet the module satisfies the whole
+      behaviour. Explain the mechanism and how `super` fits in.
+    answer: |
+      - `GenServer.__using__/1` injects `@behaviour GenServer` plus default implementations of `child_spec/1`,
+        `init/1`, `handle_call/3`, `handle_cast/2`, `handle_info/2`, `terminate/2`, `code_change/3` etc.
+      - It then calls `defoverridable child_spec: 1, init: 1, handle_call: 3, ...` (or `defoverridable GenServer`
+        to mark every callback). This tells the compiler those definitions are *lazy*: if the user defines a
+        function with the same name/arity later in the module, the injected one is discarded instead of raising
+        a "redefining" error or becoming an extra clause.
+      - Inside the overriding definition `super(args)` calls the original overridable implementation, which is
+        how people extend `child_spec/1` with custom restart options.
+      - Overridable definitions must be marked *before* the user's code, which is why `__using__` does it.
+      - It is also how `ExUnit.CaseTemplate`, Plug.Builder and Phoenix controllers let you customise defaults.
+    explanation: |
+      Follow-up: "What happens if the user defines only one clause of `handle_info/2`?" (the whole default is
+      replaced, so unexpected messages now raise a `FunctionClauseError`, a classic production bug). Mistake:
+      describing `defoverridable` as runtime inheritance; it is purely a compile-time definition swap.
+    tags: [defoverridable, use, GenServer]
+    source: https://elixir.hexdocs.pm/Kernel.html#defoverridable/1
+
+  - slug: elixir-macro-open-debugging-macros
+    kind: open
+    difficulty: senior
+    title: "How do you debug a misbehaving macro?"
+    body: |
+      A DSL macro generates code that raises a `FunctionClauseError` with a stack trace pointing at the user's
+      module. Walk through the tools and options you would use to find and fix the problem.
+    answer: |
+      - See the expansion: `quote(do: my_macro(...)) |> Macro.expand_once(__ENV__) |> Macro.to_string()`
+        in IEx (after `require`), or `Macro.expand/2` to expand repeatedly until a non-macro form appears
+        (note it does not expand children; use `Macro.prewalk` + `expand` for a full expansion).
+      - `IO.inspect(ast, structure: true)` / `Macro.validate/1` to catch invalid AST, typically a runtime value
+        that needed `Macro.escape/1`.
+      - Stack traces: `quote location: :keep` makes lines in generated `def`s point at the macro's source
+        instead of the call site, which is what you want when the bug is in generated code; without it the
+        `line:` metadata is the caller's. Do not combine it with unquoting macro arguments that carry their own
+        line info.
+      - `quote generated: true` suppresses "unused" and unreachable-clause warnings for generated code.
+      - Hygiene surprises: `undefined variable` errors with `(context Mod)` in the message mean a variable was
+        meant to be shared across contexts; fix with `var!` or by passing it explicitly.
+      - Compile-time prints: `IO.inspect` inside the macro body runs during `mix compile`, which is fine for
+        exploration; `dbg/1` with `iex --dbg pry -S mix` for interactive stepping.
+      - Then write an expansion test: assert on `Macro.to_string(expanded)` or, better, on the behaviour of the
+        generated module.
+    explanation: |
+      Follow-up: "Why does `Macro.expand` on `use X` fail outside the module?" (expansion needs the `require`
+      in the given env; pass an env that already requires it). Interviewers listen for `expand_once` vs `expand`
+      and for `location: :keep`.
+    tags: [debugging, Macro.expand, location-keep]
+    source: https://elixir.hexdocs.pm/Macro.html
+
+  - slug: elixir-macro-open-pipe-operator-macro
+    kind: open
+    difficulty: middle
+    title: "How is `|>` implemented, and what does `Macro.pipe/3` do?"
+    body: |
+      Explain how the pipe operator is implemented, how `Macro.pipe/3` and `Macro.unpipe/1` relate to it, and the
+      classic pitfall with `x |> fun.()` versus `x |> fun`.
+    answer: |
+      - `|>` is a macro in `Kernel`, not a special form. It calls `Macro.unpipe/1` to flatten
+        `a |> b() |> c()` into `[{a, 0}, {b(), 0}, {c(), 0}]` and then folds with `Macro.pipe/3`, which inserts the
+        previous expression as the *first argument* of the next call: `c(b(a))`.
+      - `Macro.pipe(left, right, position)` is a plain AST transformation: it pattern-matches `right` as a call
+        tuple and prepends `left` to its argument list; it raises for things that are not calls (literals,
+        bare variables), which is why `1 |> x` errors and `x |> IO.puts` must be `x |> IO.puts()`.
+      - Anonymous functions need the `.()` syntax: `x |> fun.()` becomes `fun.(x)`; `x |> fun` is invalid.
+      - The compiler warns on `x |> fun` without parentheses because precedence makes it ambiguous.
+      - Because the rewrite is purely syntactic and happens at compile time, there is no runtime cost and no
+        intermediate list; the pipe is just nested calls after expansion.
+    explanation: |
+      Follow-up: "Why does `-1 |> abs()` warn?" (unary minus binds looser than `|>`, so it parses as `-(1 |> abs())`;
+      wrap in parens). Mistake: claiming `|>` builds an intermediate function or that it is lazy.
+    tags: [pipe, Macro.pipe]
+    source: https://elixir.hexdocs.pm/Macro.html
+
+  - slug: elixir-macro-theory-quoted-expression-anatomy
+    kind: theory
+    difficulty: junior
+    title: "Anatomy of a quoted expression"
+    body: |
+      Every piece of Elixir code is data. `quote` gives you that data, the *abstract syntax tree* (AST), and
+      macros are functions from AST to AST.
+
+      ```elixir
+      quote do: sum(1, 2, 3)
+      #=> {:sum, [], [1, 2, 3]}
+
+      quote do: 1 + 2
+      #=> {:+, [context: Elixir, imports: [{1, Kernel}, {2, Kernel}]], [1, 2]}
+
+      quote do: Enum.map(list, fun)
+      #=> {{:., [], [{:__aliases__, [alias: false], [:Enum]}, :map]}, [], [{:list, [], Elixir}, {:fun, [], Elixir}]}
+      ```
+
+      Rules to remember:
+
+      - Calls are `{name, metadata, args}`; remote calls have a `{:., [], [module, fun]}` tuple as the name.
+      - Variables are `{name, metadata, context}` where the third element is an atom (`nil` or a module), not a list.
+      - Literals that are their own AST: atoms, numbers, strings, lists, and two-element tuples.
+        Everything else (3+ tuples, maps, structs) gets a wrapper such as `{:{}, [], [1, 2, 3]}` or `{:%{}, [], [...]}`.
+      - Metadata is a keyword list: `line:`, `context:`, `imports:`, `counter:` etc.; the compiler uses it for error
+        messages and hygiene.
+      - `Macro.to_string/1` renders AST back to source; `Code.string_to_quoted/1` parses source into AST; `Code.eval_quoted/1`
+        runs it.
+
+      Because the AST is ordinary tuples and lists, you can pattern-match on it, build it with `quote`/`unquote`,
+      and traverse it with `Macro.prewalk/2` like any other data structure.
+    answer: |
+      **Q:** Why is `{1, 2, 3}` quoted as `{:{}, [], [1, 2, 3]}` while `{1, 2}` quotes to itself?
+      **A:** A three-element tuple would be indistinguishable from the `{form, meta, args}` call shape, so it needs
+      the `:{}` wrapper; two-element tuples (and atoms, numbers, strings, lists) are unambiguous and are literals.
+    explanation: |
+      Interviewers test this by asking you to write the AST of a small expression by hand, or to explain why
+      `quote do: %{a: 1}` is not `%{a: 1}`. Knowing the five literal types is what lets you decide when
+      `Macro.escape/1` is required and when a value can be unquoted directly.
+    tags: [ast, quote, literals]
+    source: https://elixir.hexdocs.pm/quote-and-unquote.html
+
+  - slug: elixir-macro-theory-compilation-pipeline
+    kind: theory
+    difficulty: middle
+    title: "From source to `.beam`: where macros run"
+    body: |
+      Understanding *when* a macro runs explains most macro surprises.
+
+      1. **Parse**: the tokenizer and parser turn text into AST (`Code.string_to_quoted/1`). No code runs.
+      2. **Expand**: the compiler walks the AST; whenever it meets a macro call (`if`, `def`, `use`, your
+         `defmacro`), it *calls the macro function* with the quoted arguments and replaces the call with the
+         returned AST. This repeats until only special forms remain (`case`, `fn`, `=`, `.`, `__block__` ...).
+         `require`/`import` are what make a macro visible at this stage.
+      3. **Compile**: the expanded, special-form-only AST becomes Erlang abstract format and then BEAM bytecode.
+
+      `defmodule` is itself a macro that, at runtime of the *script*, compiles the body and returns
+      `{:module, Name, binary, last_expression}`. Everything in the module body (`@attr`, `Module.register_attribute`,
+      `for` loops generating `def`s, `IO.inspect`) is **executed** while the module is being compiled, which is why:
+
+      - `IO.puts` in a module body prints during `mix compile`;
+      - `@before_compile` can see all attributes, because the body has already run;
+      - `defmacrop` must be defined above its first use: it has to exist before the expander reaches the call;
+      - unquote fragments work outside `quote`:
+        ```elixir
+        for {name, val} <- [one: 1, two: 2] do
+          def unquote(name)(), do: unquote(val)
+        end
+        ```
+        `def` is a macro, so its arguments are AST and `unquote` is allowed there.
+    answer: |
+      **Q:** Why does `IO.puts("hi")` written directly in a module body print at compile time rather than when a
+      function is called?
+      **A:** The module body is executed while `defmodule` compiles the module; only code inside `def` bodies is
+      compiled into functions that run later.
+    explanation: |
+      Most "why does my macro not see X" questions are answered by placing the macro in this timeline: the macro
+      runs during expansion of the *caller*, before the caller's functions exist and before any runtime value is
+      available. The `{:module, name, binary, result}` return of `defmodule` is a frequent trivia follow-up, as is
+      "what is an unquote fragment".
+    tags: [compilation, defmodule, unquote-fragments]
+    source: https://elixir.hexdocs.pm/macros.html
+
+  - slug: elixir-macro-theory-module-hooks
+    kind: theory
+    difficulty: senior
+    title: "Module compilation hooks: `@before_compile`, `@after_compile`, `@on_definition`"
+    body: |
+      Elixir exposes hooks into the life of a module being compiled. They are the backbone of DSLs and
+      static checkers.
+
+      | Hook | Receives | Can inject code? | Typical use |
+      |------|----------|------------------|-------------|
+      | `@before_compile Mod` | `Macro.Env` | yes, if `__before_compile__/1` is a macro | generate functions from accumulated attributes |
+      | `@after_compile Mod` | `env, bytecode` | no | validate the finished module, emit warnings, write artifacts |
+      | `@after_verify Mod` | module name | no | runs after undefined-function/deprecation checks (Elixir 1.14+) |
+      | `@on_definition Mod` | `env, kind, name, args, guards, body` | no (function only) | record every `def`, e.g. for decorators or docs |
+      | `@on_load :fun` | nothing (runtime) | no | load NIFs when the module is loaded |
+
+      ```elixir
+      defmodule Tracked do
+        defmacro __using__(_) do
+          quote do
+            Module.register_attribute(__MODULE__, :defs, accumulate: true)
+            @on_definition Tracked
+            @before_compile Tracked
+          end
+        end
+
+        def __on_definition__(env, kind, name, args, _guards, _body) do
+          Module.put_attribute(env.module, :defs, {kind, name, length(args)})
+        end
+
+        defmacro __before_compile__(env) do
+          defs = Module.get_attribute(env.module, :defs)
+          quote do: def __defs__, do: unquote(Enum.reverse(defs))
+        end
+      end
+      ```
+
+      Order: `@on_definition` fires as each clause is defined, then `@before_compile`, then compilation,
+      then `@after_compile`, then `@after_verify`. The hook module must be a *different*, already-compiled module.
+      `Module.get_attribute/2` and `put_attribute/3` only work while the module is open (before compilation ends).
+    answer: |
+      **Q:** You need to add a function that lists every public function the user defined. Which hook(s) do you combine?
+      **A:** `@on_definition` to record each `def` into an accumulating attribute, and `@before_compile` (as a macro) to
+      inject the listing function from that attribute; `@after_compile` would be too late to add code.
+    explanation: |
+      Libraries such as Ecto (`field` accumulation), Plug (`plug` pipeline), Absinthe and `decorator` are built on
+      exactly these hooks, so senior interviews often ask you to sketch one. The common mistakes are trying to
+      `def` inside `@after_compile`, forgetting that the hook module must already be compiled, and reading an
+      accumulating attribute without reversing it.
+    tags: [before_compile, on_definition, after_compile, dsl]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-macro-theory-macro-env
+    kind: theory
+    difficulty: middle
+    title: "`Macro.Env`: what the compiler knows at a call site"
+    body: |
+      `__ENV__` returns a `%Macro.Env{}` struct describing the current compilation environment; inside a macro,
+      `__CALLER__` returns the same struct for the place the macro was *invoked*.
+
+      ```elixir
+      __ENV__.module    #=> MyApp.Thing
+      __ENV__.function  #=> {:go, 1} or nil in a module body
+      __ENV__.file      #=> "lib/my_app/thing.ex"
+      __ENV__.line      #=> 12
+      __ENV__.aliases   #=> [{Repo, MyApp.Repo}]
+      __ENV__.context   #=> nil | :guard | :match
+      ```
+
+      Why it matters for macros:
+
+      - `__CALLER__.module` lets a macro define things *in the caller* (`Module.put_attribute(__CALLER__.module, ...)`).
+      - `__CALLER__.function == nil` tells you the macro is used in a module body (DSL position) rather than inside a `def`.
+      - `__CALLER__.context == :guard` lets `defguard`-style macros emit guard-safe code only where allowed.
+      - `Macro.expand(ast, __CALLER__)` resolves the caller's aliases and imports; expanding with the macro's
+        own `__ENV__` would resolve `Repo` to the wrong module.
+      - `__CALLER__.file`/`line` feed error messages: `raise CompileError, file: env.file, line: env.line, description: "..."`
+        gives users an error pointing at *their* code.
+      - `Macro.Env.in_match?/1`, `in_guard?/1`, `has_var?/2` (1.16+) and `lookup_import/2` are the supported
+        helpers; do not reach into private fields such as `:versioned_vars`.
+
+      `__ENV__` is also handy outside macros: `Code.eval_string("x + 1", [x: 1], __ENV__)` evaluates with the
+      current aliases and imports.
+    answer: |
+      **Q:** Inside `defmacro`, what is the difference between `__ENV__` and `__CALLER__`?
+      **A:** `__ENV__` is the environment of the macro's own definition; `__CALLER__` is the environment of the code
+      that invoked the macro, which is what you need for the caller's module, file, line, aliases and imports.
+    explanation: |
+      Candidates who have written real DSLs know `__CALLER__.module` and `__CALLER__.function` by heart; the
+      `context` field (`:guard`/`:match`) is what separates a macro that works everywhere from one that breaks
+      inside guards. Follow-up: "Why should you avoid relying on undocumented `Macro.Env` fields?" (they change
+      between Elixir versions; use the public `Macro.Env` functions).
+    tags: [Macro.Env, __CALLER__, __ENV__]
+    source: https://elixir.hexdocs.pm/Macro.Env.html
+
+  - slug: elixir-macro-theory-expand-vs-expand-once
+    kind: theory
+    difficulty: senior
+    title: "`Macro.expand/2` vs `Macro.expand_once/2`, and what expansion stops at"
+    body: |
+      Expansion is the step that replaces macro calls with their generated code. You can run it yourself to
+      inspect what a macro produces.
+
+      ```elixir
+      require Logger
+      ast = quote do: unless(x, do: 1)
+
+      Macro.expand_once(ast, __ENV__) |> Macro.to_string()
+      #=> "if x do\n  nil\nelse\n  1\nend"
+
+      Macro.expand(ast, __ENV__) |> Macro.to_string()
+      #=> "case x do\n  x when Kernel.in(x, [false, nil]) -> 1\n  _ -> nil\nend"
+      ```
+
+      - `expand_once/2` expands the **root node one step**: `unless` becomes `if`.
+      - `expand/2` keeps expanding the **root node** until it is not a macro, alias or attribute any more:
+        `unless` -> `if` -> `case`. It stops there because `case` is a special form.
+      - Neither traverses children. `Enum.map(x, fn y -> unless(y, do: 1) end)` would come back unchanged from
+        both, because the root is a remote call, not a macro. For a deep expansion walk the tree:
+        `Macro.prewalk(ast, &Macro.expand(&1, env))`.
+      - Both also expand aliases (`{:__aliases__, _, [:Enum]}` -> `Enum`) and module-attribute reads (`@foo`).
+      - The `env` decides what is visible: a macro must be required in that env or expansion raises
+        "you must require ...". Use `__CALLER__` inside macros, `__ENV__` in IEx or tests.
+      - Nothing is executed: expansion is a pure AST rewrite, unlike `Code.eval_quoted/1`.
+
+      Use this in tests of your own macros (`assert Macro.to_string(expanded) =~ "..."`) and when reading
+      a library's DSL to see what it really generates.
+    answer: |
+      **Q:** Why does `Macro.expand(quote(do: Enum.map(xs, &unless(&1, do: 1))), __ENV__)` leave the `unless` untouched?
+      **A:** `expand/2` only expands the root node; the root here is a remote function call, and children are not
+      traversed. Combine it with `Macro.prewalk/2` for a full expansion.
+    explanation: |
+      This is the practical tool for "what does this expand to" questions, and the root-only behaviour is the
+      detail most candidates get wrong. Knowing that expansion stops at special forms also explains why
+      `case`/`cond`/`with` cannot be redefined and why `if` ultimately becomes a `case`.
+    tags: [Macro.expand, Macro.expand_once, special-forms]
+    source: https://elixir.hexdocs.pm/Macro.html
+
+  - slug: elixir-macro-theory-dbg-macro
+    kind: theory
+    difficulty: junior
+    title: "`dbg/2`: a macro that sees your code"
+    body: |
+      `dbg/2` (Elixir 1.14+) is `IO.inspect` with knowledge of the *expression*, which is only possible
+      because it is a macro: it receives the AST, not just the value.
+
+      ```elixir
+      [1, 2, 3]
+      |> Enum.map(&(&1 * 2))
+      |> Enum.sum()
+      |> dbg()
+      ```
+
+      prints every step of the pipeline with its intermediate value:
+
+      ```
+      [lib/demo.ex:5: Demo.run/0]
+      [1, 2, 3] #=> [1, 2, 3]
+      |> Enum.map(&(&1 * 2)) #=> [2, 4, 6]
+      |> Enum.sum() #=> 12
+      ```
+
+      How it works:
+
+      - The macro pattern-matches the AST; if it is a pipe, it uses `Macro.unpipe/1` to split the stages and
+        generates code that evaluates and prints each one. Otherwise it prints `Macro.to_string(ast)` and the value.
+      - `__CALLER__` provides the `file:line: Module.fun/arity` header.
+      - It returns the value, so it can be dropped into any expression like `IO.inspect`.
+      - The behaviour is pluggable: `config :elixir, :dbg_callback, {Mod, :fun, []}` replaces the default
+        `Macro.dbg/3` backend; `iex --dbg pry` turns every `dbg` into an `IEx.pry` breakpoint with access to
+        local variables, and you can step through pipelines with `next`.
+      - `dbg()` with no arguments shows all local bindings.
+
+      Since it is in `Kernel`, no `require` is needed, but it is a macro and must not be used as a
+      first-class function (`&dbg/1` does not work). Remove `dbg` calls before shipping; `mix credo` flags them
+      and `--warnings-as-errors` builds often ban them via a check.
+    answer: |
+      **Q:** Why can `dbg` print the source text of each pipeline step while `IO.inspect` cannot?
+      **A:** `dbg` is a macro and receives the quoted expression, so it can unpipe it and `Macro.to_string` each stage;
+      `IO.inspect` is a function and only ever sees the resulting value.
+    explanation: |
+      `dbg` is the cleanest everyday example of "a macro can do what a function cannot", so it is a good answer
+      to "give me a justified macro". Interviewers may also ask how you would make `dbg` send output to a
+      Logger instead of stdout (the `:dbg_callback` configuration).
+    tags: [dbg, debugging, Macro.unpipe]
+    source: https://elixir.hexdocs.pm/Kernel.html#dbg/2
+
+  - slug: elixir-macro-theory-quote-options
+    kind: theory
+    difficulty: middle
+    title: "The `quote/2` options you will actually use"
+    body: |
+      `quote` accepts options that change how the generated code behaves. Four come up in real macros:
+
+      ```elixir
+      quote location: :keep do
+        def helper(x), do: do_something(x)
+      end
+      ```
+
+      - **`location: :keep`**: stamps the quote's own file and line onto the generated code, so stack traces and
+        warnings in generated `def`s point at the macro source, not the call site. Skip it when you unquote
+        caller arguments that already carry their own line metadata, or you get misleading mixed locations.
+
+      ```elixir
+      quote bind_quoted: [name: name, default: default] do
+        def unquote(name)(), do: unquote(default)
+      end
+      ```
+
+      - **`bind_quoted`**: evaluates each value once and binds it to a variable in the quote; `unquote` inside the
+        block is disabled for ordinary expressions (unquote fragments in `def` names still work). Use it whenever
+        you inject values, and to avoid double evaluation of arguments.
+
+      - **`generated: true`**: marks the code as compiler-generated so warnings such as "this clause cannot match"
+        or "unused variable" are not reported against it; also keeps the type checker and Dialyzer quiet about
+        intentionally unreachable clauses in expansions.
+
+      - **`context: Mod`**: sets the hygiene context for variables and imports in the quote (default is the
+        current module). Useful when a macro builds code on behalf of another module.
+
+      Rarely needed: `unquote: false` (keep `unquote` calls as data, used when a macro generates another macro),
+      `line:` / `file:` (set explicit metadata, e.g. from `__CALLER__`).
+    answer: |
+      **Q:** A user of your DSL reports a `FunctionClauseError` whose stack trace points to a line in *their* module
+      where nothing could raise. Which `quote` option fixes the trace?
+      **A:** `location: :keep`, so the generated function's lines point at the macro's quote block where the clause
+      actually lives.
+    explanation: |
+      `bind_quoted` and `location: :keep` are the two options every macro author should reach for by default;
+      `generated: true` matters once the type checker (Elixir 1.17+) starts warning about clauses your macro
+      emits on purpose. Mistake to avoid: combining `location: :keep` with unquoted caller expressions and
+      then wondering why errors point to the wrong file.
+    tags: [quote, location-keep, bind_quoted, generated]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html#quote/2

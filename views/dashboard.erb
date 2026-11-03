@@ -1,0 +1,42 @@
+<h1>Dashboard</h1>
+<p class="muted">Streak: <b><%= @streak %></b> day<%= @streak == 1 ? "" : "s" %>. Last 30 days:</p>
+<div class="bars" title="attempts per day, last 30 days">
+<% max = [@daily.values.max || 1, 1].max %>
+<% (0..29).map { |d| Date.today - 29 + d }.each do |day| %>
+  <div style="height: <%= (100.0 * @daily.fetch(day, 0) / max).round %>%" title="<%= day %>: <%= @daily.fetch(day, 0) %>"></div>
+<% end %>
+</div>
+
+<div class="grid">
+<% @stats.each do |lang, s| %>
+  <div class="card">
+    <h2><%= lang.capitalize %></h2>
+    <div class="stats">
+      <div class="stat"><b><%= s[:total] %></b><span>items</span></div>
+      <div class="stat"><b><%= s[:attempted] %></b><span>attempted</span></div>
+      <div class="stat"><b><%= s[:due] %></b><span>due today</span></div>
+      <div class="stat"><b><%= s[:accuracy] %>%</b><span>accuracy</span></div>
+    </div>
+    <p class="actions">
+      <a class="btn primary" href="/study?language=<%= lang %>">Study<%= s[:due] > 0 ? " (#{s[:due]} due)" : "" %></a>
+      <a class="btn" href="/interview/<%= lang %>">Mock interview</a>
+      <a class="btn" href="/items?language=<%= lang %>">Browse</a>
+    </p>
+    <% weak = s[:topics].select { _1[:weak] } %>
+    <% unless weak.empty? %>
+      <p><b>Weak spots:</b> <% weak.each do |t| %><a href="/study?language=<%= lang %>&topic=<%= t[:topic] %>"><%= t[:topic] %></a> (<%= t[:accuracy] %>%) <% end %></p>
+    <% end %>
+    <table>
+      <tr><th>Topic</th><th>Items</th><th>Seen</th><th>Accuracy</th></tr>
+      <% s[:topics].each do |t| %>
+        <tr class="<%= t[:weak] ? 'weak' : '' %>">
+          <td><a href="/study?language=<%= lang %>&topic=<%= t[:topic] %>"><%= t[:topic] %></a></td>
+          <td><%= t[:items] %></td>
+          <td><%= t[:attempted] %></td>
+          <td><%= t[:attempts] > 0 ? "#{t[:accuracy]}%" : "–" %></td>
+        </tr>
+      <% end %>
+    </table>
+  </div>
+<% end %>
+</div>

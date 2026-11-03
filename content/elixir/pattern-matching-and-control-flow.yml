@@ -1,0 +1,1568 @@
+language: elixir
+topic: pattern-matching-and-control-flow
+items:
+  - slug: elixir-match-pin-operator
+    kind: mcq
+    difficulty: junior
+    title: "What does the pin operator do?"
+    body: |
+      ```elixir
+      x = 1
+      ^x = 2
+      ```
+
+      What happens on the second line?
+    choices:
+      - "`x` is rebound to `2`"
+      - "It raises `MatchError` because `^x` matches against the current value `1`"
+      - "It returns `false`"
+      - "Compile error: `^` can only be used inside `case`"
+    answer: 1
+    explanation: |
+      Without the pin, `x = 2` would simply rebind `x`. `^x` tells the match to use the *existing* value of
+      `x` as a literal in the pattern, so `^x = 2` means `1 = 2`, which raises `MatchError`. The pin is
+      allowed anywhere a pattern is: `=`, `case` clauses, function heads, `with`, `for` generators and
+      `receive`. Matching never returns `false` — it either succeeds (binding variables) or raises; use
+      `match?/2` if you want a boolean.
+    tags: [pin, match-operator]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-match-map-subset
+    kind: mcq
+    difficulty: junior
+    title: "Matching a map with fewer keys than the value"
+    body: |
+      ```elixir
+      %{a: a} = %{a: 1, b: 2}
+      %{} = %{a: 1}
+      %{c: c} = %{a: 1}
+      ```
+
+      Which lines succeed?
+    choices:
+      - "Only the first"
+      - "The first and the second; the third raises `MatchError`"
+      - "None — maps must match all keys exactly like tuples"
+      - "All three; `c` is bound to `nil`"
+    answer: 1
+    explanation: |
+      Map patterns match a **subset** of keys: the pattern only requires that each key it mentions exists
+      in the value with a matching value. So `%{a: a}` matches a map with extra keys, and the empty pattern
+      `%{}` matches *every* map. Missing keys never bind to `nil`; `%{c: c} = %{a: 1}` raises `MatchError`.
+      This is the opposite of lists and tuples, where `[]` only matches the empty list and `{a}` only
+      matches 1-tuples. Keys in a map pattern must be literals or pinned variables, not fresh variables.
+    tags: [maps, pattern-matching]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-match-cons-single
+    kind: mcq
+    difficulty: junior
+    title: "`[h | t]` on a one-element list"
+    body: |
+      What are `h` and `t` after `[h | t] = [1]`, and what does `[h | t] = []` do?
+    choices:
+      - "`h = 1`, `t = nil`; the second raises `MatchError`"
+      - "`h = 1`, `t = []`; the second raises `MatchError`"
+      - "`h = 1`, `t = []`; the second binds `h = nil`, `t = []`"
+      - "`h = [1]`, `t = []`; the second raises `FunctionClauseError`"
+    answer: 1
+    explanation: |
+      A list is a chain of cons cells; `[1]` is `[1 | []]`, so the head is `1` and the tail is the empty
+      list `[]`. The empty list has no head, so `[h | t] = []` raises `MatchError` — which is exactly why
+      recursive functions need a separate `[]` clause. `FunctionClauseError` is only raised when no
+      *function clause* matches, not by a bare `=`.
+    tags: [lists, cons, pattern-matching]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-match-pin-prior-value
+    kind: mcq
+    difficulty: middle
+    title: "Pin and rebind in the same pattern"
+    body: |
+      ```elixir
+      x = 1
+      {x, ^x} = {2, 1}
+      x
+      ```
+
+      What is the final value of `x`?
+    choices:
+      - "`1` — the match fails because `x` cannot be both bound and pinned"
+      - "`2` — `^x` refers to the value *before* the match, and plain `x` is rebound"
+      - "It raises `MatchError` because `2 != 1`"
+      - "Compile error: a variable may appear only once per pattern"
+    answer: 1
+    explanation: |
+      `^x` always refers to the value of `x` *prior* to the match (`1`), so the right element matches. The
+      left element is an unpinned `x`, which binds to `2`. After the match `x` is `2`. Using the same
+      unpinned variable twice in one pattern (`{x, x} = {1, 2}`) is allowed and requires both positions
+      to be equal — that one would raise. This question checks that you understand pinning is about
+      reading the old binding, not about "locking" the variable.
+    tags: [pin, pattern-matching]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-if-no-else-nil
+    kind: mcq
+    difficulty: junior
+    title: "`if` without `else`"
+    body: |
+      What does `if false, do: :yes` return, and why does `if` accept `do:` as a keyword?
+    choices:
+      - "`false`; `do:` is special syntax reserved for `if`"
+      - "`nil`; `if` is a macro taking a keyword list, so `do:`/`else:` are ordinary keyword arguments"
+      - "`:error`; `if` is a function that returns an error tuple"
+      - "It does not compile — `if` requires an `else`"
+    answer: 1
+    explanation: |
+      `if` is a macro defined in `Kernel`, not a language keyword. Its second argument is a keyword list
+      with `:do` and optional `:else`, so `if cond, do: a, else: b` and the block form `if cond do a else b
+      end` are the same call. When the condition is falsy and there is no `else`, the macro returns `nil`.
+      That is why `Enum.map(list, fn x -> if x > 0, do: x end)` can produce `nil` entries, a common bug.
+    tags: [if, macros, nil]
+    source: https://elixir.hexdocs.pm/case-cond-and-if.html
+
+  - slug: elixir-flow-with-no-else
+    kind: mcq
+    difficulty: middle
+    title: "`with` when a clause does not match and there is no `else`"
+    body: |
+      ```elixir
+      with {:ok, a} <- {:ok, 1},
+           {:ok, b} <- {:error, :boom} do
+        a + b
+      end
+      ```
+
+      What does this evaluate to?
+    choices:
+      - "`{:error, :boom}` — the non-matching value is returned as-is"
+      - "`nil`"
+      - "It raises `WithClauseError`"
+      - "It raises `MatchError`"
+    answer: 0
+    explanation: |
+      `with` runs its `<-` clauses in order; the first one whose pattern fails aborts the chain and the
+      *value that failed to match* becomes the result of the whole expression. No exception, no `nil`.
+      `WithClauseError` is raised only when an `else` block exists but none of its clauses match the
+      failing value. `MatchError` would come from using `=` instead of `<-` inside `with`. This behaviour
+      is what makes `with` a natural fit for `{:ok, _} | {:error, _}` pipelines: errors fall out unchanged.
+    tags: [with, control-flow]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-with-clause-error
+    kind: mcq
+    difficulty: middle
+    title: "`with` ... `else` that does not cover a value"
+    body: |
+      ```elixir
+      with {:ok, v} <- fetch() do
+        v
+      else
+        :error -> :not_found
+      end
+      ```
+
+      `fetch/0` returns `{:error, :timeout}`. What happens?
+    choices:
+      - "Returns `{:error, :timeout}` because `else` only handles `:error`"
+      - "Returns `:not_found` — `else` is a catch-all"
+      - "Raises `WithClauseError` because no `else` clause matches `{:error, :timeout}`"
+      - "Raises `CaseClauseError`"
+    answer: 2
+    explanation: |
+      Once you add an `else`, the failing value is routed through it like a `case`, and you lose the
+      "return the value unchanged" default. If no `else` clause matches, `WithClauseError` is raised. The
+      fix is to make the `else` exhaustive (add `other -> other` or a specific `{:error, _} = e -> e`
+      clause). This is why style guides recommend normalising helper functions to a single error shape
+      so the `else` stays small — or omitting `else` entirely.
+    tags: [with, errors]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-guard-error-fails
+    kind: mcq
+    difficulty: middle
+    title: "An error inside a guard"
+    body: |
+      ```elixir
+      defmodule G do
+        def f(x) when tuple_size(x) > 1 or is_list(x), do: :ok
+        def f(_), do: :no
+      end
+      G.f([1, 2])
+      ```
+
+      What is the result?
+    choices:
+      - "`:ok` — `is_list([1, 2])` is true"
+      - "`:no` — `tuple_size/1` on a list fails, and a failing expression makes the whole guard fail"
+      - "Raises `ArgumentError` from `tuple_size/1`"
+      - "Compile error: `or` is not allowed in guards"
+    answer: 1
+    explanation: |
+      Errors in guards never propagate; they make the guard evaluate to false. `tuple_size([1, 2])` fails,
+      and because `or` is a single expression the entire guard is false, so the clause is skipped and
+      `f/1` falls through to `:no`. To get the intended behaviour either put the type check first
+      (`is_tuple(x) and tuple_size(x) > 1 or is_list(x)`) or use *multiple guards* on one clause:
+      `when tuple_size(x) > 1 when is_list(x)` — each `when` is tried independently, so a failure in
+      the first lets the second run.
+    tags: [guards, errors]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-match-keyword-positional
+    kind: mcq
+    difficulty: middle
+    title: "Pattern matching on a keyword list"
+    body: |
+      ```elixir
+      defmodule Opts do
+        def parse([a: a, b: b]), do: {a, b}
+        def parse(_), do: :nomatch
+      end
+      Opts.parse(b: 2, a: 1)
+      ```
+
+      What does the call return?
+    choices:
+      - "`{1, 2}`"
+      - "`{2, 1}`"
+      - "`:nomatch` — keyword lists match positionally and the order differs"
+      - "Compile error: keyword lists cannot appear in function heads"
+    answer: 2
+    explanation: |
+      A keyword list is a plain list of 2-tuples, so `[a: a, b: b]` is the pattern `[{:a, a}, {:b, b}]`:
+      it requires exactly two elements, in that order. `[b: 2, a: 1]` is `[{:b, 2}, {:a, 1}]`, which does
+      not match, so the catch-all returns `:nomatch`. An extra or missing option would also break it. The
+      docs say outright "do not pattern match on keyword lists"; read options with `Keyword.get/3`,
+      `Keyword.fetch!/2` or `Keyword.validate!/2`, or accept a map and match on a subset of keys.
+    tags: [keyword-lists, pattern-matching, pitfalls]
+    source: https://elixir.hexdocs.pm/keywords-and-maps.html
+
+  - slug: elixir-flow-cond-no-match
+    kind: mcq
+    difficulty: junior
+    title: "`cond` with no truthy condition"
+    body: |
+      ```elixir
+      cond do
+        1 + 1 == 3 -> :three
+        false -> :never
+      end
+      ```
+
+      What happens, and how do you prevent it?
+    choices:
+      - "Returns `nil`; nothing to prevent"
+      - "Raises `CondClauseError`; add a final `true -> ...` clause as a fallback"
+      - "Returns `:never` because `false` matches the last clause"
+      - "Compile error: `cond` needs an `else`"
+    answer: 1
+    explanation: |
+      `cond` evaluates each condition in order and runs the body of the first truthy one. If none is
+      truthy it raises `CondClauseError`. The idiom is to end with `true -> default`. `cond` has no
+      `else`; the `true` clause plays that role. Note the difference from `if`, which returns `nil`
+      when nothing matches, and from `case`, which raises `CaseClauseError`.
+    tags: [cond, errors]
+    source: https://elixir.hexdocs.pm/case-cond-and-if.html
+
+  - slug: elixir-match-binary-sizes
+    kind: mcq
+    difficulty: middle
+    title: "Binary pattern with explicit sizes"
+    body: |
+      What are `a` and `b` after `<<a::8, b::16>> = <<1, 0, 2>>`?
+    choices:
+      - "`a = 1`, `b = 2`"
+      - "`a = 1`, `b = 512`"
+      - "`a = 1`, `b = <<0, 2>>`"
+      - "It raises `MatchError` because the sizes add up to 24 bits but the binary has 3 bytes"
+    answer: 0
+    explanation: |
+      `::8` consumes one byte (`1`). `::16` consumes the next two bytes as a *big-endian* integer by
+      default: `<<0, 2>>` is `0 * 256 + 2 = 2`. With `b::16-little` you would get `2 * 256 + 0 = 512`.
+      The sizes sum to 24 bits, exactly the 3 bytes available, so the match succeeds. To bind a raw
+      sub-binary rather than an integer you need `b::binary-size(2)`.
+    tags: [binaries, bit-syntax]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-match-utf8-modifier
+    kind: mcq
+    difficulty: middle
+    title: "Matching the first character of a Unicode string"
+    body: |
+      ```elixir
+      <<c, _::binary>> = "über"
+      ```
+
+      What is `c`?
+    choices:
+      - "`\"ü\"`"
+      - "`252` (the codepoint of `ü`)"
+      - "`195` (the first UTF-8 byte of `ü`)"
+      - "`MatchError`"
+    answer: 2
+    explanation: |
+      A bare segment is an 8-bit integer, so `c` gets the first *byte*. `ü` is encoded as two bytes
+      (`195, 188`) in UTF-8, hence `195`. To get the whole codepoint use `<<c::utf8, _::binary>>`, which
+      binds `c` to `252` (`?ü`). To get the first *character as a string* use `String.first/1` or
+      `String.next_grapheme/1` — `<<c::binary-size(1), ...>>` would again be a single byte. Binary
+      patterns are byte-oriented; `String` functions are grapheme-oriented.
+    tags: [binaries, unicode, pattern-matching]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-match-negative-zero
+    kind: mcq
+    difficulty: senior
+    title: "`0.0 = -0.0` on Erlang/OTP 27"
+    body: |
+      On Elixir 1.17+ running on OTP 27, what happens here?
+
+      ```elixir
+      0.0 == -0.0
+      0.0 === -0.0
+      0.0 = -0.0
+      ```
+    choices:
+      - "`true`, `true`, match succeeds — signed zeros are identical"
+      - "`true`, `false`, `MatchError` — `==` is numeric, but strict comparison and patterns distinguish `+0.0` from `-0.0`"
+      - "`false`, `false`, `MatchError`"
+      - "`true`, `true`, `MatchError`"
+    answer: 1
+    explanation: |
+      OTP 27 changed the VM so that `+0.0` and `-0.0` are no longer considered identical: `0.0 == -0.0` is
+      still `true` (numeric equality) but `0.0 === -0.0` is `false` and the pattern `0.0` matches only
+      positive zero. Elixir 1.17 therefore warns: "pattern matching on 0.0 is equivalent to matching only
+      on +0.0 from Erlang/OTP 27+. Instead you must match on +0.0 or -0.0". The robust way to match any
+      zero is a guard: `def f(x) when x == 0`. Interviewers use this to see whether you track runtime
+      changes; before OTP 27 the three results were `true`, `true`, match succeeds.
+    tags: [floats, otp27, pattern-matching]
+    source: https://github.com/elixir-lang/elixir/pull/12950/files
+
+  - slug: elixir-flow-for-reduce
+    kind: mcq
+    difficulty: middle
+    title: "`for` with `:reduce`"
+    body: |
+      ```elixir
+      for x <- [1, 2, 3, 4], rem(x, 2) == 0, reduce: %{} do
+        acc -> Map.update(acc, :sum, x, &(&1 + x))
+      end
+      ```
+
+      What is the result?
+    choices:
+      - "`[%{sum: 2}, %{sum: 4}]`"
+      - "`%{sum: 6}`"
+      - "`%{sum: 10}`"
+      - "Compile error: `reduce:` requires `fn acc, x ->`"
+    answer: 1
+    explanation: |
+      With `reduce: initial`, the `do` block must be a single `->` clause that receives the accumulator
+      and returns the new one; the generator variables (`x`) are in scope. The filter keeps `2` and `4`,
+      so the map ends as `%{sum: 6}`. Without `:reduce` the comprehension would build a *list* of results.
+      `for ... reduce:` is often clearer than `Enum.reduce/3` when you also need filters, multiple
+      generators or pattern-filtering in the generator.
+    tags: [comprehensions, reduce]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-throw-not-rescued
+    kind: mcq
+    difficulty: middle
+    title: "Does `rescue` catch `throw`?"
+    body: |
+      ```elixir
+      try do
+        throw(:found)
+      rescue
+        _ -> :rescued
+      end
+      ```
+
+      What happens?
+    choices:
+      - "Returns `:rescued`"
+      - "Returns `:found`"
+      - "The throw is not caught; the process raises `(throw) :found` — you need `catch :throw, v` (or `catch v`)"
+      - "Compile error: `throw/1` is not allowed inside `try`"
+    answer: 2
+    explanation: |
+      `rescue` handles **exceptions** (values raised with `raise`, i.e. structs that implement
+      `Exception`). `throw/1` is a different non-local-return mechanism and is only intercepted by
+      `catch`: `catch :throw, value ->` or the one-argument form `catch value ->`. Likewise `exit/1` needs
+      `catch :exit, reason ->`, and `catch :error, e ->` catches Erlang errors (including raised
+      exceptions, but as raw Erlang terms). `throw` is meant for early exit from deep traversals when no
+      better API exists; `raise` is for errors.
+    tags: [try, throw, rescue]
+    source: https://elixir.hexdocs.pm/try-catch-and-rescue.html
+
+  - slug: elixir-flow-case-clause-error
+    kind: mcq
+    difficulty: junior
+    title: "`case` with no matching clause"
+    body: |
+      ```elixir
+      case {:ok, -5} do
+        {:ok, n} when n > 0 -> :positive
+        {:error, _} -> :error
+      end
+      ```
+
+      What is the result?
+    choices:
+      - "`:positive` — `{:ok, n}` matches and the guard is ignored"
+      - "`nil`"
+      - "Raises `CaseClauseError` because the guard fails and no other clause matches `{:ok, -5}`"
+      - "Raises `MatchError`"
+    answer: 2
+    explanation: |
+      `{:ok, n}` matches structurally but the guard `n > 0` is false, so that clause is skipped (a failed
+      guard is "no match", not an error). `{:error, _}` does not match. With no remaining clause `case`
+      raises `CaseClauseError`, never returns `nil`. Add `{:ok, _} -> :non_positive` or a catch-all `_ ->`.
+      `MatchError` is specific to the `=` operator.
+    tags: [case, guards, errors]
+    source: https://elixir.hexdocs.pm/case-cond-and-if.html
+
+  - slug: elixir-match-equals-operator
+    kind: open
+    difficulty: junior
+    title: "Why is `=` called the match operator?"
+    body: |
+      Explain what `=` does in Elixir, using these lines as the discussion starter:
+
+      ```elixir
+      x = 1
+      1 = x
+      2 = x
+      {a, b} = {1, 2}
+      [a, b] = {1, 2}
+      ```
+    answer: |
+      - `=` is not assignment; it asserts that the right-hand *value* matches the left-hand *pattern*,
+        binding any variables in the pattern. `x = 1` binds `x`; `1 = x` is a valid match that checks
+        `x` is `1`.
+      - A failed match raises `MatchError` (`2 = x`); nothing is returned as "false".
+      - Patterns can be nested data structures: `{a, b} = {1, 2}` destructures a tuple. The shape must
+        agree: `[a, b] = {1, 2}` raises because a list pattern cannot match a tuple.
+      - Variables on the left are always (re)bound; to compare with an existing value use the pin `^x`.
+      - Only the left side is a pattern: it may contain literals, variables, `_`, `^pinned`, tuples,
+        lists, maps, structs, binaries — but no function calls or arithmetic (`x + 1 = 2` is invalid).
+      - The match expression evaluates to the right-hand value, so `{:ok, pid} = Task.start(...)` both
+        asserts success and extracts `pid`.
+      - In tests, `assert {:ok, _} = result` is the idiomatic shape check.
+    explanation: |
+      Follow-ups: "What does `_ = expr` mean?" (evaluate and discard, documents intent). "Why does
+      `%{} = %{a: 1}` succeed but `[] = [1]` fail?" (maps match a subset of keys, lists match exactly).
+      Candidates who say "assignment" should be asked what `1 = x` does.
+    tags: [match-operator, basics]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-flow-with-railway
+    kind: open
+    difficulty: middle
+    title: "Happy-path pipelines with `with`"
+    body: |
+      Show how you would write a function that parses a user id from a string, loads the user, and
+      checks the user is active, returning `{:ok, user}` or `{:error, reason}` — and explain how
+      `with`'s `else` clauses are matched and ordered.
+    answer: |
+      ```elixir
+      def active_user(id_string) do
+        with {id, ""} <- Integer.parse(id_string),
+             {:ok, user} <- Repo.fetch(User, id),
+             true <- user.active do
+          {:ok, user}
+        else
+          :error -> {:error, :bad_id}
+          {_, _rest} -> {:error, :bad_id}
+          {:error, :not_found} -> {:error, :not_found}
+          false -> {:error, :inactive}
+        end
+      end
+      ```
+
+      - Each `<-` clause must match for execution to continue; variables bound in earlier clauses are
+        available in later ones and in `do`.
+      - The first failing value is passed to `else`, whose clauses are tried **top to bottom like `case`**;
+        order matters only when patterns overlap (put specific patterns before `_`).
+      - Without `else` the failing value is returned untouched — ideal when every step already returns
+        `{:error, reason}`; then you do not need `else` at all.
+      - If `else` exists and nothing matches, `WithClauseError` is raised, so either be exhaustive or
+        omit `else`.
+      - Bare `=` and plain expressions are allowed between clauses (`len = String.length(s)`), but a
+        failed `=` raises `MatchError` instead of going to `else`.
+      - "Railway" style: the success track is the `do` block; every failure jumps to the error track.
+        Normalise helpers to return one error shape so the `else` stays short (or disappears).
+    explanation: |
+      Follow-up: "What's wrong with `true <- user.active`?" The `false` in `else` is ambiguous if several
+      boolean checks exist; wrap them in functions returning `{:error, :inactive}` so the failing value
+      carries meaning. Also ask when a plain pipeline with `case` at the end is clearer (single failure
+      point).
+    tags: [with, railway, error-handling]
+    source: https://dockyard.com/blog/2018/03/30/better-control-flow-using-the-with-macro
+
+  - slug: elixir-flow-raise-throw-exit
+    kind: open
+    difficulty: middle
+    title: "`raise` vs `throw` vs `exit`"
+    body: |
+      Elixir has three non-local control-flow mechanisms: `raise`, `throw` and `exit`. Explain what each
+      is for, how you catch each one, and which you should rarely use.
+    answer: |
+      - `raise/1,2` creates an **exception** (a struct implementing `Exception`) for errors: unexpected
+        situations, programmer mistakes, violated invariants. Caught with `rescue` (by exception module
+        or catch-all) or `catch :error, term`. `reraise/2,3` re-raises preserving `__STACKTRACE__`.
+      - `throw/1` throws an arbitrary **value** for control flow — early exit from a deep `Enum.reduce`
+        or a parser when no nicer API (`Enum.reduce_while/3`, `Enum.find/2`) exists. Caught only with
+        `catch value ->` / `catch :throw, value ->`. Uncaught throws crash the process with
+        `(throw) value`. Use sparingly.
+      - `exit/1` terminates the **process** with a reason (`exit(:normal)`, `exit({:shutdown, ...})`,
+        `exit(:boom)`). It is what GenServer uses to stop and what `Task.await/2` raises on timeout.
+        Catchable with `catch :exit, reason`, but normally you let supervisors handle it.
+      - The default Elixir style: return `{:ok, _}`/`{:error, _}` for expected failures; `raise` for
+        unexpected ones and let the process crash; almost never `throw`; `exit` only via OTP.
+      - `try/after` runs cleanup for any of the three; `try/else` runs on the *success* value.
+      - Exceptions are cheap to raise but `try/rescue` across many frames is slower than returning
+        tuples, and `rescue` cannot catch `exit`s from linked processes.
+    explanation: |
+      Follow-up: "What does `catch :error, e` give you for `raise ArgumentError`?" The exception struct
+      (Elixir normalises it). "Why would a library use `throw` internally and convert it to a tuple at
+      the boundary?" To abort from nested recursion without threading error tuples through every level —
+      acceptable when the throw never escapes the module.
+    tags: [exceptions, throw, exit, errors]
+    source: https://elixir.hexdocs.pm/try-catch-and-rescue.html
+
+  - slug: elixir-flow-tagged-tuples-bang
+    kind: open
+    difficulty: middle
+    title: "The `{:ok, _} | {:error, _}` convention and bang functions"
+    body: |
+      Explain the tagged-tuple convention, when a function should have a `!` variant, and how these two
+      styles interact with `case`, `with` and pattern matching.
+    answer: |
+      - Functions that can fail in an *expected* way return `{:ok, value}` or `{:error, reason}` (or bare
+        `:ok`/`:error` when there is no payload). Callers must handle both branches explicitly, which
+        makes failure visible in the type of every call.
+      - The `!` variant (`File.read!/1`, `Repo.get!/2`, `Map.fetch!/2`) returns the value directly and
+        **raises** on failure. Use it when failure is a bug or when you are in a context (script, test,
+        supervised worker) where crashing is the correct response.
+      - Provide both only when both styles make sense; never make `!` the sole API for an expected
+        failure (e.g. user input validation).
+      - `reason` should be a term you can pattern-match on (`:not_found`, `{:invalid, field}`, a changeset,
+        an exception struct) — not a free-form string.
+      - Pattern matching is the consumer: `case`, multi-clause functions or `with` chains
+        (`{:ok, x} <- f()`) compose `ok` tuples; a non-matching `{:error, _}` falls out of `with` unchanged.
+      - Do not mix: a function returning `{:ok, v}` sometimes and `v` other times, or `nil` for
+        failure, forces defensive code at every call site.
+      - Related: `Map.get` (nil default) vs `Map.fetch` (`{:ok, _} | :error`) vs `Map.fetch!` (raise)
+        shows all three options on one API.
+    explanation: |
+      Follow-up: "Why not exceptions everywhere like Java?" Expected failures are data; exceptions are
+      for the unexpected and are handled by supervisors, not by business logic. "How does `Ecto.Repo.insert`
+      vs `insert!` fit?" `insert` returns `{:error, changeset}` to show the user; `insert!` is for seeds
+      and invariants.
+    tags: [conventions, errors, bang-functions]
+    source: https://elixir.hexdocs.pm/try-catch-and-rescue.html
+
+  - slug: elixir-flow-tail-vs-body-recursion
+    kind: open
+    difficulty: senior
+    title: "Tail recursion vs body recursion vs `Enum.reduce`"
+    body: |
+      ```elixir
+      def sum([]), do: 0
+      def sum([h | t]), do: h + sum(t)
+
+      def sum_t(list, acc \\ 0)
+      def sum_t([], acc), do: acc
+      def sum_t([h | t], acc), do: sum_t(t, acc + h)
+      ```
+
+      Which one is tail recursive? Is it always faster? When would you use `Enum.reduce/3` instead?
+    answer: |
+      - `sum_t/2` is tail recursive: the recursive call is the last thing the clause does, so the BEAM
+        reuses the stack frame (tail-call optimisation) and the function runs in constant stack space.
+        `sum/1` is body recursive: it must keep a frame per element to do `h + ...` after the call returns.
+      - Tail recursion is **not** automatically faster. The Erlang efficiency guide calls "tail recursion
+        is always faster" a myth: body-recursive functions that build a list in order avoid the final
+        `Enum.reverse/1` that tail-recursive versions need, and modern BEAM makes the stack cheap.
+      - Tail recursion *is* required for unbounded loops: GenServer loops, `receive` loops, processing
+        streams — otherwise the stack grows until the process is killed.
+      - Memory: body recursion uses stack proportional to depth; the stack is on the process heap and is
+        garbage collected, so for lists of thousands of elements either is fine.
+      - Prefer `Enum.reduce/3`, `Enum.map/2`, `for` for everyday collection work: clearer, hard to get
+        wrong, and the implementation is already optimised. Write explicit recursion when you need early
+        exit with state (`Enum.reduce_while/3` covers most), multiple accumulators, or you are walking a
+        non-enumerable structure (AST, binary protocol).
+      - Note the default-argument function head `def sum_t(list, acc \\ 0)` required because there are
+        multiple clauses.
+    explanation: |
+      Follow-up: "How does `Enum.map/2` itself work?" Body recursion building `[f.(h) | map(t, f)]` — the
+      standard library chooses it for lists. "What is a 'last call' in `case`/`cond`?" A call in tail
+      position inside a branch is still a tail call; wrapping it in `try/rescue` is not.
+    tags: [recursion, performance, enum]
+    source: https://www.erlang.org/docs/22/efficiency_guide/myths
+
+  - slug: elixir-flow-guards-allowed
+    kind: open
+    difficulty: middle
+    title: "What can go in a guard, and why?"
+    body: |
+      Why can't you call your own function in a `when` guard? List what is allowed, show how to define
+      a reusable guard, and explain what happens when a guard raises.
+    answer: |
+      - Guards must be side-effect free and guaranteed to terminate, because the VM evaluates them during
+        clause selection (possibly many times, in any order). Arbitrary functions cannot be verified, so
+        only a fixed set of BIFs is allowed.
+      - Allowed: comparison operators (`==`, `===`, `<` …), `and`/`or`/`not` (not `&&`/`||`/`!`),
+        arithmetic (`+ - * /`, `div`, `rem`, `abs`), type checks (`is_integer/1`, `is_map/1`,
+        `is_struct/2`, `is_nil/1` …), size functions (`length/1`, `map_size/1`, `tuple_size/1`,
+        `byte_size/1`, `bit_size/1`), `hd/1`, `tl/1`, `elem/2`, `map.field`, `in`/`not in` with a
+        literal list or range, `Bitwise` operators, `node/0`, `self/0`.
+      - Reusable guards: `defguard is_adult(age) when is_integer(age) and age >= 18` (and `defguardp`),
+        which expands to a macro built only from other guard expressions; use `require`/`import` to
+        use it elsewhere.
+      - Errors inside guards do **not** raise; the guard simply fails and the clause is skipped. So
+        `when length(x) > 0` quietly fails for a map. Order type checks first, or use multiple `when`
+        clauses so one failure does not sink an alternative.
+      - Guards also work in `case`, `with`, `receive`, `for` generators and anonymous function clauses.
+      - `length/1` in a guard is O(n) — use `[_ | _]` patterns for non-empty checks.
+    explanation: |
+      Follow-up: "Can a guard call `String.length/1`?" No — it is a library function, not a BIF; match
+      on `<<_::binary-size(1), _::binary>>` or check `byte_size/1`. "What does `when x in [1, 2, 3]`
+      compile to?" `x === 1 or x === 2 or x === 3`, which is why the list must be a literal.
+    tags: [guards, defguard]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-flow-nested-case-smell
+    kind: open
+    difficulty: senior
+    title: "Refactoring nested `case`"
+    body: |
+      ```elixir
+      case parse(input) do
+        {:ok, cmd} ->
+          case authorize(user, cmd) do
+            :ok ->
+              case execute(cmd) do
+                {:ok, result} -> {:ok, result}
+                {:error, e} -> {:error, {:exec, e}}
+              end
+            {:error, e} -> {:error, {:auth, e}}
+          end
+        {:error, e} -> {:error, {:parse, e}}
+      end
+      ```
+
+      What is wrong with this code and how would you restructure it?
+    answer: |
+      - The "pyramid of doom": each step nests one level deeper, error handling is far from the call it
+        belongs to, and adding a step means re-indenting everything.
+      - Refactor with `with`, which flattens the happy path:
+
+        ```elixir
+        with {:ok, cmd} <- parse(input),
+             :ok <- authorize(user, cmd),
+             {:ok, result} <- execute(cmd) do
+          {:ok, result}
+        end
+        ```
+
+      - To keep the error tagging (`{:parse, e}` etc.), tag at the source — wrap each call:
+        `{:ok, cmd} <- tag(parse(input), :parse)` — rather than growing a big `else`, because `else`
+        cannot tell which clause failed when two return the same shape.
+      - Alternatively split into small functions and a pipeline of `{:ok, _}`-aware steps, or use
+        multi-clause private functions (`do_execute({:ok, cmd})`, `do_execute({:error, _} = e)`).
+      - Keep `case` for *single* branch points with meaningful distinct outcomes; use `with` for chains
+        of fallible steps; avoid `else` that re-implements each step's error handling.
+      - Never "fix" nesting with early returns — Elixir has none; restructure data flow instead.
+    explanation: |
+      Follow-up: "What if `authorize/2` returns `true`/`false`?" Wrap it to return `:ok | {:error,
+      :unauthorized}`; booleans in `with` make `else` ambiguous. Also probe whether the candidate notices
+      that the inner `{:ok, result} -> {:ok, result}` clause is an identity that `with` removes.
+    tags: [with, refactoring, code-smells]
+    source: https://dev.to/martinthenth/using-elixirs-with-statement-5e36
+
+  - slug: elixir-match-underscore-variables
+    kind: open
+    difficulty: junior
+    title: "`_`, `_name` and unused variables"
+    body: |
+      What is the difference between `_`, `_reason` and `reason` in a pattern? Why does the compiler
+      warn in some cases, and can you read a `_name` variable?
+    answer: |
+      - `_` is the wildcard: it matches anything and **binds nothing**. Using `_` twice in a pattern is
+        fine (`{_, _, x}`); reading `_` is a compile error ("unbound variable _").
+      - `_reason` matches anything and *does* bind, but the leading underscore tells the compiler you do
+        not intend to use it, so no "unused variable" warning is emitted. It documents what the position
+        holds: `{:error, _reason}` is more readable than `{:error, _}`.
+      - Reading a `_reason` variable compiles but warns ("the underscored variable _reason is used after
+        being set"); treat that as a bug.
+      - `reason` binds and must be used, or the compiler warns `variable "reason" is unused`.
+      - The same variable name twice in one pattern (`{x, x}`) requires both values to be equal; `_`
+        does not impose that.
+      - In function heads, unused arguments should be `_arg` for documentation, especially in callback
+        implementations (`def handle_info(_msg, state)`).
+    explanation: |
+      Follow-up: "Why does `x = 1` followed by nothing warn in a function body?" Unused binding. "What's
+      the difference between `_ = compute()` and `compute()`?" None at runtime; the former signals that
+      the result is deliberately discarded.
+    tags: [pattern-matching, variables, warnings]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-flow-case-vs-clauses
+    kind: open
+    difficulty: middle
+    title: "`case` inside one function vs multiple function clauses"
+    body: |
+      When do you prefer several function clauses with pattern matching and guards, and when a single
+      function with a `case`? Discuss readability, ordering and `FunctionClauseError`.
+    answer: |
+      - Multiple clauses shine when the function's behaviour is driven by the *shape of its arguments*:
+        `def area({:circle, r})`, `def area({:rect, w, h})`. Each clause is self-contained, easy to add,
+        and the compiler can warn about clauses that never match.
+      - Clause ordering matters: the first matching clause wins, so put specific patterns before general
+        ones and a catch-all last; Elixir warns when a clause cannot be reached.
+      - A call matching no clause raises `FunctionClauseError`, which lists the arguments — often the
+        best possible error for bad input.
+      - `case` is better when you branch on an intermediate value computed *inside* the function, when
+        the branches share pre-computation or local variables, or when the branching is a small detail
+        rather than the function's main structure.
+      - Avoid "header dispatch" functions that just `case` on an argument and call private helpers when
+        clauses would express the same more directly; avoid dozens of clauses with repeated guards when
+        a `case` on a derived value is clearer.
+      - Both compile to the same kind of jump table; there is no meaningful performance difference.
+      - Anonymous functions also take multiple clauses (`fn {:ok, v} -> v; :error -> nil end`), so the
+        choice applies to callbacks too.
+    explanation: |
+      Follow-up: "How do defaults interact with multiple clauses?" You need a bodiless head with the
+      `\\` defaults. "What about `cond`?" For branching on unrelated boolean conditions rather than
+      on one value's shape.
+    tags: [case, function-clauses, style]
+    source: https://elixir.hexdocs.pm/case-cond-and-if.html
+
+  - slug: elixir-flow-no-early-return
+    kind: open
+    difficulty: senior
+    title: "Elixir has no `return` — how do you exit early?"
+    body: |
+      A candidate coming from Ruby asks how to write a guard clause like `return :error if invalid?(x)`
+      at the top of a function. What are the idiomatic alternatives, and when is `throw` acceptable?
+    answer: |
+      - Every function returns the value of its last expression, so "early return" is modelled by making
+        the *structure* branch: multiple function clauses with guards, `case`, `cond`, or `with`.
+      - Guard-style pre-checks become clauses: `def process(x) when not is_valid(x), do: :error` followed
+        by the main clause — the "exit" is simply a separate clause.
+      - Sequences of fallible steps become `with`; the first failure short-circuits and is returned.
+      - Loops with early exit: `Enum.reduce_while/3` (`{:halt, acc}` / `{:cont, acc}`), `Enum.find/2`,
+        `Enum.any?/2`, `Stream.take_while/2`, or explicit recursion that stops matching.
+      - `throw`/`catch` provides a true non-local exit and is acceptable inside a module when the throw
+        never escapes (e.g. aborting a deep tree walk), but it hurts readability and is slower than
+        returning tuples; most reviewers will ask for `reduce_while`.
+      - Avoid simulating returns with nested `if`s that each wrap the rest of the function; that is the
+        pyramid `with` was designed to flatten.
+      - Because expressions are values, `result = if ok?, do: a, else: b` and then continuing is often
+        the simplest translation of imperative code.
+    explanation: |
+      Follow-up: "How would you implement `Enum.find/2` yourself without throw?" Recursive function with
+      a `[]` clause and a clause that returns on the first match — the recursion simply stops. Also probe
+      whether the candidate knows `Enum.reduce_while/3` exists.
+    tags: [control-flow, idioms, reduce-while]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-match-binary-protocol-parsing
+    kind: open
+    difficulty: senior
+    title: "Parsing a binary protocol with pattern matching"
+    body: |
+      A message format is: 1 byte version, 1 byte type, 2 bytes big-endian payload length, then the
+      payload, then possibly more messages. Sketch a parser using binary patterns, and explain why this
+      style is efficient on the BEAM.
+    answer: |
+      ```elixir
+      def parse(<<1, type, len::16, payload::binary-size(len), rest::binary>>),
+        do: {:ok, {type, payload}, rest}
+      def parse(<<1, _type, len::16, rest::binary>>) when byte_size(rest) < len,
+        do: {:incomplete, len - byte_size(rest)}
+      def parse(<<v, _::binary>>) when v != 1, do: {:error, {:bad_version, v}}
+      def parse(_), do: {:incomplete, :header}
+      ```
+
+      - Segment sizes bound earlier in the same pattern (`len`) can size later segments
+        (`binary-size(len)`); only the last segment may be unsized (`rest::binary`).
+      - Modifiers control interpretation: `::16` is a big-endian unsigned integer by default; use
+        `-little`, `-signed`, `::float`, `::utf8`, `::bits` as needed.
+      - A `<<"MAGIC", rest::binary>>` or `"MAGIC" <> rest` prefix match validates headers; suffix matches
+        are not possible.
+      - Efficiency: matching does not copy — a sub-binary references the original (refc) binary, and
+        the compiler keeps a *match context* across clauses, so successive patterns re-use the position
+        instead of re-scanning. Large binaries live off-heap and are shared between processes.
+      - Loop with an accumulator and `rest` to parse streams; buffer `{:incomplete, _}` until more bytes
+        arrive (typical in `:gen_tcp` `handle_info`).
+      - Build messages with the same syntax: `<<1, type, byte_size(payload)::16, payload::binary>>`.
+    explanation: |
+      Follow-up: "What is `:binary.copy/1` for?" A small sub-binary can keep a huge parent alive; copy it
+      when storing long-term. "What happens if `len` is larger than the remaining bytes?" The first clause
+      fails to match — no exception — so the second clause reports `:incomplete`.
+    tags: [binaries, bit-syntax, parsing]
+    source: https://filipchabik.ghost.is/how-to-use-binary-pattern-matching-in-elixir
+
+  - slug: elixir-flow-unless-deprecated
+    kind: open
+    difficulty: junior
+    title: "What happened to `unless`?"
+    body: |
+      Is `unless` still fine to use in Elixir 1.18+? What does the formatter do with it, and what is
+      the `do:` keyword form of `if`?
+    answer: |
+      - Elixir 1.18 **soft-deprecated** `unless` in favour of `if` with a negated condition. "Soft"
+        means no compiler warning is emitted (yet), but it is documented as deprecated and
+        `mix format --migrate` rewrites `unless x do ... end` to `if !x do ... end`.
+      - Reasons: `unless ... else` reads backwards, and one construct (`if`) is enough; `not`/`!` make
+        the negation explicit.
+      - `if` is a macro taking a keyword list, so the one-liner form is `if cond, do: a, else: b` — the
+        `do`/`end` block is sugar for the same keywords. Prefer the block form when either branch is
+        more than a short expression.
+      - `if` returns `nil` when the condition is falsy and there is no `else`.
+      - Variables bound inside `if` do not leak out of it; assign the result instead:
+        `x = if c, do: 1, else: 2`.
+    explanation: |
+      Follow-up: "Is `unless` with `else` an error?" It compiles but the formatter flips it into `if`
+      with branches swapped. "What else does `mix format --migrate` rewrite?" Single-quoted charlists
+      (`'abc'`) to `~c"abc"`.
+    tags: [unless, if, deprecations]
+    source: https://github.com/elixir-lang/elixir/blob/v1.18/CHANGELOG.md
+
+  - slug: elixir-match-code-classify-tuples
+    kind: code
+    difficulty: junior
+    title: "Classify results with multi-clause functions"
+    body: |
+      Implement `Matcher.classify/1` using **function clauses only** (no `case`, `if` or `cond`):
+
+      - `{:ok, value}` → `{:value, value}`
+      - `{:error, reason}` → `{:failure, reason}`
+      - `:timeout` → `:retry`
+      - anything else → `:unknown`
+
+      ```elixir
+      Matcher.classify({:ok, 1})        # => {:value, 1}
+      Matcher.classify({:error, :nope}) # => {:failure, :nope}
+      ```
+    starter_code: |
+      defmodule Matcher do
+        # TODO: one clause per shape, catch-all last
+        def classify(term) do
+          :unknown
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MatcherClassifyTest do
+        use ExUnit.Case
+
+        test "ok tuples" do
+          assert Matcher.classify({:ok, 1}) == {:value, 1}
+          assert Matcher.classify({:ok, nil}) == {:value, nil}
+        end
+
+        test "error tuples" do
+          assert Matcher.classify({:error, :nope}) == {:failure, :nope}
+        end
+
+        test "timeout atom" do
+          assert Matcher.classify(:timeout) == :retry
+        end
+
+        test "everything else is unknown" do
+          assert Matcher.classify({:ok, 1, 2}) == :unknown
+          assert Matcher.classify(:ok) == :unknown
+          assert Matcher.classify(%{ok: 1}) == :unknown
+        end
+      end
+    solution: |
+      defmodule Matcher do
+        def classify({:ok, value}), do: {:value, value}
+        def classify({:error, reason}), do: {:failure, reason}
+        def classify(:timeout), do: :retry
+        def classify(_), do: :unknown
+      end
+    explanation: |
+      Each clause is a pattern; Elixir tries them top to bottom and runs the first that matches. The
+      three-element tuple `{:ok, 1, 2}` does not match `{:ok, value}` because tuple patterns are exact in
+      size, so it reaches the catch-all. Putting `classify(_)` first would shadow every other clause and
+      the compiler would warn that the later clauses can never match.
+    tags: [function-clauses, pattern-matching]
+    source: https://elixir.hexdocs.pm/modules-and-functions.html
+
+  - slug: elixir-match-code-bin-parser
+    kind: code
+    difficulty: middle
+    title: "Parse a length-prefixed binary frame"
+    body: |
+      Implement `BinParser.parse/1`. A frame is: 1 byte `version`, 2 bytes big-endian `len`, then
+      `len` bytes of payload, then whatever follows. Return `{:ok, %{version: v, payload: p}, rest}`
+      when a full frame is present, `{:incomplete, missing_bytes}` when the header is complete but
+      the payload is short, and `:error` when fewer than 3 bytes are given.
+
+      ```elixir
+      BinParser.parse(<<1, 0, 2, "hi", "tail">>)
+      # => {:ok, %{version: 1, payload: "hi"}, "tail"}
+      BinParser.parse(<<1, 0, 5, "hi">>)   # => {:incomplete, 3}
+      ```
+    starter_code: |
+      defmodule BinParser do
+        def parse(binary) do
+          # TODO: use <<version, len::16, payload::binary-size(len), rest::binary>>
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule BinParserFrameTest do
+        use ExUnit.Case
+
+        test "full frame with trailing bytes" do
+          assert BinParser.parse(<<1, 0, 2, "hi", "tail">>) ==
+                   {:ok, %{version: 1, payload: "hi"}, "tail"}
+        end
+
+        test "exact frame, no rest" do
+          assert BinParser.parse(<<7, 0, 0>>) == {:ok, %{version: 7, payload: ""}, ""}
+        end
+
+        test "length is big-endian 16 bit" do
+          payload = :binary.copy(<<0>>, 300)
+          assert {:ok, %{payload: ^payload}, ""} = BinParser.parse(<<1, 1, 44>> <> payload)
+        end
+
+        test "short payload reports missing bytes" do
+          assert BinParser.parse(<<1, 0, 5, "hi">>) == {:incomplete, 3}
+        end
+
+        test "short header is an error" do
+          assert BinParser.parse(<<1, 0>>) == :error
+          assert BinParser.parse(<<>>) == :error
+        end
+      end
+    solution: |
+      defmodule BinParser do
+        def parse(<<version, len::16, payload::binary-size(len), rest::binary>>) do
+          {:ok, %{version: version, payload: payload}, rest}
+        end
+
+        def parse(<<_version, len::16, rest::binary>>) do
+          {:incomplete, len - byte_size(rest)}
+        end
+
+        def parse(_), do: :error
+      end
+    explanation: |
+      A size bound earlier in the pattern (`len`) can size a later segment (`binary-size(len)`), and
+      only the final segment may be unsized. When the payload is too short the first clause simply
+      fails to match — no exception — and the second clause, which only needs the 3-byte header,
+      computes how much is missing. `300` encodes as `<<1, 44>>` big-endian, which the third test checks.
+    tags: [binaries, bit-syntax, parsing]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-code-with-validator
+    kind: code
+    difficulty: middle
+    title: "Validate params with `with`"
+    body: |
+      Implement `Validator.validate/1`. It receives a map with string keys and must return
+      `{:ok, %{name: name, age: age}}` when `"name"` is a non-empty string and `"age"` is an integer
+      `>= 18`. Otherwise return the **first** failing reason in this order:
+      `{:error, :name_missing}`, `{:error, :name_empty}`, `{:error, :age_missing}`,
+      `{:error, :age_invalid}` (non-integer), `{:error, :too_young}`.
+
+      Use a `with` chain over small helper functions; no nested `case`.
+    starter_code: |
+      defmodule Validator do
+        def validate(params) do
+          # TODO: with {:ok, name} <- fetch_name(params), ...
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ValidatorWithTest do
+        use ExUnit.Case
+
+        test "valid params" do
+          assert Validator.validate(%{"name" => "Ann", "age" => 30}) == {:ok, %{name: "Ann", age: 30}}
+        end
+
+        test "name errors come first" do
+          assert Validator.validate(%{"age" => 30}) == {:error, :name_missing}
+          assert Validator.validate(%{"name" => "", "age" => 1}) == {:error, :name_empty}
+        end
+
+        test "age errors" do
+          assert Validator.validate(%{"name" => "Ann"}) == {:error, :age_missing}
+          assert Validator.validate(%{"name" => "Ann", "age" => "30"}) == {:error, :age_invalid}
+          assert Validator.validate(%{"name" => "Ann", "age" => 17}) == {:error, :too_young}
+        end
+
+        test "extra keys are ignored" do
+          assert {:ok, %{name: "B", age: 18}} = Validator.validate(%{"name" => "B", "age" => 18, "x" => 1})
+        end
+      end
+    solution: |
+      defmodule Validator do
+        def validate(params) do
+          with {:ok, name} <- fetch_name(params),
+               {:ok, age} <- fetch_age(params) do
+            {:ok, %{name: name, age: age}}
+          end
+        end
+
+        defp fetch_name(%{"name" => ""}), do: {:error, :name_empty}
+        defp fetch_name(%{"name" => name}) when is_binary(name), do: {:ok, name}
+        defp fetch_name(_), do: {:error, :name_missing}
+
+        defp fetch_age(%{"age" => age}) when is_integer(age) and age >= 18, do: {:ok, age}
+        defp fetch_age(%{"age" => age}) when is_integer(age), do: {:error, :too_young}
+        defp fetch_age(%{"age" => _}), do: {:error, :age_invalid}
+        defp fetch_age(_), do: {:error, :age_missing}
+      end
+    explanation: |
+      Because every helper already returns `{:error, reason}`, the `with` needs no `else`: the first
+      non-matching value is returned as-is. The helpers use clause ordering to encode the priority of
+      errors (`""` before the generic binary clause; `>= 18` before the plain integer clause). This is the
+      railway shape interviewers want to see instead of nested `case`.
+    tags: [with, validation, function-clauses]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-code-guards-sign
+    kind: code
+    difficulty: junior
+    title: "Guards and a custom `defguard`"
+    body: |
+      Implement `Numbers.classify/1` returning `:positive`, `:negative`, `:zero` for numbers
+      (integers or floats) and `:not_a_number` for anything else. Define and use a guard
+      `is_positive/1` with `defguard`. Do not use `case`, `if` or `cond`.
+
+      ```elixir
+      Numbers.classify(3)      # => :positive
+      Numbers.classify(-0.5)   # => :negative
+      Numbers.classify("3")    # => :not_a_number
+      ```
+    starter_code: |
+      defmodule Numbers do
+        # TODO: defguard is_positive(n) when ...
+
+        def classify(n) do
+          # TODO: clauses with guards
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule NumbersGuardTest do
+        use ExUnit.Case
+        require Numbers
+
+        test "integers" do
+          assert Numbers.classify(3) == :positive
+          assert Numbers.classify(-3) == :negative
+          assert Numbers.classify(0) == :zero
+        end
+
+        test "floats including both zeros" do
+          assert Numbers.classify(0.5) == :positive
+          assert Numbers.classify(-0.5) == :negative
+          assert Numbers.classify(0.0) == :zero
+          assert Numbers.classify(-0.0) == :zero
+        end
+
+        test "non-numbers" do
+          assert Numbers.classify("3") == :not_a_number
+          assert Numbers.classify(nil) == :not_a_number
+          assert Numbers.classify([1]) == :not_a_number
+        end
+
+        test "the guard is usable from outside" do
+          assert Numbers.is_positive(2)
+          refute Numbers.is_positive(-2)
+          refute Numbers.is_positive(:atom)
+        end
+      end
+    solution: |
+      defmodule Numbers do
+        defguard is_positive(n) when is_number(n) and n > 0
+
+        def classify(n) when is_positive(n), do: :positive
+        def classify(n) when is_number(n) and n < 0, do: :negative
+        def classify(n) when is_number(n), do: :zero
+        def classify(_), do: :not_a_number
+      end
+    explanation: |
+      `defguard` defines a macro that can only be built from other guard expressions, so it is usable in
+      `when` clauses here and (after `require Numbers`) outside guards as a plain boolean. The `:zero`
+      clause deliberately uses only `is_number/1` rather than matching the literal `0.0`: on OTP 27 the
+      pattern `0.0` matches only `+0.0`, so a guard-based comparison is what handles `-0.0` correctly.
+      Clause order encodes the logic: positive, negative, then "any remaining number" must be zero.
+    tags: [guards, defguard, floats]
+    source: https://elixir.hexdocs.pm/patterns-and-guards.html
+
+  - slug: elixir-flow-code-for-pythagorean
+    kind: code
+    difficulty: middle
+    title: "Multiple generators and filters in `for`"
+    body: |
+      Implement `Comp.pythagorean(n)` returning all triples `{a, b, c}` with `1 <= a < b < c <= n` and
+      `a*a + b*b == c*c`, in ascending order, using a single `for` comprehension with multiple
+      generators and filters. Also implement `Comp.index_by(words)` that returns a map from first
+      letter to the list of words starting with it, using `for` with `:reduce`.
+
+      ```elixir
+      Comp.pythagorean(10)            # => [{3, 4, 5}, {6, 8, 10}]
+      Comp.index_by(["ant", "bee", "ape"])
+      # => %{"a" => ["ant", "ape"], "b" => ["bee"]}
+      ```
+    starter_code: |
+      defmodule Comp do
+        def pythagorean(n) do
+          # TODO: for a <- 1..n, b <- ..., c <- ..., filters, do: {a, b, c}
+        end
+
+        def index_by(words) do
+          # TODO: for word <- words, reduce: %{} do ... end
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CompForTest do
+        use ExUnit.Case
+
+        test "triples up to 10" do
+          assert Comp.pythagorean(10) == [{3, 4, 5}, {6, 8, 10}]
+        end
+
+        test "no triples below 5" do
+          assert Comp.pythagorean(4) == []
+        end
+
+        test "larger bound includes 5-12-13" do
+          assert {5, 12, 13} in Comp.pythagorean(13)
+        end
+
+        test "index_by groups in order" do
+          assert Comp.index_by(["ant", "bee", "ape"]) == %{"a" => ["ant", "ape"], "b" => ["bee"]}
+        end
+
+        test "index_by on empty list" do
+          assert Comp.index_by([]) == %{}
+        end
+      end
+    solution: |
+      defmodule Comp do
+        def pythagorean(n) do
+          for a <- 1..n//1, b <- (a + 1)..n//1, c <- (b + 1)..n//1, a * a + b * b == c * c, do: {a, b, c}
+        end
+
+        def index_by(words) do
+          for word <- words, reduce: %{} do
+            acc -> Map.update(acc, String.first(word), [word], &(&1 ++ [word]))
+          end
+        end
+      end
+    explanation: |
+      Later generators can reference variables bound by earlier ones (`b <- (a + 1)..n`), which both
+      enforces `a < b < c` and prunes the search. Filters are expressions that drop the iteration when
+      falsy. The explicit `//1` step keeps ranges like `11..10` empty rather than counting down. With
+      `reduce:` the `do` block takes an `acc ->` clause and the comprehension returns the final
+      accumulator instead of a list.
+    tags: [comprehensions, generators, reduce]
+    source: https://elixir.hexdocs.pm/comprehensions.html
+
+  - slug: elixir-flow-code-flatten-recursion
+    kind: code
+    difficulty: middle
+    title: "Recursive flatten with an accumulator"
+    body: |
+      Implement `Flattener.flatten/1` that flattens arbitrarily nested lists, without calling
+      `List.flatten/1` or `Enum.flat_map/2`. Write it tail-recursively with an accumulator and
+      reverse at the end.
+
+      ```elixir
+      Flattener.flatten([1, [2, [3, []]], 4])   # => [1, 2, 3, 4]
+      ```
+    starter_code: |
+      defmodule Flattener do
+        def flatten(list), do: do_flatten(list, []) |> Enum.reverse()
+
+        defp do_flatten([], acc), do: acc
+        # TODO: more clauses
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FlattenerRecTest do
+        use ExUnit.Case
+
+        test "nested lists" do
+          assert Flattener.flatten([1, [2, [3, []]], 4]) == [1, 2, 3, 4]
+        end
+
+        test "already flat" do
+          assert Flattener.flatten([1, 2, 3]) == [1, 2, 3]
+        end
+
+        test "empty and only-empty" do
+          assert Flattener.flatten([]) == []
+          assert Flattener.flatten([[], [[]]]) == []
+        end
+
+        test "deep nesting keeps order" do
+          assert Flattener.flatten([[[[:a]]], :b, [[:c], :d]]) == [:a, :b, :c, :d]
+        end
+
+        test "does not flatten tuples or strings" do
+          assert Flattener.flatten([{1, [2]}, "ab"]) == [{1, [2]}, "ab"]
+        end
+      end
+    solution: |
+      defmodule Flattener do
+        def flatten(list), do: do_flatten(list, []) |> Enum.reverse()
+
+        defp do_flatten([], acc), do: acc
+        defp do_flatten([h | t], acc) when is_list(h), do: do_flatten(t, do_flatten(h, acc))
+        defp do_flatten([h | t], acc), do: do_flatten(t, [h | acc])
+      end
+    explanation: |
+      The classic three clauses: empty list returns the accumulator, a list head is flattened into the
+      accumulator first and then the tail continues, any other head is prepended. Prepending is O(1),
+      so one `Enum.reverse/1` at the end is cheaper than appending with `++` on every element. The
+      outer call `do_flatten(t, do_flatten(h, acc))` is a tail call; the inner one is not, but its depth
+      is bounded by nesting depth, not list length.
+    tags: [recursion, accumulator, lists]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-flow-code-receive-after
+    kind: code
+    difficulty: senior
+    title: "`receive` with a timeout"
+    body: |
+      Implement `Pinger.ping/2`: send `{:ping, self()}` to `pid`, then wait up to `timeout` ms for a
+      `:pong` message **from that pid** (`{:pong, pid}`), returning `:pong` or `:timeout`. Other messages
+      in the mailbox must be left alone. Also implement `Pinger.responder/0`, a function suitable for
+      `spawn/1` that answers one `{:ping, from}` message with `send(from, {:pong, self()})` and exits.
+    starter_code: |
+      defmodule Pinger do
+        def ping(pid, timeout) do
+          # TODO: send, then receive ... after timeout -> :timeout end
+        end
+
+        def responder do
+          # TODO: receive one ping and reply
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PingerReceiveTest do
+        use ExUnit.Case
+
+        test "gets a pong from a live responder" do
+          pid = spawn(&Pinger.responder/0)
+          assert Pinger.ping(pid, 500) == :pong
+        end
+
+        test "times out when nobody answers" do
+          pid = spawn(fn -> Process.sleep(:infinity) end)
+          assert Pinger.ping(pid, 50) == :timeout
+        end
+
+        test "ignores pongs from other pids and unrelated messages" do
+          send(self(), {:pong, :someone_else})
+          send(self(), :noise)
+          pid = spawn(fn -> Process.sleep(:infinity) end)
+          assert Pinger.ping(pid, 50) == :timeout
+          assert_received {:pong, :someone_else}
+          assert_received :noise
+        end
+
+        test "responder replies with its own pid" do
+          pid = spawn(&Pinger.responder/0)
+          send(pid, {:ping, self()})
+          assert_receive {:pong, ^pid}, 500
+        end
+      end
+    solution: |
+      defmodule Pinger do
+        def ping(pid, timeout) do
+          send(pid, {:ping, self()})
+
+          receive do
+            {:pong, ^pid} -> :pong
+          after
+            timeout -> :timeout
+          end
+        end
+
+        def responder do
+          receive do
+            {:ping, from} -> send(from, {:pong, self()})
+          end
+        end
+      end
+    explanation: |
+      `receive` scans the mailbox for the first message matching any clause and leaves the rest in
+      place; the pin `^pid` is what restricts the match to the pong from the process we pinged. `after
+      timeout` fires only if no matching message arrives in time. The third test proves selective
+      receive: unrelated messages are still there afterwards (`assert_received`). The `{:ping, from}`
+      convention of sending your own pid is how request/reply works beneath `GenServer.call/3`.
+    tags: [receive, processes, timeout]
+    source: https://elixir.hexdocs.pm/processes.html
+
+  - slug: elixir-flow-code-attempt-try
+    kind: code
+    difficulty: middle
+    title: "Wrap raise, throw and exit into tagged tuples"
+    body: |
+      Implement `Attempt.run/1`, which calls a zero-arity function and returns:
+
+      - `{:ok, value}` when it returns normally
+      - `{:error, exception}` when it raises (the exception struct)
+      - `{:thrown, value}` when it throws
+      - `{:exit, reason}` when it exits
+
+      ```elixir
+      Attempt.run(fn -> 1 + 1 end)           # => {:ok, 2}
+      Attempt.run(fn -> throw(:stop) end)    # => {:thrown, :stop}
+      ```
+    starter_code: |
+      defmodule Attempt do
+        def run(fun) when is_function(fun, 0) do
+          # TODO: try ... rescue ... catch ... end
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule AttemptTryTest do
+        use ExUnit.Case
+
+        test "normal return" do
+          assert Attempt.run(fn -> 1 + 1 end) == {:ok, 2}
+          assert Attempt.run(fn -> nil end) == {:ok, nil}
+        end
+
+        test "raise gives the exception struct" do
+          assert {:error, %ArgumentError{message: "bad"}} = Attempt.run(fn -> raise ArgumentError, "bad" end)
+          assert {:error, %ArithmeticError{}} = Attempt.run(fn -> 1 / 0 end)
+        end
+
+        test "throw" do
+          assert Attempt.run(fn -> throw(:stop) end) == {:thrown, :stop}
+        end
+
+        test "exit" do
+          assert Attempt.run(fn -> exit(:boom) end) == {:exit, :boom}
+        end
+      end
+    solution: |
+      defmodule Attempt do
+        def run(fun) when is_function(fun, 0) do
+          try do
+            {:ok, fun.()}
+          rescue
+            e -> {:error, e}
+          catch
+            :throw, value -> {:thrown, value}
+            :exit, reason -> {:exit, reason}
+          end
+        end
+      end
+    explanation: |
+      `rescue` sees only exceptions (`raise`, and Erlang errors such as `1 / 0`, which Elixir
+      normalises into `ArithmeticError`). `throw` and `exit` are separate mechanisms that only `catch`
+      intercepts, and the two-argument form `catch kind, value` distinguishes them. `catch :error, e`
+      would also catch raises but yields raw Erlang terms, which is why `rescue` is preferred for
+      exceptions. A `try` with both `rescue` and `catch` is the full "safe call" wrapper; `Task.await`
+      and `GenServer.call` use the same primitives.
+    tags: [try, rescue, catch, exceptions]
+    source: https://elixir.hexdocs.pm/try-catch-and-rescue.html
+
+  - slug: elixir-match-list-cons-cells
+    kind: theory
+    difficulty: junior
+    title: "Lists are cons cells: `[h | t]`"
+    body: |
+      An Elixir list is a singly linked list built from *cons cells*. `[1, 2, 3]` is sugar for
+      `[1 | [2 | [3 | []]]]`: each cell holds a head and a pointer to the tail, ending in `[]`.
+
+      ```elixir
+      [h | t] = [1, 2, 3]        # h = 1, t = [2, 3]
+      [a, b | rest] = [1, 2, 3]  # a = 1, b = 2, rest = [3]
+      [x] = [1]                  # exact length one
+      [h | t] = [1]              # h = 1, t = []
+      [h | t] = []               # MatchError
+      [0 | [1, 2]]               # => [0, 1, 2]  prepend, O(1)
+      [1 | 2]                    # => [1 | 2]  an improper list (tail not a list) — avoid
+      ```
+
+      Costs that follow from the structure:
+
+      - `hd/1`, `tl/1`, prepend `[x | list]`, pattern matching the head: O(1).
+      - `length/1`, `Enum.at/2`, `List.last/1`, `list ++ other` (copies the left list), `list -- other`: O(n).
+      - Appending in a loop with `acc ++ [x]` is O(n²); prepend and `Enum.reverse/1` once instead.
+      - A list is a proper list only if its final tail is `[]`; `is_list/1` is true for improper lists
+        too, but `length/1` and `Enum` raise on them.
+
+      Recursion over lists always has the same shape: a clause for `[]` and a clause for `[h | t]`.
+      Pattern matching `[h | t]` against a non-empty list never copies — it just reads the cell.
+    answer: |
+      **Q:** Why is `list ++ [x]` in a loop slow while `[x | list]` is fast, and how do you build a list
+      in order?
+      **A:** `++` must copy the entire left list to attach a new tail, so repeating it is O(n²); prepending
+      allocates one cons cell. Build by prepending into an accumulator and call `Enum.reverse/1` once at
+      the end (O(n) total).
+    explanation: |
+      Follow-up: "What does `[1, 2] ++ 3` produce?" An improper list `[1, 2 | 3]`. "Why does `Enum.at/2`
+      exist if it is O(n)?" Convenience; when random access matters use a tuple, a map or `:array`.
+    tags: [lists, cons, recursion]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-flow-for-options
+    kind: theory
+    difficulty: middle
+    title: "`for` comprehensions: filters, `:into`, `:uniq`, `:reduce`, bitstrings"
+    body: |
+      `for` combines generators, filters and a collector. Generators are patterns: elements that do not
+      match are silently skipped.
+
+      ```elixir
+      for n <- 1..6, rem(n, 2) == 0, do: n * n              # => [4, 16, 36]  filter
+      for {:ok, v} <- [{:ok, 1}, :err, {:ok, 2}], do: v      # => [1, 2]      pattern-filter
+      for x <- [1, 2], y <- [:a, :b], do: {x, y}             # cartesian product, later gens see x
+      for n <- 1..10, m = n * 2, rem(m, 3) == 0, do: m       # => [6, 12, 18]  `=` binds inside filters
+      for {k, v} <- [a: 1, b: 2], into: %{}, do: {k, v * 2}  # => %{a: 2, b: 4}  any Collectable
+      for c <- ~c"hello", into: "", do: <<c>>                # => "hello"
+      for x <- [1, 1, 2], uniq: true, do: x                  # => [1, 2]
+      for <<r::8, g::8, b::8 <- pixels>>, do: {r, g, b}      # bitstring generator
+      for x <- 1..4, reduce: 0 do                            # accumulator instead of a list
+        acc -> acc + x
+      end                                                    # => 10
+      ```
+
+      Rules:
+
+      - Filters run after the generators to their left; a falsy (`nil`/`false`) filter skips the item.
+      - Variables bound inside `for` do not leak out.
+      - `:into` accepts anything implementing `Collectable` (maps, strings, `MapSet`, `IO.Stream`);
+        the default is a list.
+      - `:reduce` and `:into` are mutually exclusive; with `:reduce` the block must be `acc ->` clauses.
+      - Bitstring generators use `<<pattern <- binary>>` and stop when fewer bits remain than the pattern.
+      - A comprehension is eager; for large inputs use `Stream` functions.
+    answer: |
+      **Q:** What is the difference between `for x <- list, x > 0, do: x` and
+      `for x when x > 0 <- list, do: x`?
+      **A:** They produce the same result: a guard on the generator pattern (allowed since Elixir 1.x
+      via `pattern when guard <- enumerable`) filters elements exactly like a separate filter does; the
+      filter form may use any expression, while the guard form is limited to guard-safe expressions.
+    explanation: |
+      Follow-up: "How would you remove the spaces from a string with `for`?"
+      `for <<c <- s>>, c != ?\s, into: "", do: <<c>>`. "What does `for` return when a filter rejects
+      everything?" `[]` (or the empty `:into` collectable / the initial `:reduce` accumulator).
+    tags: [comprehensions, into, reduce]
+    source: https://elixir.hexdocs.pm/comprehensions.html
+
+  - slug: elixir-match-bit-syntax-modifiers
+    kind: theory
+    difficulty: middle
+    title: "Binary pattern modifiers: size, unit, type, endianness"
+    body: |
+      Every segment in a `<<>>` pattern is `name::type-size(n)-unit(u)-endianness-signedness`. Defaults
+      are `integer`, `size(8)`, `unit(1)`, `big`, `unsigned`.
+
+      ```elixir
+      <<a::8, b::16>> = <<1, 0, 2>>                 # a = 1, b = 2
+      <<x::16-little>> = <<1, 0>>                   # x = 1
+      <<s::8-signed>> = <<255>>                     # s = -1
+      <<f::float>> = <<64, 9, 33, 251, 84, 68, 45, 24>>   # f = 3.141592653589793 (64 bits)
+      <<cp::utf8, rest::binary>> = "über"           # cp = 252, rest = "ber"
+      <<head::binary-size(2), rest::binary>> = "hello"    # head = "he"
+      <<n::4, m::4>> = <<0xAB>>                     # n = 10, m = 11 — sub-byte
+      <<flags::bits-size(3), _::bits>> = <<0b101::3, 0::5>> # bitstring segment
+      len = 2
+      <<p::binary-size(len), _::binary>> = "abcd"   # size from a variable bound before the match
+      <<len2::8, body::binary-size(len2), _::binary>> = <<3, "xyz!">> # size bound in the same pattern
+      ```
+
+      - `size(n)` is in *units*: for `integer`/`float`/`bits` the unit is 1 bit; for `binary` it is 8
+        bits (one byte). `::8*4` means `size(8)-unit(4)` = 32 bits.
+      - `binary` segments must have a size unless they are last; `<<a::binary, b::binary>>` in a
+        pattern is a compile error ("a binary field without size is only allowed at the end").
+      - Strings in a pattern are byte literals: `<<"GET ", path::binary>>`; `"GET " <> path` is the same.
+      - Types: `integer`, `float` (16/32/64 bits), `binary`/`bytes`, `bitstring`/`bits`, `utf8`, `utf16`,
+        `utf32`. `utf*` segments have no size and match one codepoint.
+      - Endianness only matters for multi-byte integers and floats: `big` (network order, default),
+        `little`, `native`.
+      - Construction uses the same syntax and *truncates* integers that do not fit (`<<256>>` is `<<0>>`).
+    answer: |
+      **Q:** Why does `<<a::binary, b::binary>> = "ab"` fail to compile while `<<a::8, b::binary>>`
+      works?
+      **A:** The matcher needs to know where every segment ends except the last; an unsized `binary`
+      that is not last is ambiguous. `a::8` is one byte by definition, so the remaining `b` can absorb
+      the rest.
+    explanation: |
+      Follow-up: "How would you match a 1-bit flag followed by a 7-bit length?" `<<flag::1, len::7,
+      rest::binary>>`. "What is `::binary-size(^n)`?" A size taken from a pinned outer variable — pins
+      work in size expressions too.
+    tags: [binaries, bit-syntax, modifiers]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-flow-try-anatomy
+    kind: theory
+    difficulty: senior
+    title: "Anatomy of `try`: `rescue`, `catch`, `else`, `after`"
+    body: |
+      ```elixir
+      try do
+        risky()
+      rescue
+        e in [ArgumentError, KeyError] -> {:error, e}     # exceptions, by module
+        e -> reraise e, __STACKTRACE__                    # re-raise keeping the stack trace
+      catch
+        :throw, value -> {:thrown, value}                  # throw/1
+        :exit, reason -> {:exit, reason}                   # exit/1
+        kind, value -> {kind, value}                       # anything (:error too)
+      else
+        {:ok, v} -> v                                      # runs on the SUCCESS value of the do block
+        other -> raise "unexpected #{inspect(other)}"      # no match here raises TryClauseError
+      after
+        cleanup()                                          # always runs; return value ignored
+      end
+      ```
+
+      - `rescue` matches exceptions (structs implementing `Exception`). Erlang errors like `:badarith`
+        are normalised into Elixir exceptions (`ArithmeticError`) before matching.
+      - `catch` sees all three kinds: `:error` (raises, as raw terms unless you `Exception.normalize/2`),
+        `:throw`, `:exit`. One-argument `catch v ->` is shorthand for `:throw`.
+      - `else` receives the value of the `do` block when nothing was raised; exceptions raised inside
+        `else` are **not** caught by the same `try`.
+      - `after` runs whether the body succeeded, raised, threw or exited — but not if the *process* is
+        killed by a signal from a linked process (`Process.exit(pid, :kill)`), so it is a soft
+        guarantee. Resources owned by a process (files, ETS, sockets) are freed when it dies anyway.
+      - Variables bound inside `try` are not visible outside; bind the result of the whole `try`.
+      - A function body can use `rescue`/`catch`/`after` directly without `try`: `def f do ... rescue ...
+        end`.
+      - Idiomatic Elixir rarely uses `try`: return tagged tuples for expected failures, let the process
+        crash for unexpected ones, and use `rescue` mainly to log and re-raise or at boundaries (web
+        request handling, job runners).
+    answer: |
+      **Q:** Why is `after` not a reliable place to release an external resource such as a lock in
+      another service?
+      **A:** `after` runs for raise/throw/exit inside the body, but a process can be killed by a linked
+      process or `:kill` signal between instructions, in which case `after` never runs. For external
+      resources use a monitor in the owning process or a separate supervisor-managed cleanup.
+    explanation: |
+      Follow-up: "What is `__STACKTRACE__`?" The stack trace of the exception being rescued, available
+      only inside `rescue`/`catch`; `reraise/2` uses it so logs point at the original failure. "What does
+      `try` do to tail calls?" A call inside `try do` is not in tail position, so recursive loops
+      wrapped in `try` grow the stack.
+    tags: [try, rescue, after, exceptions]
+    source: https://elixir.hexdocs.pm/try-catch-and-rescue.html

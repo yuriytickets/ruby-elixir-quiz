@@ -1,0 +1,1173 @@
+language: elixir
+topic: tooling-and-ecosystem
+items:
+  - slug: elixir-tool-mix-exs-project-vs-application
+    kind: mcq
+    difficulty: junior
+    title: "`project/0` vs `application/0` in `mix.exs`"
+    body: |
+      ```elixir
+      def project do
+        [app: :shop, version: "0.1.0", elixir: "~> 1.17", deps: deps(), elixirc_paths: elixirc_paths(Mix.env())]
+      end
+
+      def application do
+        [mod: {Shop.Application, []}, extra_applications: [:logger]]
+      end
+      ```
+
+      Which statement is correct?
+    choices:
+      - "`project/0` configures Mix (build, deps, paths); `application/0` generates the OTP `.app` file: which module to start and which extra OTP apps must be running"
+      - "`application/0` lists the project's Hex dependencies; `project/0` only names the app"
+      - "Both are merged into the application environment readable via `Application.get_env/2`"
+      - "`project/0` runs at runtime when the release boots; `application/0` runs at compile time"
+    answer: 0
+    explanation: |
+      `project/0` is consumed by Mix tasks at build time: name, version, Elixir requirement, `deps`, `aliases`,
+      `elixirc_paths`, `releases`, `test_coverage`... `application/0` becomes `ebin/shop.app`, the OTP
+      application resource file: `mod:` tells the VM which callback module starts the supervision tree,
+      `extra_applications:` adds OTP/Elixir apps (`:logger`, `:crypto`, `:inets`) that are not Hex deps, and
+      `env:` sets default application env. Hex deps are started automatically because Mix infers the
+      `applications` list from `deps/0` (unless `runtime: false`).
+    tags: [mix, mix.exs, otp-application]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Compile.App.html
+
+  - slug: elixir-tool-semver-tilde-arrow
+    kind: mcq
+    difficulty: junior
+    title: "What does `{:plug, \"~> 1.14\"}` allow?"
+    body: |
+      Which versions satisfy the requirement `~> 1.14`? And `~> 1.14.2`?
+    choices:
+      - "`~> 1.14` means exactly 1.14.x; `~> 1.14.2` means exactly 1.14.2"
+      - "`~> 1.14` means `>= 1.14.0 and < 2.0.0`; `~> 1.14.2` means `>= 1.14.2 and < 1.15.0`"
+      - "`~> 1.14` means `>= 1.14.0`; `~> 1.14.2` means `>= 1.14.2`"
+      - "Both mean `>= 1.14.0 and < 1.15.0`"
+    answer: 1
+    explanation: |
+      `~>` (pessimistic operator) pins everything except the last given component: with two components it
+      allows minor upgrades, with three only patch upgrades. It never admits a pre-release of the upper bound.
+      Hex resolves with `allow_pre: false`, so `~> 1.14` will not pick `2.0.0-rc.1`. Requirements can be
+      combined: `">= 1.14.2 and < 1.16.0"` or `"~> 1.14 or ~> 2.0"`. `mix.lock` then freezes the exact resolved
+      version so every machine builds the same tree.
+    tags: [hex, semver, version]
+    source: https://elixir.hexdocs.pm/Version.html
+
+  - slug: elixir-tool-config-exs-vs-runtime-exs
+    kind: mcq
+    difficulty: junior
+    title: "Which config file is evaluated when a release boots?"
+    body: |
+      A release is built on CI with `MIX_ENV=prod mix release` and deployed to a server with a different
+      `DATABASE_URL`. Where must `System.get_env("DATABASE_URL")` be read for the server's value to be used?
+    choices:
+      - "`config/config.exs`, because it is the main configuration file"
+      - "`config/prod.exs`, because `MIX_ENV=prod`"
+      - "`config/runtime.exs`, which is evaluated every time the release (or `mix run`) starts, after compilation"
+      - "Any of them; `System.get_env` is always evaluated at boot"
+    answer: 2
+    explanation: |
+      `config.exs`, `prod.exs` etc. run on the build machine *before* compilation; whatever `System.get_env`
+      returned there is frozen into the release. `config/runtime.exs` is copied into the release and evaluated
+      on the target at boot (right before applications start), which is why Phoenix generators put secrets and
+      URLs there. It must `import Config`, must not `import_config`, and cannot use `Mix` (Mix is not shipped in
+      releases).
+    tags: [config, runtime.exs, releases]
+    source: https://elixir.hexdocs.pm/Config.html
+
+  - slug: elixir-tool-compile-env-mismatch
+    kind: mcq
+    difficulty: middle
+    title: "`Application.compile_env/3` and a value that changes later"
+    body: |
+      ```elixir
+      defmodule Shop.Pricing do
+        @tax Application.compile_env(:shop, :tax_rate, 0.2)
+        def with_tax(x), do: x * (1 + @tax)
+      end
+      ```
+
+      `config/runtime.exs` later sets `config :shop, tax_rate: 0.19`. What happens when the app boots?
+    choices:
+      - "`with_tax/1` uses `0.19` because runtime config wins"
+      - "The boot fails with an error: Mix/releases detect that the compile-time value differs from the runtime value for `:tax_rate`"
+      - "`with_tax/1` silently keeps `0.2`; runtime config is ignored for `compile_env` keys"
+      - "A warning is logged and `0.2` is used"
+    answer: 1
+    explanation: |
+      `compile_env` records the value *and the fact that the module depends on it*. On boot the runtime value is
+      compared with the recorded one and a mismatch raises ("the application :shop has a different value set for
+      key :tax_rate during runtime compared to compile time"), so you never run with a silently stale value.
+      That is also why `Application.get_env` inside a module attribute (`@tax Application.get_env(...)`) is a
+      bug the compiler now warns about: it bakes the value in with no check. Use `compile_env` only for values
+      that must shape compilation; read everything else with `get_env`/`fetch_env!` at runtime.
+    tags: [compile_env, application-env, config]
+    source: https://elixir.hexdocs.pm/Application.html
+
+  - slug: elixir-tool-dep-only-runtime-false
+    kind: mcq
+    difficulty: middle
+    title: "`{:ex_doc, \"~> 0.34\", only: :dev, runtime: false}`"
+    body: |
+      What do `only: :dev` and `runtime: false` do here?
+    choices:
+      - "`only: :dev` fetches it only on developer machines; `runtime: false` skips compiling it"
+      - "`only: :dev` includes the dep only in the `:dev` Mix env (not in `:test`/`:prod` or releases); `runtime: false` keeps it out of the application start list, so it is compiled and usable from Mix tasks but never started"
+      - "`only: :dev` marks it optional for downstream users; `runtime: false` disables its Mix tasks"
+      - "They are equivalent; either one alone has the same effect"
+    answer: 1
+    explanation: |
+      Tooling deps (`ex_doc`, `credo`, `dialyxir`, `mix_test_watch`) are only needed while developing, so
+      `only: :dev` (or `only: [:dev, :test]`) removes them from other envs and from the release. `runtime: false`
+      means "do not add this app to `applications` in the `.app` file": its code is compiled and its Mix tasks
+      work, but it is not started with your app. Both are commonly used together; `optional: true` is the
+      different concept for libraries whose users may skip a dep.
+    tags: [hex, deps, mix.exs]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Deps.html
+
+  - slug: elixir-tool-dep-override-true
+    kind: mcq
+    difficulty: middle
+    title: "When do you need `override: true`?"
+    body: |
+      `mix deps.get` fails:
+
+      ```
+      Dependencies have diverged:
+      * plug_crypto (Hex package)
+        the dependency plug_crypto in mix.exs is overriding a child dependency ...
+      ```
+
+      You want to use a newer `plug_crypto` than one of your dependencies declares. What is the fix?
+    choices:
+      - "Add `{:plug_crypto, \"~> 2.1\", override: true}` to your deps, which forces every dependency to use your requirement"
+      - "Delete `mix.lock` and run `mix deps.get` again"
+      - "Add `{:plug_crypto, \"~> 2.1\", optional: true}`"
+      - "Run `mix deps.update plug_crypto --force`"
+    answer: 0
+    explanation: |
+      When the same package is required with incompatible requirements by your project and a dependency, Mix
+      refuses to guess. `override: true` on your own declaration makes it win over child requirements (use it
+      consciously: the child dependency may not actually work with the version you force). Deleting `mix.lock`
+      does not change requirements, `optional: true` concerns downstream consumers, and `deps.update` cannot
+      resolve a conflict in declared requirements.
+    tags: [hex, deps, override]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Deps.html
+
+  - slug: elixir-tool-release-eval-vs-rpc
+    kind: mcq
+    difficulty: middle
+    title: "Running migrations in a release: `eval` or `rpc`?"
+    body: |
+      You deploy a release and need to run Ecto migrations before the app serves traffic. Which command fits and why?
+    choices:
+      - "`bin/shop rpc \"Shop.Release.migrate()\"` because it reuses the running node's database pool"
+      - "`bin/shop eval \"Shop.Release.migrate()\"` because it boots a fresh VM *without* starting the application, so the migration module must `Application.ensure_all_started(:ecto_sql)` and start the Repo itself; it works even when the app is not running"
+      - "`bin/shop start --migrate`"
+      - "`bin/shop remote` then call `Ecto.Migrator.run/3` by hand"
+    answer: 1
+    explanation: |
+      `eval` is designed for one-off tasks: a new VM, runtime config loaded, no applications started, no
+      distribution. The conventional `Shop.Release.migrate/0` loads the app, starts the repos (`Repo.start_link`
+      or `Ecto.Migrator.with_repo/2`) and runs `Ecto.Migrator.run(repo, :up, all: true)`. `rpc` executes code
+      *on an already running node*, which couples the migration to the app being up and to that node's cookie;
+      it is fine for ad-hoc operations. `start` has no migration flag, and `remote` is interactive.
+    tags: [releases, migrations, eval]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-tool-release-node-cookie
+    kind: mcq
+    difficulty: middle
+    title: "`bin/app remote` refuses to connect. Which variables matter?"
+    body: |
+      `bin/shop remote` on the production box prints "Could not contact remote node shop@host". The release is
+      running. What is the most likely configuration cause?
+    choices:
+      - "The release was built without `include_erts: true`"
+      - "`RELEASE_NODE` or `RELEASE_COOKIE`/`RELEASE_DISTRIBUTION` differ between the running node and the shell you opened, so the remote shell targets a different node name or uses a different cookie"
+      - "`remote` only works with `daemon` mode"
+      - "`config/runtime.exs` is missing `config :shop, remote: true`"
+    answer: 1
+    explanation: |
+      `remote` starts a hidden node and connects to the node named by `RELEASE_NODE` (default `<app>`), using
+      `RELEASE_DISTRIBUTION` (`sname` by default, `name` for long names across hosts) and the cookie from
+      `RELEASE_COOKIE` or `releases/COOKIE`. If the running node was started with different values (set in
+      `rel/env.sh.eex`, systemd, or Docker), the names or cookies do not match and the connection is refused.
+      The same variables govern clustering between nodes, which is why they are set explicitly in `env.sh.eex`.
+    tags: [releases, distribution, cookie]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-tool-mix-env-in-config
+    kind: mcq
+    difficulty: middle
+    title: "Why is `Mix.env()` wrong in `config/*.exs` and `lib/`?"
+    body: |
+      ```elixir
+      # config/config.exs
+      import_config "#{Mix.env()}.exs"
+
+      # lib/shop/mailer.ex
+      def adapter, do: if(Mix.env() == :test, do: TestAdapter, else: SMTP)
+      ```
+    choices:
+      - "Both are fine; `Mix.env/0` is available everywhere"
+      - "Both are wrong: config files should use `config_env/0` (provided by `import Config`), and application code must not call `Mix` at all because Mix is not available in releases; store the env in config (`config :shop, env: config_env()`) and read it at runtime"
+      - "Only the config file is wrong; `lib/` code may use `Mix.env()` because it is evaluated at compile time"
+      - "Only the `lib/` code is wrong; config files are evaluated by Mix so `Mix.env()` is correct there"
+    answer: 1
+    explanation: |
+      Config files are evaluated by `Config.Reader`, which also runs inside releases where `Mix` does not exist,
+      so `config_env/0` and `config_target/0` are the supported helpers. In `lib/`, `Mix.env()` happens to work
+      in `mix run` but crashes with `UndefinedFunctionError` in a release and, because it is evaluated at
+      compile time, it also silently bakes in the build env. The `Mix` module belongs in `mix.exs` and custom
+      `Mix.Tasks` only.
+    tags: [config, Mix.env, config_env]
+    source: https://elixir.hexdocs.pm/Config.html
+
+  - slug: elixir-tool-dialyzer-success-typing
+    kind: mcq
+    difficulty: senior
+    title: "What does Dialyzer's success typing promise?"
+    body: |
+      Choose the correct description of how Dialyzer differs from a conventional static type checker.
+    choices:
+      - "It proves the program type-correct: no warnings means no type errors can occur"
+      - "It infers a *success typing* (an over-approximation of inputs for which a function can succeed) and only reports code that is **certain** to fail or be unreachable; it is silent when it cannot be sure, so no warnings does not mean no bugs"
+      - "It only checks functions that have an explicit `@spec`"
+      - "It checks the code against `@spec`s and reports every call whose arguments cannot be proven to match"
+    answer: 1
+    explanation: |
+      Dialyzer's design goal is "never cry wolf": it warns only when it can show a clause can never match, a
+      call can never succeed, or a function has no local return. `@spec`s narrow the inferred types and improve
+      messages (and are checked for being *too* permissive or impossible), but code without specs is analysed
+      too. The price is missed bugs and sometimes cryptic output, plus a slow first run while building the PLT
+      (`persistent lookup table` of OTP/Elixir/deps types, cached in `_build` or `priv/plts`). Elixir's newer
+      set-theoretic type checker runs in the compiler and takes the same "only report definite errors" stance.
+    tags: [dialyzer, typespecs, success-typing]
+    source: https://dialyxir.hexdocs.pm/readme.html
+
+  - slug: elixir-tool-xref-compile-connected
+    kind: mcq
+    difficulty: senior
+    title: "Diagnosing slow incremental compiles with `mix xref`"
+    body: |
+      Changing a single file recompiles half the project. Which command shows the dependencies most
+      responsible, and what kind of dependency are you looking for?
+    choices:
+      - "`mix compile --force` to see the compile order; you are looking for alphabetical ordering issues"
+      - "`mix xref graph --label compile-connected` (optionally `--format stats`); you are looking for compile-time dependencies that transitively pull many other files, typically caused by macros, `use`, structs in module bodies or functions called at compile time"
+      - "`mix deps.tree`; you are looking for duplicated Hex packages"
+      - "`mix xref callers Enum`; you are looking for modules that call the standard library"
+    answer: 1
+    explanation: |
+      `mix xref graph` prints file-level dependencies with labels `compile`, `export` and `runtime`. Only
+      compile-time deps force recompilation; "compile-connected" ones are compile deps on files that themselves
+      have many runtime deps, so one change cascades. `--format stats` lists the most depended-on files,
+      `--format cycles` shows cycles, `--sink file --label compile` finds who depends on a file at compile time.
+      Fixes: avoid `use` where `import`/`alias` suffices, keep macro modules small, move compile-time calls out
+      of module bodies, avoid `Module.concat` with dynamic names.
+    tags: [xref, compile-time-deps, performance]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Xref.html
+
+  - slug: elixir-tool-json-module-vs-jason
+    kind: mcq
+    difficulty: junior
+    title: "Elixir's built-in `JSON` module"
+    body: |
+      Since which version does Elixir ship a `JSON` module, and how does it relate to Jason?
+    choices:
+      - "Elixir 1.15; it is Jason vendored into the standard library"
+      - "Elixir 1.18 (requires Erlang/OTP 27, whose `:json` module it builds on); its API mirrors Jason (`JSON.encode!/1`, `decode!/1`, `encode_to_iodata!/1`, `JSON.Encoder` protocol with `@derive`), so migrating is mostly renaming"
+      - "Elixir 1.17; `Jason` is now deprecated and emits warnings"
+      - "There is no built-in JSON; Phoenix depends on Jason for that reason"
+    answer: 1
+    explanation: |
+      OTP 27 added a native `:json` module and Elixir 1.18 wrapped it with a Jason-compatible API plus a
+      `JSON.Encoder` protocol (`@derive {JSON.Encoder, only: [...]}`). Jason is still maintained and perfectly
+      fine; on Elixir 1.18+ you can point Phoenix at it with `config :phoenix, :json_library, JSON`. Note the OTP requirement:
+      Elixir 1.18 supports OTP 25-27, but `JSON` only exists on OTP 27+.
+    tags: [json, jason, elixir-1.18]
+    source: https://elixir-lang.org/blog/2024/12/19/elixir-v1-18-0-released/
+
+  - slug: elixir-tool-otp-compatibility-matrix
+    kind: mcq
+    difficulty: middle
+    title: "Which Erlang/OTP versions does Elixir 1.19 support?"
+    body: |
+      Your `.tool-versions` says `elixir 1.19.6-otp-27`. A teammate wants to move to OTP 28 and another to OTP 25.
+      According to the official compatibility table, which combination is supported?
+    choices:
+      - "OTP 25 through 28"
+      - "OTP 26 through 28 (OTP 25 is not supported by Elixir 1.19)"
+      - "Only OTP 27"
+      - "OTP 24 through 27"
+    answer: 1
+    explanation: |
+      Each Elixir minor supports roughly three OTP majors: 1.15/1.16 support OTP 24-26, 1.17/1.18 support
+      OTP 25-27, 1.19 supports OTP 26-28. Elixir ships a minor every six months; only the latest minor gets bug
+      fixes and the last five get security patches. The `-otp-27` suffix in asdf/mise precompiled builds matters:
+      Elixir bytecode is compiled against a specific OTP, so a mismatch produces "please re-compile this module
+      with an Erlang/OTP XX compiler" errors at boot.
+    tags: [versions, otp, asdf]
+    source: https://elixir.hexdocs.pm/compatibility-and-deprecations.html
+
+  - slug: elixir-tool-erlang-interop-timer-tc
+    kind: mcq
+    difficulty: junior
+    title: "Calling Erlang from Elixir: `:timer.tc/1`"
+    body: |
+      ```elixir
+      {t, result} = :timer.tc(fn -> Enum.sum(1..1_000_000) end)
+      ```
+
+      What are `t` and the general rule for calling Erlang modules?
+    choices:
+      - "`t` is elapsed milliseconds; Erlang modules are called as `Timer.tc/1` after `require :timer`"
+      - "`t` is elapsed microseconds (an integer); Erlang modules are atoms, so `:timer.tc/1`, `:lists.reverse/1`, `:crypto.strong_rand_bytes/1` need no import or wrapper"
+      - "`t` is a `%Duration{}`; Erlang modules must be wrapped with `:erlang.apply/3`"
+      - "`t` is elapsed seconds as a float"
+    answer: 1
+    explanation: |
+      Erlang module names are plain atoms (`:timer`, `:lists`, `:ets`, `:erlang`), so any Erlang function is
+      callable directly with full OTP docs available via `h :timer.tc` in IEx. `:timer.tc/1` returns
+      `{microseconds, result}`; OTP 26+ also accepts a unit (`:timer.tc(fun, :millisecond)`). Other everyday
+      interop: `:erlang.term_to_binary/1` and `binary_to_term/2` (use `[:safe]` for untrusted input),
+      `:erlang.memory/0`, `:observer.start/0`, `:persistent_term`, `:logger`. Strings differ: Erlang APIs often
+      expect charlists (`~c"..."`), so wrap with `String.to_charlist/1`.
+    tags: [erlang-interop, timer]
+    source: https://elixir.hexdocs.pm/erlang-libraries.html
+
+  - slug: elixir-tool-oban-why-db-backed
+    kind: mcq
+    difficulty: middle
+    title: "Why does Oban store jobs in Postgres instead of memory?"
+    body: |
+      A teammate suggests replacing Oban with a GenServer queue "because we already have the BEAM".
+      What is the strongest argument for Oban's database-backed design?
+    choices:
+      - "GenServers cannot run jobs concurrently"
+      - "Jobs are persisted and transactional: they survive deploys and crashes, can be inserted in the same transaction as the business change, are unique per configured keys, retried with backoff, scheduled/cron'd, and inspected afterwards; in-memory queues lose all of that"
+      - "Postgres is faster than process mailboxes"
+      - "Oban is required by Phoenix"
+    answer: 1
+    explanation: |
+      The BEAM gives you cheap concurrency, not durability. A GenServer queue loses pending work on every
+      restart and cannot coordinate across nodes. Oban uses the primary database as the queue: `Oban.insert/1`
+      inside `Repo.transaction` makes "save order + enqueue email" atomic, `unique:` options deduplicate,
+      `max_attempts` with exponential backoff retries, the Cron plugin schedules recurring jobs exactly once
+      cluster-wide, and the Pruner keeps the table small. Workers are modules with `use Oban.Worker` and a
+      `perform/1` returning `:ok`, `{:error, _}`, `{:snooze, secs}` or `{:cancel, reason}`.
+    tags: [oban, background-jobs]
+    source: https://oban.hexdocs.pm/Oban.html
+
+  - slug: elixir-tool-code-version-compatible
+    kind: code
+    difficulty: junior
+    title: "Check version requirements with `Version.match?/2`"
+    body: |
+      Implement `Compat`:
+
+      - `compatible?(version, requirement)` returns `true` when the SemVer `version` string satisfies the Hex-style
+        `requirement` string (`"~> 1.17"`, `">= 1.14.2 and < 1.16.0"`), using `Version.match?/2`.
+      - `latest_matching(versions, requirement)` returns the highest version string from `versions` that satisfies
+        the requirement, or `nil` when none does. Compare with `Version.compare/2`, not string comparison.
+
+      ```elixir
+      Compat.compatible?("1.19.6", "~> 1.17")                      #=> true
+      Compat.compatible?("2.0.0", "~> 1.17")                       #=> false
+      Compat.latest_matching(["1.9.0", "1.10.2", "1.10.10"], "~> 1.10") #=> "1.10.10"
+      ```
+    starter_code: |
+      defmodule Compat do
+        def compatible?(version, requirement) do
+          # TODO
+        end
+
+        def latest_matching(versions, requirement) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CompatTest do
+        use ExUnit.Case, async: true
+
+        test "pessimistic operator with two components allows minor upgrades" do
+          assert Compat.compatible?("1.19.6", "~> 1.17")
+          refute Compat.compatible?("2.0.0", "~> 1.17")
+        end
+
+        test "pessimistic operator with three components allows only patches" do
+          assert Compat.compatible?("1.17.3", "~> 1.17.1")
+          refute Compat.compatible?("1.18.0", "~> 1.17.1")
+        end
+
+        test "compound requirements" do
+          assert Compat.compatible?("1.15.0", ">= 1.14.2 and < 1.16.0")
+          refute Compat.compatible?("1.16.0", ">= 1.14.2 and < 1.16.0")
+        end
+
+        test "latest_matching compares semantically, not lexically" do
+          assert Compat.latest_matching(["1.9.0", "1.10.2", "1.10.10", "2.0.0"], "~> 1.10") == "1.10.10"
+          assert Compat.latest_matching(["0.9.0"], "~> 1.0") == nil
+        end
+      end
+    solution: |
+      defmodule Compat do
+        def compatible?(version, requirement) do
+          Version.match?(version, requirement)
+        end
+
+        def latest_matching(versions, requirement) do
+          versions
+          |> Enum.filter(&compatible?(&1, requirement))
+          |> Enum.max_by(&Version.parse!/1, Version, fn -> nil end)
+        end
+      end
+    explanation: |
+      `Version.match?/2` parses both sides (`Version.parse!/1`, `Version.parse_requirement!/1`) and applies the
+      requirement; this is the same code Hex's resolver and `mix.exs`'s `elixir: "~> 1.17"` check use. The trap
+      in `latest_matching` is string ordering: `"1.9.0" > "1.10.10"` lexically. `Enum.max_by/4` with the
+      `Version` module as the sorter uses `Version.compare/2`, which orders pre-releases below releases and
+      ignores build metadata.
+    tags: [version, semver, hex]
+    source: https://elixir.hexdocs.pm/Version.html
+
+  - slug: elixir-tool-code-stopwatch-timer-tc
+    kind: code
+    difficulty: junior
+    title: "A `Stopwatch.measure/1` wrapper around `:timer.tc`"
+    body: |
+      Implement `Stopwatch.measure/1`: run the zero-arity function with Erlang's `:timer.tc/1` and return
+      `{milliseconds, result}` where `milliseconds` is a float rounded to 3 decimal places.
+
+      ```elixir
+      {ms, 55} = Stopwatch.measure(fn -> Enum.sum(1..10) end)
+      is_float(ms) #=> true
+      ```
+    starter_code: |
+      defmodule Stopwatch do
+        def measure(fun) do
+          # TODO: :timer.tc returns {microseconds, result}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule StopwatchTest do
+        use ExUnit.Case, async: true
+
+        test "returns the function result" do
+          assert {_ms, 55} = Stopwatch.measure(fn -> Enum.sum(1..10) end)
+        end
+
+        test "returns milliseconds as a float with at most 3 decimals" do
+          {ms, :ok} = Stopwatch.measure(fn -> :ok end)
+          assert is_float(ms)
+          assert ms == Float.round(ms, 3)
+          assert ms >= 0.0
+        end
+
+        test "a sleeping function takes at least that long" do
+          {ms, :slept} = Stopwatch.measure(fn -> Process.sleep(5); :slept end)
+          assert ms >= 4.0
+        end
+      end
+    solution: |
+      defmodule Stopwatch do
+        def measure(fun) do
+          {micros, result} = :timer.tc(fun)
+          {Float.round(micros / 1000, 3), result}
+        end
+      end
+    explanation: |
+      `:timer.tc/1` (and `/2`, `/3` for `apply`-style calls) measures wall-clock time with
+      `:erlang.monotonic_time/0` and returns `{microseconds, result}`; OTP 26+ accepts a time unit as the last
+      argument. This is the quick-and-dirty benchmark tool; for real measurements use `Benchee` (warm-up,
+      statistics, memory) and for production timing emit `:telemetry` spans so durations end up in metrics
+      rather than in `IO.inspect` output.
+    tags: [timer, erlang-interop, benchmarking]
+    source: https://elixir.hexdocs.pm/erlang-libraries.html
+
+  - slug: elixir-tool-open-umbrella-vs-contexts-vs-boundary
+    kind: open
+    difficulty: senior
+    title: "Umbrella project, single app with contexts, or Boundary?"
+    body: |
+      A team is starting a mid-sized Phoenix system (web, billing, background jobs). They are debating an
+      umbrella. Compare the options and give your recommendation with its trade-offs.
+    answer: |
+      - Umbrella: several OTP apps under `apps/` sharing `config/`, `deps/`, `_build` and `mix.lock`; children
+        depend on each other with `in_umbrella: true`. Pros: enforced dependency direction at the app level,
+        separate supervision trees, the ability to build different releases from subsets of apps. Cons:
+        "separated but not decoupled" (one config, one dep version), heavier tooling (`mix` from the root runs
+        tasks recursively, `@recursive` tasks, `cd apps/x`), slower builds, every app still deploys together in
+        practice; the official guide says to not "drink the kool aid" and lists mono-repo path deps, separate
+        repos and private Hex packages as alternatives.
+      - Single app with contexts (Phoenix's default): modules grouped by domain (`Shop.Billing`,
+        `Shop.Accounts`) with a public API per context; cheapest, fastest compile, easiest to refactor; the
+        boundaries are conventions, so they erode unless reviewed.
+      - Boundary library: keeps the single app but declares allowed dependencies per module group
+        (`use Boundary, deps: [...], exports: [...]`) and fails compilation on violations: contexts with teeth,
+        no umbrella overhead.
+      - Recommendation for most teams: single app + contexts, add Boundary when the codebase grows past what
+        review can police; reach for an umbrella only when you genuinely need multiple releases or separate
+        supervision/config domains, and consider separate repos/Hex packages when teams need independent cadence.
+    explanation: |
+      Follow-ups: "How do you split an umbrella later?" (move apps out, drop the shared paths in `mix.exs`),
+      "What does `mix xref graph` tell you about your contexts?" (cycles between contexts are the smell Boundary
+      catches at compile time).
+    tags: [umbrella, architecture, boundary, contexts]
+    source: https://elixir.hexdocs.pm/1.17/dependencies-and-umbrella-projects.html
+
+  - slug: elixir-tool-open-secrets-in-releases
+    kind: open
+    difficulty: senior
+    title: "How do you handle secrets and environment-specific config in a release?"
+    body: |
+      Describe where database URLs, API keys and feature toggles should live for an app deployed as a Mix
+      release, what must never happen at build time, and how you verify a bad deploy fails fast.
+    answer: |
+      - Build-time config (`config/config.exs`, `prod.exs`) is evaluated on the build machine; secrets read
+        there are baked into the artifact and the build box needs them. Never read secrets there.
+      - Put environment-dependent values in `config/runtime.exs`: `System.fetch_env!("DATABASE_URL")` raises
+        at boot with a clear message if missing (prefer it over `get_env` + `nil`), `System.get_env("POOL_SIZE", "10")`
+        with defaults and `String.to_integer`, and `config_env() == :prod` guards.
+      - Only use `Application.compile_env` for values that change compilation (e.g. which adapter module to
+        compile against); it is validated at boot and cannot be changed by runtime config.
+      - Delivery: env vars from the orchestrator/secret manager (Kubernetes secrets, systemd `EnvironmentFile`,
+        Docker `--env-file`), or a config provider (`Config.Reader` for `.exs`/`.toml`, custom provider for Vault)
+        listed under `config_providers` in the release config; `rel/env.sh.eex` for VM-level variables
+        (`RELEASE_COOKIE`, `RELEASE_NODE`, `ERL_MAX_PORTS`).
+      - Never commit `prod.secret.exs` or cookies; generate the cookie per environment; keep `mix.lock` committed.
+      - Fail fast: `fetch_env!` raises; `bin/app eval "Shop.Release.check_config()"` in the deploy pipeline;
+        health checks that query the DB; `--warnings-as-errors` and `mix release --overwrite` in CI so the
+        artifact is reproducible.
+    explanation: |
+      Follow-up: "What is the difference between `runtime.exs` and `releases.exs`?" (`releases.exs` was the
+      pre-1.11 release-only file; `runtime.exs` runs under Mix too). Mistake: `System.get_env` in `prod.exs`
+      and then wondering why the value from the build server is used in production.
+    tags: [releases, config, secrets, runtime.exs]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-tool-open-dialyzer-and-type-system
+    kind: open
+    difficulty: senior
+    title: "Dialyzer vs the new set-theoretic type checker: what each catches"
+    body: |
+      Your team runs `mix dialyzer` in CI and asks whether Elixir 1.17-1.19's built-in type checking makes
+      it redundant. Explain both and recommend a setup.
+    answer: |
+      - Dialyzer (via `dialyxir`): whole-program analysis on BEAM bytecode using success typings and your
+        `@spec`s; needs a PLT built from OTP + Elixir + deps (minutes on first run; cache `priv/plts` in CI);
+        reports only definite errors (impossible calls, no-return functions, spec/implementation mismatches,
+        wrong `@callback` implementations), with warnings filtered through `.dialyzer_ignore.exs`.
+      - The gradual set-theoretic type system is *in the compiler*: 1.17 started checking map/struct field
+        access and basic types; 1.18 infers types of patterns, function returns and calls within a module,
+        flags unreachable clauses and invalid tuple/list operations; 1.19 infers anonymous functions and checks
+        protocol dispatch (e.g. interpolating a non-`String.Chars` value). Everything is `dynamic()` by default,
+        so there are no annotations to write and (by design) no false positives; user-supplied type signatures
+        are a later milestone, and typespecs are expected to be phased out eventually.
+      - They overlap but are not equal: the compiler checks are fast, zero-config and run on every compile but
+        currently reason only within a module plus the stdlib; Dialyzer uses `@spec`s across modules and
+        dependencies and catches cross-module contract violations the compiler still treats as `dynamic()`.
+      - Recommendation today: keep `mix compile --warnings-as-errors` as the first gate, keep writing `@spec`
+        on public APIs (docs + Dialyzer + future migration), keep Dialyzer in CI with a cached PLT until the
+        compiler's inference covers cross-module signatures; revisit each Elixir release.
+    explanation: |
+      Follow-up: "What is `dynamic()`?" (a gradual type that lets untyped code pass checks unless *every*
+      possible type fails). Mistake: claiming Elixir is now statically typed or that `@spec` is checked at
+      compile time by the new system (it is not yet).
+    tags: [dialyzer, type-system, typespecs]
+    source: https://elixir.hexdocs.pm/gradual-set-theoretic-types.html
+
+  - slug: elixir-tool-open-telemetry-metrics
+    kind: open
+    difficulty: middle
+    title: "How does `:telemetry` work and how do you turn events into metrics?"
+    body: |
+      Explain the Telemetry library's model, how Phoenix/Ecto/Oban use it, and the pieces you would add to
+      export latency and error metrics to Prometheus or a SaaS such as AppSignal.
+    answer: |
+      - `:telemetry` is a tiny Erlang library: `:telemetry.execute([:my_app, :repo, :query], %{duration: d}, %{query: q})`
+        emits an event name (list of atoms) with a map of measurements and a map of metadata; handlers are
+        attached with `:telemetry.attach/4` or `attach_many/4` and are invoked **synchronously in the emitting
+        process**, so they must be cheap and must never crash (a raising handler is detached).
+      - `:telemetry.span/3` wraps a function and emits `[..., :start]`, `[..., :stop]` (with `duration`) and
+        `[..., :exception]` events; most libraries use this convention (`[:phoenix, :endpoint, :stop]`,
+        `[:ecto, :repo, :query]`, `[:oban, :job, :stop]`).
+      - Use function captures (`&Mod.fun/4`) as handlers, not anonymous functions, to avoid performance
+        warnings and dangling closures after hot upgrades.
+      - `telemetry_metrics` declares *what* to aggregate (`counter/2`, `summary/2`, `distribution/2`,
+        `last_value/2` with `tags:` and `unit: {:native, :millisecond}`); reporters do the exporting:
+        `TelemetryMetricsPrometheus` (scrape endpoint), `telemetry_metrics_statsd`, Phoenix LiveDashboard for
+        live charts, AppSignal/Sentry/Datadog SDKs that attach their own handlers.
+      - `telemetry_poller` emits periodic VM measurements (memory, run queue) and custom polls.
+      - Put the metric definitions in `MyAppWeb.Telemetry` (Phoenix generator), add your own
+        `:telemetry.span` around business operations, and tag by route/queue/status rather than high-cardinality
+        ids.
+    explanation: |
+      Follow-up: "What happens if a handler takes 200 ms?" (every request pays it; offload to another process).
+      "How do you add tracing?" (OpenTelemetry's Elixir SDK builds spans from the same events via
+      `opentelemetry_phoenix`/`opentelemetry_ecto`).
+    tags: [telemetry, metrics, observability]
+    source: https://telemetry.hexdocs.pm/readme.html
+
+  - slug: elixir-tool-open-docker-multistage-release
+    kind: open
+    difficulty: middle
+    title: "Describe a production Docker build for a Phoenix release"
+    body: |
+      Outline the Dockerfile `mix phx.gen.release --docker` produces, explain why it is multi-stage, and list
+      the runtime variables the container needs.
+    answer: |
+      - Stage 1 (builder, `hexpm/elixir:<elixir>-erlang-<otp>-debian-<os>` image): set `MIX_ENV=prod`,
+        install `hex`/`rebar`, copy `mix.exs` + `mix.lock` and run `mix deps.get --only prod` *before* copying
+        the source so the deps layer is cached; copy `config/` and `mix deps.compile`; copy `lib/`, `priv/`,
+        `assets/`; `mix assets.deploy` (esbuild/tailwind, digest); `mix compile`; copy `config/runtime.exs`
+        and `rel/`; `mix release`.
+      - Stage 2 (runner, slim Debian/Ubuntu of the *same* OS version): install only `libstdc++`, `openssl`,
+        `libncurses`, `locales`; create a non-root user; copy `_build/prod/rel/shop` from the builder;
+        `CMD ["/app/bin/server"]` (a script that sets `PHX_SERVER=true` and runs `bin/shop start`).
+      - Why multi-stage: the runner has no Erlang/Elixir install, no source, no build tools: smaller image,
+        smaller attack surface, and ERTS is bundled by the release (`include_erts: true` default), so the OS
+        libraries must match the builder.
+      - Runtime env: `DATABASE_URL`, `SECRET_KEY_BASE` (`mix phx.gen.secret`), `PHX_HOST`, `PORT`,
+        `POOL_SIZE`, `RELEASE_COOKIE`/`RELEASE_NODE`/`RELEASE_DISTRIBUTION` if clustering, `ECTO_IPV6` on some
+        hosts; migrations via `bin/migrate` (`bin/shop eval "Shop.Release.migrate"`) as a release/init step.
+      - Keep `mix.lock` committed, pin the base image digest, and run `mix deps.audit`/`mix hex.audit` in CI.
+    explanation: |
+      Follow-up: "Why does the runner image need the same glibc/OpenSSL as the builder?" (ERTS and NIFs are
+      compiled against them). "How do you get a remote shell into the container?" (`bin/shop remote` inside
+      the container, same cookie).
+    tags: [docker, releases, deployment]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-tool-open-code-quality-pipeline
+    kind: open
+    difficulty: middle
+    title: "`mix format`, Credo, Sobelow, Dialyzer: what each is for and how you wire them into CI"
+    body: |
+      Explain the purpose and the CI invocation of the standard Elixir code-quality tools, and how you keep
+      the pipeline fast.
+    answer: |
+      - `mix format --check-formatted`: the built-in formatter is opinionated and non-configurable except for
+        `.formatter.exs` (`inputs`, `line_length`, `import_deps` for library DSL parens like Ecto/Phoenix,
+        `plugins` for HEEx/Sigils, `subdirectories` in umbrellas). `--migrate` rewrites deprecated syntax.
+        Zero-cost, run first.
+      - `mix credo --strict`: static style and consistency checks (naming, nesting depth, `IO.inspect` left
+        behind, TODO tags, refactoring opportunities) configured in `.credo.exs`; `mix credo diff` for only
+        changed files; exits non-zero on issues.
+      - `mix sobelow --exit`: Phoenix-specific security scanner (XSS in templates, SQL injection via
+        fragments, mass assignment, missing CSRF, config secrets, directory traversal); `.sobelow-conf`,
+        `--skip` for reviewed findings.
+      - `mix dialyzer`: type/contract analysis, slow first run; cache the PLT (`priv/plts` + CI cache keyed by
+        Elixir/OTP/lock hash) and run `--format github`/`short`.
+      - `mix compile --warnings-as-errors` and `mix test --warnings-as-errors`, `mix hex.audit` /
+        `mix deps.audit` for retired or vulnerable packages, `mix hex.outdated` as a scheduled report,
+        `mix xref graph --format cycles` to watch architecture.
+      - Order by cost: format -> compile -> credo -> sobelow -> test -> dialyzer in parallel jobs; cache
+        `deps/` and `_build/` keyed by `mix.lock`; run the fast ones as pre-commit hooks locally.
+    explanation: |
+      Follow-up: "Why is the formatter not configurable?" (consistency across the ecosystem; the only knobs
+      are line length and parens-less locals via `locals_without_parens`). Mistake: putting Dialyzer in the
+      same serial job as the tests and doubling CI time.
+    tags: [credo, sobelow, formatter, ci]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Format.html
+
+  - slug: elixir-tool-open-custom-mix-task
+    kind: open
+    difficulty: junior
+    title: "How do you write a custom Mix task that needs the app running?"
+    body: |
+      Describe how to implement `mix shop.import_products path.csv`, what module attributes matter, and how to
+      make the application (Repo, config) available inside it.
+    answer: |
+      - Create `lib/mix/tasks/shop.import_products.ex` with `defmodule Mix.Tasks.Shop.ImportProducts`: the
+        module name after `Mix.Tasks.` becomes the task name (`shop.import_products`).
+      - `use Mix.Task` and implement `run(args)` receiving the CLI arguments as strings; parse them with
+        `OptionParser.parse/2`.
+      - `@shortdoc` makes it appear in `mix help`; `@moduledoc` is shown by `mix help shop.import_products`
+        (`@moduledoc false` hides it); `@requirements ["app.config"]` or `["app.start"]` runs those tasks
+        first: `app.config` loads config and compiles, `app.start` also boots the supervision tree (needed for
+        `Repo`). Alternatively call `Mix.Task.run("app.start")` inside `run/1`.
+      - Report with `Mix.shell().info/1` and fail with `Mix.raise/1` (non-zero exit, no stack trace).
+      - A task runs once per `mix` invocation; `Mix.Task.reenable/1` or `rerun/2` to run it again (useful in
+        aliases). `@recursive true` runs it in every child app of an umbrella.
+      - Tasks are only available in projects that depend on your library (or your own project); expose the
+        same logic as a plain function so it can be called from `bin/app eval` in releases, where Mix is absent.
+    explanation: |
+      Follow-up: "Why can't you run a Mix task in production?" (releases do not include Mix; use `eval`/`rpc`
+      with a plain module). Mistake: putting business logic in the task module instead of delegating.
+    tags: [mix-task, mix]
+    source: https://mix.hexdocs.pm/Mix.Task.html
+
+  - slug: elixir-tool-open-iex-debugging-workflow
+    kind: open
+    difficulty: middle
+    title: "Your IEx debugging toolkit"
+    body: |
+      Walk through how you investigate a bug interactively: starting the shell against the project, reloading
+      code, inspecting values, setting breakpoints, and connecting to a running production node.
+    answer: |
+      - `iex -S mix` (or `iex -S mix phx.server`) loads the project; `.iex.exs` in the project root is
+        auto-evaluated for aliases/imports/helpers (`import_if_available Ecto.Query`).
+      - `h Mod.fun/2`, `i value` (type, raw representation, implemented protocols), `t Mod` (types),
+        `b Mod` (callbacks), `exports Mod`, `v(-1)` to reuse the previous result, `open Mod.fun` to jump to
+        source in your editor.
+      - `recompile` recompiles the whole project after edits; `r Mod` reloads one module (in-memory only).
+      - Breakpoints: `break! Mod.fun/2` (optionally `3` stops) then call it; inside a pry session `whereami`,
+        `next`/`continue`, `respawn`. `require IEx; IEx.pry()` in code stops where you place it (only when run
+        under IEx); `dbg/1` prints pipeline steps and, with `iex --dbg pry`, becomes a breakpoint.
+      - Processes: `Process.info(pid)`, `:sys.get_state/1`, `:observer.start()` (or `:observer_cli`),
+        `:erlang.trace`/`:dbg.tracer` and `:recon` for production-safe tracing.
+      - Production: `bin/app remote` (release) or `iex --sname me --cookie c --remsh app@host`; never
+        `recompile` there; prefer read-only inspection and `Logger.configure(level: :debug)` temporarily.
+      - `Ctrl+C` twice or `System.halt` to leave; `Ctrl+G` user switch menu to kill a stuck shell.
+    explanation: |
+      Follow-up: "What is the difference between `r/1` and `recompile/0`?" (`r` recompiles one module from
+      its source into memory; `recompile` runs the Mix compiler for the project). Mistake: using `IEx.pry` in
+      a test run without `iex -S mix test`.
+    tags: [iex, debugging, break!, remsh]
+    source: https://iex.hexdocs.pm/IEx.Helpers.html
+
+  - slug: elixir-tool-open-broadway-genstage-backpressure
+    kind: open
+    difficulty: senior
+    title: "GenStage and Broadway: why demand-driven pipelines?"
+    body: |
+      Explain the back-pressure model of GenStage, what Broadway adds on top, and when you would pick Broadway
+      over Oban or a plain `Task.async_stream`.
+    answer: |
+      - GenStage stages are producers, producer-consumers and consumers linked in a pipeline. Consumers *ask*
+        for demand (`max_demand`/`min_demand`); producers may only emit as many events as were asked. Back-pressure
+        therefore flows from the slowest consumer upstream: a slow database write throttles the queue reads
+        instead of filling mailboxes until the VM dies.
+      - Broadway is a GenStage-based framework for data ingestion: a producer adapter (SQS, RabbitMQ, Kafka,
+        Google Pub/Sub, Kinesis) feeds `handle_message/3` processors, optional `batchers` group messages by
+        key for `handle_batch/4` (bulk inserts, S3 uploads); it handles acknowledgement (ack on success,
+        nack/requeue on failure), rate limiting (`rate_limiting: [allowed_messages:, interval:]`), partitioning
+        by key for ordering, graceful shutdown that drains in-flight messages, and telemetry.
+      - Choose Broadway for high-volume streams from an external queue where ordering, batching and acking
+        matter; choose Oban for discrete, durable jobs you enqueue yourself with retries/uniqueness/cron;
+        `Task.async_stream` for bounded in-process parallelism over a finite collection (it also applies
+        back-pressure via `max_concurrency`, but has no durability or acking); `Flow` for GenStage-based
+        map/reduce over large data sets.
+    explanation: |
+      Follow-up: "What happens when a Broadway processor raises?" (the message is failed, the producer's ack
+      strategy decides; the pipeline keeps running). Mistake: describing GenStage as push-based.
+    tags: [broadway, genstage, backpressure]
+    source: https://broadway.hexdocs.pm/Broadway.html
+
+  - slug: elixir-tool-open-clustering-pubsub-libcluster
+    kind: open
+    difficulty: senior
+    title: "How do Phoenix PubSub and libcluster work together across nodes?"
+    body: |
+      You run three instances of a Phoenix app behind a load balancer. Explain how a broadcast from one node
+      reaches LiveViews on the others, how the nodes find each other, and what release settings are involved.
+    answer: |
+      - `Phoenix.PubSub` (started in the app's supervision tree) has a `PG2`-style adapter built on `:pg`:
+        subscriptions are per node, and a `broadcast/3` is forwarded to every connected node, which then
+        delivers to its local subscribers. If the nodes are not connected via Erlang distribution, each node
+        only sees its own broadcasts, the classic "LiveView updates only on one instance" bug.
+      - Erlang distribution needs: a node name (`RELEASE_DISTRIBUTION=name`, `RELEASE_NODE=shop@<ip-or-dns>`),
+        a shared cookie (`RELEASE_COOKIE`), EPMD or a static port range (`inet_dist_listen_min/max`) reachable
+        between hosts, and ideally TLS distribution for untrusted networks.
+      - `libcluster` automates `Node.connect/1` via strategies: `Cluster.Strategy.Epmd` (static host list),
+        `Gossip` (UDP multicast), `Kubernetes`/`Kubernetes.DNS` (pods via the API or headless service), DNS
+        polling for Fly.io/Render; configured as a topology in `runtime.exs` and started as a child.
+      - Alternatives for the data path when you cannot cluster: the Redis adapter for PubSub
+        (`phoenix_pubsub_redis`), or Postgres `NOTIFY`.
+      - Consequences of clustering: global process registries (`:global`, Horde) and `Phoenix.Presence`
+        become meaningful; net splits are real, design for at-least-once delivery.
+    explanation: |
+      Follow-up: "What is the difference between `sname` and `name`?" (short names only work on one host or
+      a flat network without domain resolution; long names are required for cross-host clusters). Mistake:
+      assuming PubSub uses the network on its own.
+    tags: [clustering, pubsub, libcluster, distribution]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-tool-open-hex-deps-lock-management
+    kind: open
+    difficulty: middle
+    title: "Managing dependencies: Hex, git, path deps and `mix.lock`"
+    body: |
+      Explain the dependency forms in `deps/0`, what `mix.lock` is for, and the Mix tasks you use to keep
+      dependencies healthy.
+    answer: |
+      - Forms: Hex `{:req, "~> 0.5"}`; git `{:lib, git: "https://...", tag: "v1.2.0"}` (or `branch:`/`ref:`,
+        `github: "org/repo"` shortcut, `sparse:`/`subdir:` for monorepos); path `{:core, path: "../core"}`
+        (recompiled automatically on change); umbrella sibling `{:core, in_umbrella: true}`.
+      - Options: `only:` envs, `runtime: false`, `override: true`, `optional: true`, `app: false`,
+        `compile: "make"` / `manager: :rebar3` for Erlang deps, `system_env:`.
+      - `mix.lock` records the exact resolved version and checksum (or git SHA) for reproducible builds;
+        commit it in applications (libraries' locks are ignored by consumers). Hex verifies checksums on fetch.
+      - Tasks: `mix deps.get` (fetch per lock), `mix deps.update req` / `--all` (re-resolve and update lock),
+        `mix deps.unlock --unused` (prune stale lock entries), `mix deps.tree` (who pulls what),
+        `mix deps.compile`, `mix deps.clean --unused`, `mix hex.outdated` (available upgrades vs requirement),
+        `mix hex.audit` (retired packages), `mix deps.audit` (known vulnerabilities, separate package),
+        `mix hex.info pkg`.
+      - Prefer Hex over git deps (checksums, docs, semver); use git/path only for unreleased work; pin git
+        deps to a tag or ref, never a moving branch.
+    explanation: |
+      Follow-up: "Why does `mix deps.get` in CI sometimes change `mix.lock`?" (lock out of sync with `mix.exs`;
+      run `mix deps.get --check-locked` to fail instead). Mistake: deleting `mix.lock` to "fix" a conflict.
+    tags: [hex, deps, mix.lock]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Deps.html
+
+  - slug: elixir-tool-open-mix-install-livebook
+    kind: open
+    difficulty: junior
+    title: "`Mix.install/2` and Livebook: scripts without a project"
+    body: |
+      Explain what `Mix.install/2` does, where it is used, and what Livebook adds for teams.
+    answer: |
+      - `Mix.install([{:req, "~> 0.5"}, {:jason, "~> 1.4"}])` at the top of an `.exs` script fetches, compiles
+        and caches the given deps (under `~/.cache/mix/installs`, keyed by the dep list and Elixir/OTP
+        version) and adds them to the code path; no `mix.exs` needed. Options: `config:`, `system_env:`,
+        `force: true`, `verbose: true`, `lockfile:`; a second call in the same VM must use the same deps.
+      - Use cases: one-off scripts, runnable bug reports and benchmarks (`Benchee` in a gist), CI utilities,
+        and Livebook notebooks (the first cell is typically `Mix.install`).
+      - Livebook: an interactive notebook app (Phoenix LiveView) with Elixir cells, Markdown, Kino widgets
+        (tables, charts, forms, process trees), Smart cells (DB connections, charts, ML models), secrets
+        management, `attached` runtime to connect to a *running* node (production debugging and runbooks with
+        your app's modules), and `.livemd` files that are plain Markdown and diff well in git.
+      - Team value: executable documentation and runbooks, data exploration with Explorer/Nx, onboarding
+        tutorials, and safe production inspection via the attached runtime instead of ad-hoc `remsh` sessions.
+      - Caveat: `Mix.install` is for scripts, not applications; for anything with a supervision tree or tests
+        create a Mix project.
+    explanation: |
+      Follow-up: "How does Livebook attach to a release?" (`bin/app remote`-style distribution: node name and
+      cookie, so the same `RELEASE_*` settings apply). Mistake: calling `Mix.install` twice with different
+      deps in one VM.
+    tags: [Mix.install, livebook, scripts]
+    source: https://mix.hexdocs.pm/Mix.html#install/2
+
+  - slug: elixir-tool-theory-mix-exs-anatomy
+    kind: theory
+    difficulty: junior
+    title: "Anatomy of `mix.exs`"
+    body: |
+      ```elixir
+      defmodule Shop.MixProject do
+        use Mix.Project
+
+        def project do
+          [
+            app: :shop,
+            version: "0.1.0",
+            elixir: "~> 1.17",
+            elixirc_paths: elixirc_paths(Mix.env()),
+            start_permanent: Mix.env() == :prod,
+            aliases: aliases(),
+            deps: deps(),
+            releases: [shop: [applications: [shop: :permanent]]]
+          ]
+        end
+
+        def application do
+          [mod: {Shop.Application, []}, extra_applications: [:logger, :runtime_tools]]
+        end
+
+        defp elixirc_paths(:test), do: ["lib", "test/support"]
+        defp elixirc_paths(_), do: ["lib"]
+
+        defp deps do
+          [{:phoenix, "~> 1.7"}, {:credo, "~> 1.7", only: [:dev, :test], runtime: false}]
+        end
+
+        defp aliases do
+          ["ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
+           test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"]]
+        end
+      end
+      ```
+
+      - `mix new shop` creates this plus `lib/shop.ex`, `test/`, `.formatter.exs`, `.gitignore`; `--sup` adds
+        `Shop.Application` with a supervisor and the `mod:` entry; `--umbrella` creates an `apps/` container.
+      - `elixirc_paths` is how `test/support` (case templates, factories, Mox mocks) gets compiled only in test.
+      - `start_permanent: true` makes the VM exit if the application crashes, which is what you want in a
+        release (the orchestrator restarts it) and not in dev.
+      - `aliases` compose tasks; the `test` alias is why `mix test` migrates the test database.
+      - `Mix.env()` is fine *here* (and in `Mix.Tasks`), nowhere else.
+      - `mix compile` runs the compilers listed in `compilers:` (default Elixir + app + Erlang); `mix run`,
+        `mix test`, `mix release` all compile first. `MIX_ENV` selects the environment (`dev` default,
+        `test` for `mix test`, `prod` typically for `mix release`).
+    answer: |
+      **Q:** Why is `test/support` listed in `elixirc_paths/1` only for `:test`?
+      **A:** Files there (ConnCase, DataCase, factories, Mox mocks) are needed at compile time by the test suite but
+      must not be compiled into dev or prod builds.
+    explanation: |
+      Junior interviews frequently ask "what is in a Mix project" or "where do you declare the application
+      callback module". Knowing `elixirc_paths`, `aliases` and `start_permanent` shows you have read a real
+      generated `mix.exs` rather than only run `mix new`.
+    tags: [mix, mix.exs, project-structure]
+    source: https://mix.hexdocs.pm/Mix.Tasks.New.html
+
+  - slug: elixir-tool-theory-config-lifecycle
+    kind: theory
+    difficulty: middle
+    title: "The configuration lifecycle: build time, compile time, runtime"
+    body: |
+      Elixir has one key-value store, the *application environment*, filled from several sources at different
+      moments. Mixing them up produces the classic "works locally, wrong in prod" bugs.
+
+      ```
+      mix.exs application/0 env:   ->  defaults in the .app file
+      config/config.exs            ->  evaluated by Mix BEFORE compiling (build machine)
+        import_config "#{config_env()}.exs"  ->  dev.exs / test.exs / prod.exs
+      config/runtime.exs           ->  evaluated at BOOT, in Mix and in releases (target machine)
+      Application.put_env/3        ->  mutation at runtime (tests, scripts)
+      ```
+
+      Reading:
+
+      - `Application.get_env(:shop, :key, default)` / `fetch_env!/2`: runtime lookup in ETS, cheap; the
+        normal choice. Call it inside functions, not in module attributes.
+      - `Application.compile_env(:shop, :key, default)`: read while compiling and *recorded*; at boot the
+        runtime value is checked against it and a mismatch raises. Use it only for values that must shape the
+        compiled code (adapters chosen at compile time, feature flags that remove code).
+      - `System.get_env/2` / `fetch_env!/1`: OS environment; belongs in `runtime.exs`, where its value is
+        taken on the target. In `config.exs` it captures the *build* machine's variables.
+      - `config_env/0`, `config_target/0` replace `Mix.env/0`/`Mix.target/0` in config files.
+      - Libraries should prefer explicit options over application env (it is global and makes async tests
+        hard); applications own their env and should not read other apps' keys.
+      - Releases: `config.exs`+env files are baked into `sys.config`; `runtime.exs` is bundled and executed by
+        the release boot script (optionally with extra config providers), after which the VM may reboot to
+        apply it.
+    answer: |
+      **Q:** A module has `@base_url Application.get_env(:shop, :base_url)` and prod uses the dev URL. What is the
+      bug and the fix?
+      **A:** The attribute is evaluated at compile time on the build machine, so the dev value is frozen in. Either
+      read with `Application.get_env/2` inside the function at runtime, or, if it truly must be compile-time, use
+      `Application.compile_env/3` so a mismatch is detected at boot.
+    explanation: |
+      This is the single most common tooling bug in Elixir deployments and a near-certain interview topic.
+      Being able to draw the timeline (build -> compile -> boot -> runtime) and to place each API on it is the
+      answer interviewers want.
+    tags: [config, compile_env, runtime.exs, application-env]
+    source: https://elixir.hexdocs.pm/1.17/config-and-releases.html
+
+  - slug: elixir-tool-theory-release-anatomy
+    kind: theory
+    difficulty: middle
+    title: "What `mix release` builds and how you operate it"
+    body: |
+      `MIX_ENV=prod mix release` assembles a self-contained directory under `_build/prod/rel/shop/`:
+
+      ```
+      bin/shop                 # launcher script: start | start_iex | daemon | remote | rpc | eval | stop | pid | version
+      erts-15.x/               # the Erlang runtime (include_erts: true by default)
+      lib/                     # compiled .beam + priv/ for every application, stripped of docs/source
+      releases/0.1.0/
+        sys.config             # config.exs + prod.exs, evaluated at build time
+        runtime.exs            # copied, evaluated at boot
+        vm.args                # from rel/vm.args.eex: +sbwt, -kernel settings, schedulers
+        env.sh                 # from rel/env.sh.eex: RELEASE_NODE, RELEASE_COOKIE, RELEASE_DISTRIBUTION ...
+        start.boot, shop.rel   # OTP boot script listing apps and start order
+      releases/COOKIE          # generated cookie unless RELEASE_COOKIE is set
+      ```
+
+      Operating it:
+
+      - `bin/shop start` runs attached (logs to stdout, the Docker/systemd way); `daemon` detaches and logs to
+        `tmp/log`; `start_iex` gives a shell in the same VM.
+      - `remote` connects a hidden node for an IEx session; `rpc "Shop.stats()"` evaluates on the running node;
+        `eval "Shop.Release.migrate()"` boots a *new* VM without starting apps, for migrations and one-offs.
+      - `stop` or SIGTERM shuts down gracefully (apps stop in reverse start order).
+      - Releases run in **embedded** code-loading mode: all modules are loaded at boot, so there is no
+        first-request latency and no dynamic loading of missing modules.
+      - No Mix, no source, no compiler on the target; the host must match the build OS/libc/OpenSSL because
+        ERTS and NIFs are native.
+      - Customise in `mix.exs`: `releases: [shop: [include_executables_for: [:unix], steps: [:assemble, :tar],
+        applications: [runtime_tools: :permanent], overlays: "rel/overlays", config_providers: [...]]]`;
+        `rel/overlays/` files are copied verbatim into the release root.
+      - Umbrellas must declare which apps go into which release; one project can define several releases.
+    answer: |
+      **Q:** Why does `bin/shop eval "Shop.Repo.query!(\"select 1\")"` fail with "no process" while `rpc` with the same
+      expression works?
+      **A:** `eval` starts a fresh VM without starting any application, so the Repo is not running; you must start it
+      (`Ecto.Migrator.with_repo/2` or `Application.ensure_all_started/1`). `rpc` runs inside the already running
+      system where the supervision tree is up.
+    explanation: |
+      "What is in a release and why not just `mix run` in production" is a staple of mid-level interviews. The
+      embedded mode, the absence of Mix, and the `eval` vs `rpc` distinction are the facts that show operational
+      experience.
+    tags: [releases, deployment, bin-app]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Release.html
+
+  - slug: elixir-tool-theory-typespecs-and-set-theoretic-types
+    kind: theory
+    difficulty: senior
+    title: "Typespecs today and where the type system is going"
+    body: |
+      ```elixir
+      defmodule Shop.Cart do
+        @type item :: %{sku: String.t(), qty: pos_integer()}
+        @typep internal :: {:cart, [item()]}
+        @opaque t :: internal()
+
+        @spec new() :: t()
+        def new, do: {:cart, []}
+
+        @spec add(t(), item()) :: {:ok, t()} | {:error, :out_of_stock}
+        def add({:cart, items}, item), do: {:ok, {:cart, [item | items]}}
+      end
+      ```
+
+      Typespecs (`@type`, `@typep`, `@typet`, `@opaque`, `@spec`, `@callback`) are *annotations*: the compiler
+      stores them in the beam, ExDoc renders them, Dialyzer checks code against them; they never change
+      behaviour. `@opaque` tells Dialyzer that callers must not pattern-match on the internals. Union types use
+      `|`; `term()`/`any()` is the top type, `none()`/`no_return()` the bottom; remote types are `Mod.t()`.
+
+      Dialyzer: success typing over bytecode, PLT cache, reports only definite errors, slow first run, catches
+      spec/impl mismatches and impossible calls across modules.
+
+      The set-theoretic type system (gradual, sound, built into the compiler):
+
+      - 1.17: types for basic values and map/struct field access; warnings such as accessing a missing struct
+        field or `%{}`-style access on a non-map; struct update warns unless the compiler can prove the struct
+        type (match on `%User{} = user` first).
+      - 1.18: inference of function patterns, returns and calls *within a module* and the stdlib; unreachable
+        clauses, invalid tuple indexes, impossible `cond`/`case` branches, unused private clauses.
+      - 1.19: inference for anonymous functions and captures; protocol dispatch checks (`String.Chars`,
+        `Enumerable`); faster compilation.
+      - Everything untyped is `dynamic()`, so code that *might* be right never warns: no false positives, no
+        annotations yet. Roadmap: typed structs, then `$`-style type signatures, with typespecs eventually
+        phased out because they cannot express set-theoretic types.
+    answer: |
+      **Q:** Does adding `@spec` make the Elixir compiler reject a call with the wrong argument type?
+      **A:** Not today: `@spec` is checked by Dialyzer, not the compiler. The compiler's own checker infers types
+      from code and the stdlib and only warns when a call is certain to fail; explicit signatures are a future
+      milestone.
+    explanation: |
+      Senior candidates are expected to know the state of the art without overclaiming. The key phrases are
+      "gradual", "`dynamic()`", "no false positives", "inference within a module", "typespecs are for Dialyzer
+      and docs". Mentioning that the system already flags unreachable clauses in 1.18 shows you follow releases.
+    tags: [typespecs, dialyzer, type-system]
+    source: https://elixir.hexdocs.pm/typespecs.html
+
+  - slug: elixir-tool-theory-erlang-interop
+    kind: theory
+    difficulty: junior
+    title: "Erlang interop: using OTP's standard library from Elixir"
+    body: |
+      Elixir compiles to the same bytecode as Erlang; every Erlang module is a first-class citizen.
+
+      ```elixir
+      :lists.reverse([1, 2, 3])                    # [3, 2, 1]
+      :crypto.hash(:sha256, "hi") |> Base.encode16()
+      :erlang.term_to_binary(%{a: 1}) |> :erlang.binary_to_term([:safe])
+      {micros, _} = :timer.tc(fn -> work() end)
+      :ets.new(:cache, [:named_table, :public, read_concurrency: true])
+      :queue.in(1, :queue.new())
+      :rand.uniform(10)
+      :io_lib.format("~p~n", [value]) |> IO.iodata_to_binary()
+      :persistent_term.put(:config, %{})
+      :observer.start()
+      ```
+
+      Rules and gotchas:
+
+      - Erlang module names are atoms (`:lists`), functions are called with the dot; docs are available via
+        `h :lists.reverse/1` in IEx (OTP 23+ ship EEP-48 docs).
+      - Strings: Erlang "strings" are charlists (`~c"abc"`); binaries are what Elixir calls strings. Many OTP
+        APIs (`:file`, `:io`, `:os`) accept either, some only charlists: convert with `String.to_charlist/1`.
+      - Applications outside `:kernel`/`:stdlib` (`:crypto`, `:ssl`, `:inets`, `:runtime_tools`, `:observer`,
+        `:os_mon`) must be in `extra_applications` so the release includes and starts them.
+      - Elixir modules are visible from Erlang as `'Elixir.Enum':map/2`; Erlang deps compile via
+        rebar3 (`{:cowboy, "~> 2.0"}` works unchanged).
+      - `binary_to_term/2` with `[:safe]` for untrusted input (atom table exhaustion, code injection via funs).
+      - Elixir wrappers exist for the common cases (`Base`, `Map`, `Process`, `System`, `:ets` via `Registry`
+        for naming) but reaching for `:lists`, `:queue`, `:gb_trees`, `:digraph`, `:zlib`, `:ssl` directly is
+        idiomatic, not a smell.
+    answer: |
+      **Q:** `:file.read_file("config.json")` works but `:os.cmd("ls")` raises. Why?
+      **A:** `:os.cmd/1` requires a charlist (`~c"ls"`) while `:file` accepts binaries too; Erlang APIs differ in
+      which string representation they take, so check the OTP docs and convert with `String.to_charlist/1`.
+    explanation: |
+      Expect a question like "name three Erlang modules you call directly and why". The charlist/binary
+      distinction and `extra_applications` for `:crypto` are the practical traps that reveal real experience.
+    tags: [erlang-interop, otp, charlists]
+    source: https://elixir.hexdocs.pm/erlang-libraries.html
+
+  - slug: elixir-tool-theory-recompilation-and-external-resource
+    kind: theory
+    difficulty: senior
+    title: "How Mix decides what to recompile"
+    body: |
+      Incremental compilation is driven by a per-file dependency graph that `mix xref` can print.
+
+      - A file is recompiled when its source changed (mtime *and* content) or when something it depends on
+        at **compile time** changed.
+      - Dependency kinds: `compile` (macros, `use`, `import` + macro, `@attr Mod.fun()`, structs in module
+        bodies, `@behaviour`), `export` (structs and public API used in function bodies: recompiled only when
+        that API changes), `runtime` (plain calls inside functions: never force recompilation).
+      - `@external_resource "priv/data/countries.csv"` declares a non-Elixir file the module reads at compile
+        time (e.g. `File.read!` into a lookup table in a module attribute or `for ... do def ... end`); Mix
+        recompiles the module when that file changes. Paths are relative to the project root; the attribute
+        accumulates, so you can list several.
+      - `__mix_recompile__?/0` lets a module define custom recompilation logic (e.g. "a new file appeared in
+        this directory"); it is called on every compile, keep it cheap.
+      - Config is tracked too: changing a key read via `compile_env` recompiles the modules that read it;
+        changing `mix.exs` or deps triggers full recompiles.
+      - `mix compile --force` ignores all of this; `--warnings-as-errors` makes warnings fatal;
+        `mix compile --verbose` prints what is compiled and why, `MIX_DEBUG=1` adds timings.
+      - Since 1.19 modules are loaded lazily during compilation and `MIX_OS_DEPS_COMPILE_PARTITION_COUNT=4`
+        compiles dependencies in parallel OS processes, both aimed at big projects.
+      - Tooling: `mix xref graph --label compile-connected --format stats`, `--format cycles`, and
+        `mix xref trace lib/file.ex` to list every compile-time dependency a single file creates.
+    answer: |
+      **Q:** A module builds a lookup table from a CSV at compile time. After editing the CSV, `mix compile` does
+      nothing. What is missing?
+      **A:** `@external_resource "path/to/file.csv"` in the module, so Mix tracks the file and recompiles the module
+      when it changes.
+    explanation: |
+      Senior interviews treat compile times as an architectural concern: this is where `use`-heavy "macro
+      frameworks" get challenged. Knowing the three dependency kinds and `@external_resource` answers most
+      "why did/didn't this recompile" questions.
+    tags: [compilation, xref, external_resource]
+    source: https://mix.hexdocs.pm/Mix.Tasks.Compile.Elixir.html
+
+  - slug: elixir-tool-theory-ecosystem-map
+    kind: theory
+    difficulty: middle
+    title: "A map of the Elixir ecosystem in 2025"
+    body: |
+      Interviewers ask "what would you reach for" questions to check you know the standard choices.
+
+      | Need | Standard choice | Notes |
+      |------|-----------------|-------|
+      | Web | Phoenix 1.7/1.8 + LiveView | `~p` verified routes, HEEx, `phx.gen.auth` |
+      | Database | Ecto (separate lib) + `ecto_sql` + Postgrex | migrations, changesets, sandbox |
+      | HTTP client | Req (on Finch) | Tesla for middleware stacks; HTTPoison/HTTPotion legacy |
+      | JSON | built-in `JSON` (1.18+/OTP 27) or Jason | Jason API-compatible |
+      | Background jobs | Oban (Postgres-backed) | Oban Pro for workflows; `Task.Supervisor` for fire-and-forget |
+      | Streams / ingestion | Broadway, GenStage, Flow | demand-driven back-pressure |
+      | Metrics/tracing | `:telemetry`, `telemetry_metrics`, Prometheus/StatsD reporters, OpenTelemetry, AppSignal/Sentry | LiveDashboard for local view |
+      | Clustering | libcluster + Phoenix.PubSub | Horde for distributed supervisors/registry |
+      | Embedded | Nerves | firmware images, `mix firmware`, `mix burn` |
+      | ML / data | Nx, Axon, Bumblebee, Explorer, Livebook | Kino widgets |
+      | Testing | ExUnit, Mox, StreamData, Bypass, ExMachina, Wallaby/PhoenixTest | |
+      | Quality | formatter, Credo, Dialyxir, Sobelow, ExDoc | |
+      | Editors | ElixirLS, Next LS, Expert (official LSP effort, 2025) | compiler lock + listeners since 1.18 help them share builds |
+      | Versions | asdf or mise with `.tool-versions` (`erlang 27.x`, `elixir 1.19.x-otp-27`) | precompiled builds per OTP |
+
+      Release cadence: a minor Elixir release every six months (1.17 Jun 2024, 1.18 Dec 2024, 1.19 Oct 2025),
+      patch releases as needed, bug fixes only on the latest minor, security fixes for the last five; each
+      minor supports three OTP majors. Phoenix, Ecto and Oban move independently; `mix hex.outdated` and
+      `mix deps.update --all` in a branch is the usual upgrade routine, reading each library's CHANGELOG.
+    answer: |
+      **Q:** Why is Ecto not part of Phoenix, and what does that buy you?
+      **A:** They are independent libraries: Phoenix handles HTTP/LiveView, Ecto handles data mapping and
+      validation. You can use Ecto in a non-web app (Nerves, Broadway pipelines, CLIs) and Phoenix without a
+      database, and each evolves on its own release schedule.
+    explanation: |
+      This is breadth, not depth: name the default tool, one alternative, and one sentence on why. Keep
+      versions current (JSON in 1.18, OTP 28 support in 1.19, Expert as the new language server) because stale
+      answers (HTTPoison, Poison, Exrm) date you immediately.
+    tags: [ecosystem, libraries, versions]
+    source: https://elixir.hexdocs.pm/compatibility-and-deprecations.html

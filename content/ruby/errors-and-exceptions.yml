@@ -1,0 +1,1641 @@
+language: ruby
+topic: errors-and-exceptions
+items:
+  - slug: ruby-errors-exception-hierarchy
+    kind: theory
+    difficulty: junior
+    title: "The exception hierarchy: `Exception` > `StandardError` > ..."
+    body: |
+      Every Ruby exception is a class descending from `Exception`. The shape of the tree decides what
+      a plain `rescue` catches, so interviewers ask you to draw it.
+
+      ```text
+      Exception
+      +-- NoMemoryError
+      +-- ScriptError
+      |   +-- LoadError, NotImplementedError, SyntaxError
+      +-- SecurityError
+      +-- SignalException
+      |   +-- Interrupt                 (Ctrl-C)
+      +-- SystemExit                    (exit / abort)
+      +-- SystemStackError              (infinite recursion)
+      +-- StandardError                 <-- what bare `rescue` catches
+          +-- ArgumentError  (UncaughtThrowError)
+          +-- EncodingError, FiberError, ThreadError
+          +-- IOError        (EOFError)
+          +-- IndexError     (KeyError, StopIteration, ClosedQueueError)
+          +-- NameError      (NoMethodError)
+          +-- RangeError     (FloatDomainError)
+          +-- RuntimeError   (FrozenError)   <-- `raise "msg"` with no class
+          +-- SystemCallError (Errno::ENOENT, Errno::ECONNREFUSED, ...)
+          +-- TypeError, ZeroDivisionError, RegexpError, LocalJumpError
+      ```
+
+      ```ruby
+      begin
+        raise "boom"            # RuntimeError
+      rescue => e               # same as `rescue StandardError => e`
+        e.class                 # => RuntimeError
+      end
+      ```
+
+      Things to remember:
+
+      - `rescue` with no class list means `rescue StandardError`. `Interrupt`, `SystemExit` and
+        `NoMemoryError` are **outside** that branch on purpose: your app should not be able to swallow
+        Ctrl-C or `exit` by accident.
+      - Custom errors inherit from `StandardError` (or a domain base class under it), never from
+        `Exception`.
+      - `rescue` clauses are tested top to bottom with `===`, so list the most specific class first;
+        a leading `rescue StandardError` makes later clauses dead code.
+      - `Timeout::Error` is a `RuntimeError`; `Errno::*` are `SystemCallError`s with an `errno`.
+    answer: |
+      **Q:** You wrap a job in `begin ... rescue => e; log(e); end`. The user presses Ctrl-C and a
+      `NoMemoryError` happens later. Which of those does your rescue catch?
+
+      **A:** Neither. `Interrupt` and `NoMemoryError` descend directly from `Exception`, not
+      `StandardError`, so a bare `rescue` lets them propagate and the process stops as intended.
+    explanation: |
+      Follow-up: "where does `StopIteration` sit and why does `loop` care?" It is an `IndexError`
+      (thus a `StandardError`), and `Kernel#loop` rescues it to end iteration. Also probe
+      `NotImplementedError`: it is a `ScriptError`, not a `StandardError`, so a bare `rescue` will not
+      catch an abstract-method placeholder; many teams raise `NotImplementedError` anyway.
+    tags: [hierarchy, StandardError, Exception]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-bare-rescue-standard-error
+    kind: mcq
+    difficulty: junior
+    title: "What does a bare `rescue` catch?"
+    body: |
+      ```ruby
+      def run
+        yield
+      rescue => e
+        "rescued #{e.class}"
+      end
+
+      p run { raise ArgumentError }
+      p run { exit 1 }
+      ```
+
+      What happens?
+    choices:
+      - "Prints `rescued ArgumentError` then `rescued SystemExit`"
+      - "Prints `rescued ArgumentError`, then the process exits with status 1 without printing"
+      - "Prints `rescued ArgumentError` then `rescued Interrupt`"
+      - "Raises `SyntaxError`: `rescue => e` needs an exception class"
+    answer: 1
+    explanation: |
+      `rescue => e` is shorthand for `rescue StandardError => e`. `ArgumentError` is a `StandardError`,
+      so it is caught. `exit` raises `SystemExit`, which inherits directly from `Exception`, so it passes
+      straight through the handler, `at_exit` hooks run and the process terminates with status 1.
+      The first choice is what you get only with `rescue Exception => e`, which is exactly why that
+      form is discouraged.
+    tags: [rescue, SystemExit]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-why-not-rescue-exception
+    kind: open
+    difficulty: middle
+    title: "Why is `rescue Exception` considered wrong?"
+    body: |
+      A pull request wraps a worker loop in `rescue Exception => e; logger.error(e); end` "so nothing
+      can crash it". Explain to the author what will go wrong and what to write instead.
+    answer: |
+      - `Exception` is the root: it includes `SystemExit` (`exit`, `abort`), `Interrupt` (Ctrl-C /
+        SIGINT), `SignalException` (SIGTERM from the process manager), `NoMemoryError`,
+        `SystemStackError`, `ScriptError`/`SyntaxError`/`LoadError`.
+      - Rescuing them means the worker cannot be stopped cleanly: Kubernetes/systemd sends SIGTERM,
+        the loop logs it and keeps going until it is SIGKILLed; `exit` inside the loop no longer
+        exits; out-of-memory errors get "handled" and the process limps on in a corrupt state.
+      - It also hides programming errors you *want* to see in CI (`NotImplementedError`,
+        `LoadError` from a missing gem) as log lines.
+      - Write `rescue StandardError => e` (or just `rescue => e`), or better a specific list:
+        `rescue Net::ReadTimeout, Errno::ECONNREFUSED`. If some cleanup must always happen, use
+        `ensure`, which runs for all exceptions without swallowing them.
+      - The rare legitimate uses are at the very top of a process (crash reporter) and always re-raise:
+        `rescue Exception => e; report(e); raise`.
+      - Linters encode this: RuboCop `Lint/RescueException`, Datadog `no-rescue-exception`.
+    explanation: |
+      Follow-up: "what about `rescue Exception` around `Timeout.timeout`?" The timeout raises a
+      `Timeout::ExitException` (an `Exception` subclass) inside the block so that the block's
+      `rescue StandardError` cannot swallow it; a `rescue Exception` there defeats the timeout.
+      Another: "how do you catch `Interrupt` on purpose in a CLI?" `rescue Interrupt` explicitly, print
+      a message, then exit with 130.
+    tags: [rescue, Exception, best-practice]
+    source: https://thoughtbot.com/blog/rescue-standarderror-not-exception
+
+  - slug: ruby-errors-begin-else-ensure-order
+    kind: mcq
+    difficulty: junior
+    title: "`else` and `ensure` execution order and values"
+    body: |
+      ```ruby
+      def m
+        yield
+        :body
+      rescue ArgumentError
+        :rescued
+      else
+        :else
+      ensure
+        puts "ensure"
+        :ensure
+      end
+
+      p m { 1 }
+      p m { raise ArgumentError }
+      ```
+
+      What is printed?
+    choices:
+      - "`ensure`, `:body`, `ensure`, `:rescued`"
+      - "`ensure`, `:else`, `ensure`, `:rescued`"
+      - "`ensure`, `:ensure`, `ensure`, `:ensure`"
+      - "`:else`, `ensure`, `:rescued`, `ensure`"
+    answer: 1
+    explanation: |
+      `else` runs only when no exception was raised, **after** the body, and its value becomes the
+      method's value (so `:else` wins over `:body`). `ensure` always runs last but its value is
+      discarded: the method returns what the body/else/rescue produced. The `puts` is executed before
+      `p` prints the return value, hence `ensure` appears first each time. Interviewers use this to
+      check you know `else` is "the success branch" and `ensure` is for side effects only.
+    tags: [ensure, else, begin]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-ensure-return
+    kind: mcq
+    difficulty: middle
+    title: "The explicit `return` in `ensure` gotcha"
+    body: |
+      ```ruby
+      def fetch
+        raise IOError, "disk"
+      ensure
+        return :ok
+      end
+
+      def compute
+        1
+      ensure
+        2
+      end
+
+      p fetch
+      p compute
+      ```
+
+      What is printed?
+    choices:
+      - "Raises `IOError`; `ensure` cannot change the outcome"
+      - "`:ok` and `2`"
+      - "`:ok` and `1`"
+      - "`nil` and `1`"
+    answer: 2
+    explanation: |
+      An **explicit** `return` inside `ensure` overrides everything: it replaces the method's return value
+      *and silently discards any in-flight exception*, so `fetch` returns `:ok` and the `IOError`
+      vanishes. An **implicit** last expression in `ensure` is ignored, so `compute` still returns `1`.
+      Ruby's own language specs document both rules ("explicit return in ensure suppresses exception
+      raised in method"). RuboCop flags this as `Lint/EnsureReturn`. The same applies to `break`/`next`
+      in an `ensure` inside a block.
+    tags: [ensure, return, gotcha]
+    source: https://git.ruby-lang.org/ruby.git/tree/spec/ruby/language/ensure_spec.rb?h=v3_3_8
+
+  - slug: ruby-errors-retry-basics
+    kind: mcq
+    difficulty: junior
+    title: "How `retry` works"
+    body: |
+      ```ruby
+      attempts = 0
+      begin
+        attempts += 1
+        raise "flaky" if attempts < 3
+        puts "ok after #{attempts}"
+      rescue
+        retry if attempts < 3
+        puts "gave up"
+      end
+      ```
+
+      What is printed, and where may `retry` appear?
+    choices:
+      - "`ok after 3`; `retry` re-runs the whole `begin` body and is only valid inside a `rescue` clause"
+      - "`ok after 3`; `retry` re-runs only the line that raised"
+      - "`gave up`; `retry` resets `attempts` to 0 each time so the guard never passes"
+      - "`ok after 1`; the first `raise` is skipped because `retry` is evaluated before the body"
+    answer: 0
+    explanation: |
+      `retry` jumps back to the start of the enclosing `begin` block (or method body for method-level
+      rescue); local variables defined outside the block keep their values, which is why a counter
+      declared *outside* `begin` is the standard pattern (declare it inside and you loop forever).
+      `retry` anywhere but inside `rescue` is a `SyntaxError`. Use `redo` to repeat a block iteration
+      instead.
+    tags: [retry]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-raise-forms
+    kind: open
+    difficulty: junior
+    title: "The forms of `raise`"
+    body: |
+      List the different ways to call `raise` and what each produces. What does `raise` with no
+      arguments do inside and outside a `rescue`?
+    answer: |
+      - `raise "msg"`: a `RuntimeError` with that message. The most common form for ad-hoc errors.
+      - `raise SomeError`: calls `SomeError.exception` (which is `new` with no message); message
+        defaults to the class name.
+      - `raise SomeError, "msg"`: `SomeError.exception("msg")`, i.e. `SomeError.new("msg")`.
+      - `raise SomeError, "msg", backtrace`: third positional arg sets the backtrace (an Array of
+        strings), used when re-raising a translated error while keeping the original location.
+      - `raise SomeError.new(extra: 1)`: an instance; `raise obj, "msg"` calls `obj.exception("msg")`,
+        which returns a copy with the new message.
+      - `raise SomeError, "msg", cause: other` sets `Exception#cause` explicitly; by default `cause` is
+        `$!` (the exception being handled) and `cause: nil` suppresses it.
+      - Bare `raise` inside `rescue` re-raises `$!` (the current exception) with its original
+        backtrace. Outside any rescue, `$!` is `nil` and it raises `RuntimeError` ("unhandled
+        exception").
+      - Anything that is not a String, a class or an object responding to `exception` raises
+        `TypeError: exception class/object expected`, so `raise 42` is itself an error.
+      - `fail` is an alias; style guides reserve `fail` for the first raise and `raise` for re-raising,
+        or just use `raise`.
+    explanation: |
+      Follow-up: "why `raise CustomError, 'x'` rather than `raise CustomError.new('x')`?" Same result;
+      the two-arg form reads better and lets `raise` add the backtrace. "What is `Kernel#raise` vs
+      `Thread#raise`?" The latter injects an exception into another thread asynchronously, which is how
+      `Timeout` works and why it is dangerous.
+    tags: [raise, cause]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-errors-cause-chaining
+    kind: mcq
+    difficulty: middle
+    title: "`Exception#cause` after wrapping"
+    body: |
+      ```ruby
+      class AppError < StandardError; end
+
+      begin
+        begin
+          Integer("x")
+        rescue ArgumentError
+          raise AppError, "bad input"
+        end
+      rescue AppError => e
+        p e.cause.class
+        p e.cause.cause
+      end
+      ```
+
+      What is printed?
+    choices:
+      - "`NilClass` and `nil` - `cause` is only set when you pass `cause:` explicitly"
+      - "`ArgumentError` and `nil` - the exception being handled becomes the cause automatically"
+      - "`ArgumentError` and `ArgumentError` - `cause` always points to the root"
+      - "`AppError` and `ArgumentError` - `cause` points at the exception itself first"
+    answer: 1
+    explanation: |
+      When you `raise` inside a `rescue` clause, Ruby stores `$!` (the exception currently being
+      handled) as the new exception's `cause`, without any extra syntax. The original `ArgumentError`
+      was not raised inside a rescue, so its own `cause` is `nil`. The chain is printed by the default
+      uncaught-exception handler and by `full_message`, which is why wrapping low-level errors in domain
+      errors loses no debugging information. Use `cause: nil` to deliberately detach.
+    tags: [cause, wrapping]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-code-custom-error-with-code
+    kind: code
+    difficulty: junior
+    title: "Custom error carrying an error code"
+    body: |
+      Define `ApiError < StandardError` whose constructor takes a message plus a keyword `code:`
+      (an Integer). Expose `code` via a reader. The message defaults to `"API request failed"` when
+      none is given. Also define `ApiError#retryable?` that is true when `code` is 429 or any 5xx.
+
+      ```ruby
+      e = ApiError.new("rate limited", code: 429)
+      e.message     # => "rate limited"
+      e.code        # => 429
+      e.retryable?  # => true
+      ApiError.new(code: 404).message # => "API request failed"
+      ```
+    starter_code: |
+      class ApiError < StandardError
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_message_and_code
+          e = ApiError.new("rate limited", code: 429)
+          assert_equal "rate limited", e.message
+          assert_equal 429, e.code
+        end
+
+        def test_default_message
+          assert_equal "API request failed", ApiError.new(code: 404).message
+        end
+
+        def test_retryable
+          assert ApiError.new(code: 429).retryable?
+          assert ApiError.new(code: 503).retryable?
+          refute ApiError.new(code: 404).retryable?
+          refute ApiError.new(code: 400).retryable?
+        end
+
+        def test_raise_and_rescue_as_standard_error
+          err = assert_raises(StandardError) { raise ApiError.new("x", code: 500) }
+          assert_instance_of ApiError, err
+          assert_equal 500, err.code
+        end
+
+        def test_raise_with_class_and_message_keeps_default_code_nil
+          err = assert_raises(ApiError) { raise ApiError, "plain" }
+          assert_equal "plain", err.message
+          assert_nil err.code
+        end
+      end
+    solution: |
+      class ApiError < StandardError
+        attr_reader :code
+
+        def initialize(message = "API request failed", code: nil)
+          super(message)
+          @code = code
+        end
+
+        def retryable?
+          code == 429 || (500..599).cover?(code)
+        end
+      end
+    explanation: |
+      Three things interviewers check: you call `super(message)` so `message`/`full_message` work,
+      you keep the positional message optional so `raise ApiError, "plain"` (which calls
+      `ApiError.exception("plain")`, i.e. `new("plain")`) still works, and you inherit from
+      `StandardError`, not `Exception`. `(500..599).cover?(nil)` is `false`, so a missing code is not
+      retryable. Extra data on exceptions (code, response, record) is the idiomatic way to give
+      handlers context without parsing messages.
+    tags: [custom-error, StandardError]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-rescue-modifier
+    kind: mcq
+    difficulty: middle
+    title: "The `rescue` modifier"
+    body: |
+      ```ruby
+      value = Integer("12x") rescue -1
+      p value
+      count = [nil].first.size rescue 0
+      p count
+      data = exit rescue :no
+      ```
+
+      What happens?
+    choices:
+      - "`-1`, `0`, then the process exits: the modifier rescues `StandardError` only and cannot name a class"
+      - "`-1`, `0`, `:no` is assigned because the modifier rescues everything"
+      - "`SyntaxError`: the modifier form cannot be used in an assignment"
+      - "`-1`, then `NoMethodError` propagates because the modifier does not cover `nil` receivers"
+    answer: 0
+    explanation: |
+      `expr rescue fallback` is sugar for `begin expr rescue StandardError; fallback end`. It catches
+      `ArgumentError` from `Integer("12x")` and `NoMethodError` from `nil.size`, but `SystemExit` is
+      not a `StandardError`, so `exit` wins. You cannot specify a class with the modifier, which is why
+      style guides (`Style/RescueModifier`) discourage it: it hides typos and nil bugs as "expected"
+      failures. Prefer `Integer("12x", exception: false)` or a proper `begin/rescue` naming the error.
+    tags: [rescue-modifier]
+    source: https://reinteractive.com/articles/Exceptional-error-handling-in-Ruby
+
+  - slug: ruby-errors-method-level-and-block-rescue
+    kind: open
+    difficulty: junior
+    title: "`rescue` without `begin`: methods and `do ... end` blocks"
+    body: |
+      Where can `rescue`/`ensure` appear without an explicit `begin`? Show what this returns:
+
+      ```ruby
+      [10, 0].map do |d|
+        100 / d
+      rescue ZeroDivisionError
+        :inf
+      end
+      ```
+    answer: |
+      - A `def` body is an implicit `begin`: `def m; ...; rescue X; ...; ensure; ...; end`. Same for
+        `class` and `module` bodies.
+      - Since Ruby 2.6, `do ... end` blocks also accept `rescue`/`else`/`ensure` directly. The example
+        returns `[10, :inf]`: the rescue applies per iteration, so the first element succeeds and the
+        second yields `:inf`.
+      - Brace blocks `{ }` and lambdas with `->` do **not** support it; you need an inner `begin`.
+      - Scope: method-level rescue covers the whole body, so if only one line can fail, wrap just that
+        line in `begin/end` to avoid accidentally rescuing errors from unrelated code.
+      - `retry` works in method-level rescue too and restarts the method body.
+      - Watch the `p [..].map do ... end` trap: `do/end` binds to `p`, not `map`, so the rescue ends up
+        inside the wrong block and `map` receives no block at all (returns an Enumerator).
+    explanation: |
+      Follow-up: "what does the method return when the rescue branch is taken?" The value of the last
+      expression in the rescue clause. "Can you have multiple rescue clauses in a method?" Yes, same as
+      in `begin`, evaluated top to bottom.
+    tags: [rescue, blocks, methods]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-throw-catch-vs-raise
+    kind: open
+    difficulty: middle
+    title: "`throw`/`catch` vs `raise`/`rescue`"
+    body: |
+      When would you use `throw`/`catch` instead of exceptions? What are the semantic differences, and
+      what happens if you `throw` a tag nobody is catching?
+    answer: |
+      - `catch(:tag) { ... throw :tag, value ... }` is a **non-local exit** for control flow: unwind the
+        stack to the matching `catch` and return `value` (or `nil`). It is not an error and carries no
+        backtrace.
+      - `raise` creates an `Exception` object with a backtrace, triggers `rescue`/`ensure` clauses along
+        the way and is meant for exceptional conditions. It is considerably more expensive because of
+        backtrace capture.
+      - Typical `throw` use: breaking out of deeply nested loops or recursive walkers (`throw :found,
+        node`), early exit from a `each` inside `each`, Sinatra's `halt`, Rails' `throw :abort` in
+        callbacks to stop a save.
+      - `throw` without a matching `catch` raises `UncaughtThrowError` (an `ArgumentError`).
+      - `ensure` blocks still run while `throw` unwinds, so resources are released; `rescue` clauses
+        are **not** triggered by a throw.
+      - Tags are compared by identity (`object_id`), so symbols are the norm; `catch` without an
+        argument creates a unique tag object you pass to the block.
+      - For most code a plain `return`, `break` with a value, or `find` is simpler than either.
+    explanation: |
+      Follow-up: "is `throw` the same as in JavaScript/Java?" No, in those languages `throw` raises an
+      exception; Ruby's `throw` is closer to a labelled break. Also probe `break value` from a block
+      returning from the yielding method, and `next` vs `return` inside procs vs lambdas.
+    tags: [throw, catch, control-flow]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-errors-timeout-dangers
+    kind: open
+    difficulty: senior
+    title: "Why is `Timeout.timeout` dangerous?"
+    body: |
+      ```ruby
+      Timeout.timeout(5) { client.charge(order) }
+      ```
+
+      A reviewer says this line is a liability. Explain how `Timeout` is implemented, what can go
+      wrong, and what you would use instead.
+    answer: |
+      - `Timeout.timeout` spawns a watcher thread that, after `sec` seconds, calls `Thread#raise` on
+        your thread. The exception is injected **asynchronously at any point** in the block: in the
+        middle of `ensure`, inside a C extension's bookkeeping, between "send request" and "record
+        result", while holding a mutex.
+      - Consequences: half-updated state (a charge sent but never recorded), connection pools with
+        corrupted connections (the classic Net::HTTP / database driver bugs), `ensure` blocks
+        interrupted before cleanup finishes, deadlocks when the raise lands while a lock is held.
+      - The exception raised inside the block is `Timeout::ExitException` (an `Exception`, not
+        `StandardError`), so the block's own `rescue => e` cannot catch it; outside the block it is
+        re-raised as `Timeout::Error` (a `RuntimeError`). Passing a custom class makes it rescueable
+        inside, which is sometimes what you want and sometimes a footgun.
+      - It does not stop blocking C calls that never release the GVL, so the timeout may simply not fire.
+      - Prefer the library's own timeouts, which are checked at safe points: `Net::HTTP#open_timeout`
+        / `read_timeout` / `write_timeout`, `Socket` timeouts, `pg` `statement_timeout`, Redis
+        `timeout:`, `IO.select`/`IO#wait_readable` with a deadline, `Queue#pop(timeout:)` (3.2+).
+      - If you must use `Timeout`, keep the block tiny and side-effect free, never wrap `ensure`-heavy
+        code, and treat a `Timeout::Error` as "state unknown", not "operation failed".
+    explanation: |
+      Follow-ups: "how does `Thread#raise` interact with `Thread.handle_interrupt`?" (you can defer
+      interrupts with `handle_interrupt(Timeout::ExitException => :never)` around critical sections),
+      and "why did Rails' `ActiveRecord` connection reaping used to break under Timeout?" (connections
+      checked out and interrupted mid-query were returned dirty).
+    tags: [timeout, threads, Thread.raise]
+    source: https://jvns.ca/blog/2015/11/27/why-rubys-timeout-is-dangerous-and-thread-dot-raise-is-terrifying
+
+  - slug: ruby-errors-exit-system-exit-at-exit
+    kind: mcq
+    difficulty: middle
+    title: "`exit`, `SystemExit` and `at_exit` ordering"
+    body: |
+      ```ruby
+      at_exit { puts "A" }
+      at_exit { puts "B" }
+
+      begin
+        exit 3
+      rescue SystemExit => e
+        puts "status=#{e.status} success=#{e.success?}"
+        raise
+      ensure
+        puts "ensure"
+      end
+      puts "after"
+      ```
+
+      What is printed, and what is the process exit status?
+    choices:
+      - "`status=3 success=false`, `ensure`, `after`, `B`, `A`; status 0 because the exception was rescued"
+      - "`status=3 success=false`, `ensure`, `B`, `A`; status 3"
+      - "`status=3 success=false`, `ensure`, `A`, `B`; status 3"
+      - "`ensure`, `B`, `A`; status 3 - `SystemExit` cannot be rescued"
+    answer: 1
+    explanation: |
+      `exit(3)` raises `SystemExit` carrying `status` 3; it **can** be rescued explicitly (not by a bare
+      `rescue`). Re-raising continues the exit, `ensure` runs during unwinding, `after` is never reached,
+      and `at_exit` handlers run in **reverse** registration order (B then A) before the process ends
+      with status 3. `exit!` skips `at_exit` and `ensure` entirely; `abort("msg")` prints to stderr and
+      exits 1. Test frameworks and Rake rely on this: Minitest registers itself with `at_exit`, which
+      is why `exit` inside a test can swallow the run.
+    tags: [exit, SystemExit, at_exit]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-errors-signals-basics
+    kind: theory
+    difficulty: senior
+    title: "Signals: `Interrupt`, `SignalException` and `Signal.trap`"
+    body: |
+      When the OS delivers a signal, Ruby turns it into either an exception in the main thread or a call
+      to a handler you registered with `Signal.trap`.
+
+      ```ruby
+      # default behaviour
+      sleep           # Ctrl-C => Interrupt (a SignalException < Exception) raised in main thread
+                      # kill -TERM pid => SignalException "SIGTERM"; uncaught => process dies
+
+      # graceful shutdown
+      stop = false
+      old = Signal.trap("TERM") { stop = true }   # returns the previous handler ("DEFAULT")
+      until stop
+        process_one_job
+      end
+      Signal.trap("TERM", old)
+      ```
+
+      What you need to know:
+
+      - `Interrupt` and `SignalException` sit **outside** `StandardError`, so a bare `rescue` does not
+        swallow them. `rescue Interrupt` explicitly in CLIs to print "aborted" and exit with 130.
+      - A trap handler runs in the main thread **between** Ruby instructions, not truly asynchronously,
+        but it is still a "signal-safe" context: do not take a `Mutex` or log with a lock inside it
+        (`ThreadError: can't be called from trap context`). Set a flag or push to a `Queue`, and do the
+        real work in the main loop. Puma, Sidekiq and Rails use a self-pipe/queue for this.
+      - `trap("INT", "IGNORE")`, `"DEFAULT"`, `"SYSTEM_DEFAULT"`, `"EXIT"` are the string handlers.
+        `SIGKILL` and `SIGSTOP` cannot be trapped. `Signal.list` maps names to numbers.
+      - `Process.kill("TERM", pid)` sends a signal; `Process.kill("USR1", Process.pid)` is a common
+        trick to trigger a handler in tests.
+      - Exit status after an uncaught signal is 128 + signal number (130 for SIGINT, 143 for SIGTERM),
+        which process managers use to tell crashes from shutdowns.
+    answer: |
+      **Q:** Your worker rescues `StandardError`, logs, and keeps looping. Kubernetes sends SIGTERM.
+      What happens, and how do you make shutdown graceful?
+
+      **A:** The `SignalException` is not a `StandardError`, so it propagates: the loop stops, `ensure`
+      blocks run, and the process exits 143, possibly mid-job. For graceful shutdown, `Signal.trap("TERM")`
+      sets a flag; the loop checks the flag between jobs, finishes the current one and exits 0.
+    explanation: |
+      Follow-up: "what is the difference between `Interrupt` and `SignalException.new("INT")`?"
+      `Interrupt` is the dedicated subclass for SIGINT with a default message; other signals use
+      `SignalException` with the signal name. "Why does `trap` inside a Rails app sometimes not fire?"
+      Because the app server (Puma) installs its own handlers; register yours via the server's hooks.
+    tags: [signals, trap, Interrupt]
+    source: https://docs.ruby-lang.org/en/3.3/Signal.html
+
+  - slug: ruby-errors-stop-iteration-loop
+    kind: mcq
+    difficulty: middle
+    title: "`StopIteration` and `Kernel#loop`"
+    body: |
+      ```ruby
+      e = [1, 2].each
+      result = loop do
+        puts e.next
+      end
+      p result
+
+      while true
+        e.next
+      end
+      ```
+
+      What happens?
+    choices:
+      - "Prints `1`, `2`, then `nil`; then the `while` loop runs forever because `e` was rewound"
+      - "Prints `1`, `2`, then `[1, 2]`; then the `while` loop raises `StopIteration`"
+      - "Prints `1`, `2`, then `[1, 2]`; the `while` loop also ends silently"
+      - "Raises `StopIteration` inside `loop` on the third `next`"
+    answer: 1
+    explanation: |
+      `Enumerator#next` raises `StopIteration` when the underlying `each` is exhausted. `Kernel#loop`
+      rescues it and returns the exception's `result`, which is the return value of the `each` call,
+      here the array `[1, 2]`. `loop` is the only construct with that built-in rescue; `while true`
+      has none, and the enumerator stays at its end (it is not rewound), so the very first `e.next`
+      raises `StopIteration: iteration reached an end`. Note `StopIteration` is an `IndexError`, hence
+      a `StandardError`, so a bare `rescue` around external iteration will quietly eat it.
+    tags: [StopIteration, loop, enumerator]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-errors-key-error-fetch
+    kind: mcq
+    difficulty: junior
+    title: "`KeyError` from `fetch`"
+    body: |
+      ```ruby
+      config = { host: "db", port: nil }
+      a = config.fetch(:port)
+      b = config.fetch(:user, "root")
+      c = config.fetch(:pass) { |k| "no #{k}" }
+      d = config.fetch(:name)
+      ```
+
+      What happens?
+    choices:
+      - "`a` raises `KeyError` because the value is `nil`"
+      - "`a = nil`, `b = \"root\"`, `c = \"no pass\"`, then `d` raises `KeyError` with `key` and `receiver` attributes set"
+      - "`a = nil`, `b = \"root\"`, `c = \"no pass\"`, `d = nil`"
+      - "`a = nil`, `b = \"root\"`, then `c` raises `ArgumentError`: `fetch` takes a default, not a block"
+    answer: 1
+    explanation: |
+      `fetch` cares about key **presence**, not value truthiness: `:port` exists with value `nil`, so
+      `a` is `nil`. A second argument is a default, a block is a lazy default that receives the key.
+      Only a missing key with neither raises `KeyError`, whose `key` and `receiver` methods let you
+      build precise messages (and power the "Did you mean?" suggestion). `ENV.fetch("DATABASE_URL")`
+      is the canonical fail-fast use. `fetch` ignores `Hash.new(default)` and default procs entirely.
+    tags: [KeyError, fetch]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-errors-no-method-error-vs-name-error
+    kind: mcq
+    difficulty: junior
+    title: "`NoMethodError` vs `NameError`"
+    body: |
+      ```ruby
+      def test
+        total
+      end
+
+      begin
+        test
+      rescue NoMethodError => e
+        puts "nme: #{e.name}"
+      rescue NameError => e
+        puts "ne: #{e.name}"
+      end
+
+      nil.total rescue puts $!.class
+      self.total rescue puts $!.class
+      ```
+
+      What is printed?
+    choices:
+      - "`nme: total`, `NoMethodError`, `NoMethodError`"
+      - "`ne: total`, `NoMethodError`, `NoMethodError`"
+      - "`ne: total`, `NameError`, `NameError`"
+      - "`ne: total`, `NoMethodError`, `NameError`"
+    answer: 1
+    explanation: |
+      A bare identifier like `total` could be a local variable or a method call; when neither exists Ruby
+      raises `NameError` ("undefined local variable or method"). As soon as there is an explicit receiver
+      (`nil.total`, `self.total`) or arguments/parentheses, it is unambiguously a method call and you get
+      `NoMethodError`, a **subclass** of `NameError`. Ordering matters: `rescue NoMethodError` must come
+      before `rescue NameError` or it is unreachable. Both expose `name` and `receiver`
+      (`NoMethodError#args` too), which the `did_you_mean` gem uses.
+    tags: [NameError, NoMethodError]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-argument-error-frozen-error
+    kind: open
+    difficulty: junior
+    title: "`ArgumentError` from arity and `FrozenError`"
+    body: |
+      Explain what raises here and what the messages look like:
+
+      ```ruby
+      def greet(name, greeting: "hi") = "#{greeting} #{name}"
+      greet
+      greet("a", "b")
+      greet("a", mood: :happy)
+
+      NAME = "ruby".freeze
+      NAME << "!"
+      [1, 2].freeze << 3
+      ```
+    answer: |
+      - `greet` with no args: `ArgumentError: wrong number of arguments (given 0, expected 1)`.
+        Ruby checks arity at call time, not at definition.
+      - `greet("a", "b")`: `ArgumentError (given 2, expected 1)`: a positional String is not promoted to
+        the keyword hash since Ruby 3.0 separated positional and keyword arguments.
+      - `greet("a", mood: :happy)`: `ArgumentError: unknown keyword: :mood`. Also a subclass-free
+        `ArgumentError`, so you cannot distinguish arity from bad values by class alone; parse the
+        message or validate explicitly.
+      - `NAME << "!"`: `FrozenError: can't modify frozen String: "ruby"`. `FrozenError` is a
+        `RuntimeError` subclass (since 2.5) and exposes `receiver`. Note `NAME += "!"` would **not**
+        raise: it rebinds the constant to a new String (with a "already initialized constant" warning).
+      - `[1, 2].freeze << 3`: `FrozenError: can't modify frozen Array`. `freeze` is shallow: the
+        elements stay mutable.
+      - `ArgumentError` is also what you raise yourself for invalid values (`raise ArgumentError,
+        "count must be positive"`), and what `Integer("x")` raises, unlike `"x".to_i` which returns 0.
+    explanation: |
+      Follow-ups: "which is better for an invalid argument: `ArgumentError` or `TypeError`?"
+      `TypeError` for wrong class (`"a" + 1`), `ArgumentError` for right class but bad value.
+      "How do you make a method tolerant of extra keywords?" `**opts` or `**nil` to forbid them.
+    tags: [ArgumentError, FrozenError, arity]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-zero-division-nan
+    kind: mcq
+    difficulty: middle
+    title: "`ZeroDivisionError`, `Infinity` and `NaN`"
+    body: |
+      ```ruby
+      a = 1 / 0 rescue :zde
+      b = 1.0 / 0
+      c = 0.0 / 0
+      d = (c == c)
+      e = [c].include?(c)
+      f = 1.0 % 0 rescue :zde
+      p [a, b, c, d, e, f]
+      ```
+
+      What is printed?
+    choices:
+      - "`[:zde, Infinity, NaN, true, true, :zde]`"
+      - "`[:zde, :zde, :zde, true, true, :zde]`"
+      - "`[:zde, Infinity, NaN, false, true, :zde]`"
+      - "`[:zde, Infinity, NaN, false, false, Infinity]`"
+    answer: 2
+    explanation: |
+      Integer division by zero raises `ZeroDivisionError`; Float division follows IEEE 754 and yields
+      `Infinity` or `NaN` silently, which is how NaNs creep into averages and JSON (`NaN` is not valid
+      JSON and `to_json` raises). `NaN == NaN` is `false` by definition, so use `c.nan?`. But
+      `include?`, `index` and Hash lookup first test identity (`equal?`), and `Float::NAN` is the same
+      object as itself, so `[c].include?(c)` is `true`: a well-known inconsistency. Modulo by zero
+      raises even for Floats, and `Infinity.to_i` / `NaN.to_i` raise `FloatDomainError` (a `RangeError`).
+      Use `Integer#fdiv` or `Rational` when you need predictable division.
+    tags: [ZeroDivisionError, NaN, Infinity]
+    source: https://docs.ruby-lang.org/en/3.3/Float.html
+
+  - slug: ruby-errors-handling-strategy
+    kind: theory
+    difficulty: middle
+    title: "Error handling strategy: fail fast, don't swallow, log and re-raise"
+    body: |
+      Interviewers rarely ask for syntax here; they ask what you *do* with an exception. The usable
+      rules:
+
+      1. **Rescue only what you can handle.** A handler must either recover (retry, fallback, default),
+         translate (wrap into a domain error with `cause`), or clean up and re-raise. If it does none of
+         these, delete it.
+
+      2. **Never swallow.** `rescue => e; nil` and `rescue; logger.error(e)` without re-raising turn
+         crashes into silent data corruption and bugs that surface weeks later. If you log, re-raise:
+
+         ```ruby
+         def charge(order)
+           gateway.charge(order)
+         rescue Gateway::Timeout => e
+           logger.warn("charge timeout order=#{order.id}")
+           raise PaymentUnknown, "state unknown for #{order.id}"   # cause is kept automatically
+         end
+         ```
+
+      3. **Fail fast at boundaries.** Validate input and config early (`fetch`, `Integer()`, explicit
+         `raise ArgumentError`) so stack traces point at the real cause instead of a `nil` three layers
+         deeper.
+
+      4. **Handle at the right layer.** Low-level code raises specific errors; the top of the request /
+         job (controller, worker middleware) decides on 500 vs retry vs alert. Middle layers mostly
+         `ensure` and translate.
+
+      5. **Be specific.** `rescue Net::ReadTimeout, Errno::ECONNRESET` says what you expect;
+         `rescue StandardError` in library code hides programmer errors like `NoMethodError`.
+
+      6. **Exceptions are for exceptional paths.** "User not found" in a lookup that is expected to
+         miss returns `nil`/a Result; raising for control flow is slow and obscures intent.
+
+      7. **Make errors actionable.** Include ids and values in messages, keep `cause`, use
+         `full_message` / error trackers, and define a small hierarchy
+         (`MyApp::Error < StandardError`) so callers can `rescue MyApp::Error` as a unit.
+    answer: |
+      **Q:** A background job does `rescue => e; Sentry.capture(e); end` around everything and the
+      queue reports 100% success while customers complain. What is wrong and what is the fix?
+
+      **A:** The exception is swallowed after reporting, so the job framework never sees a failure: no
+      retry, no dead-letter, success metrics lie. Re-raise after capturing (or let the framework's
+      error middleware report), so the job is marked failed and retried according to policy.
+    explanation: |
+      Follow-up: "when is swallowing acceptable?" Fire-and-forget side effects that must not break the
+      main flow (analytics ping), *with* logging and a narrow rescue, ideally with a circuit breaker.
+      Also mention `raise ... unless` guards versus `assert`-style checks, and that `ensure` is for
+      cleanup, not error handling.
+    tags: [strategy, best-practice, logging]
+    source: https://blog.honeybadger.io/ruby-exception-vs-standarderror-whats-the-difference/
+
+  - slug: ruby-errors-exceptions-vs-result-objects
+    kind: open
+    difficulty: senior
+    title: "Exceptions vs return values / Result objects"
+    body: |
+      Your service layer returns `nil` on some failures, raises on others and sometimes returns
+      `false`. A teammate proposes a `Result` object (`Success`/`Failure`) everywhere; another says
+      "just raise, this is Ruby". How do you decide?
+    answer: |
+      - Exceptions: for conditions the immediate caller cannot or should not handle (bugs, invariant
+        violations, infrastructure failures). They propagate for free, carry backtrace and `cause`, and
+        cannot be ignored silently. Cost: slow when frequent, invisible in method signatures, easy to
+        over-rescue.
+      - Return values / Result objects: for **expected** outcomes that are part of the domain (validation
+        failed, insufficient funds, record not found when "not found" is normal). The caller is forced to
+        look at the result; failures compose (`Result#then`, `dry-monads` `Do` notation); they are cheap
+        and testable; the failure type is explicit.
+      - `nil`/`false` are the worst of both: no reason attached, easy to forget, `nil` propagates into a
+        `NoMethodError` far away. `ActiveRecord#save` returning false with `errors` is the classic
+        "Result-ish" API; `save!` is the exception twin, and most Rails APIs offer both.
+      - A pragmatic rule: inside a boundary (a service object, a use case) raise domain errors
+        (`InsufficientFunds < MyApp::Error`); at the boundary, translate to a Result or HTTP status so
+        controllers/jobs branch without `rescue` noise.
+      - Don't mix styles in one method; document which one an API uses; keep the Result shape tiny
+        (`Struct.new(:ok?, :value, :error)` or `Data.define`) unless you adopt dry-monads for real.
+      - Exceptions still cut through Results for truly exceptional failures (DB down): don't wrap
+        everything in `Failure`.
+    explanation: |
+      Follow-ups: "how do you handle a `Result` from three sequential steps?" (chain with `then`/`bind`
+      or pattern-match: `case step1 in {ok: true, value:} ...`), "what does `raise` cost?"
+      (backtrace capture, roughly 10x+ a normal method return), and "how do Rails callbacks use
+      `throw :abort`?" (a non-exception non-local exit for expected flow).
+    tags: [result, design, exceptions]
+    source: https://blog.honeybadger.io/understanding-the-ruby-exception-hierarchy/
+
+  - slug: ruby-errors-raise-in-ensure
+    kind: mcq
+    difficulty: senior
+    title: "Raising inside `ensure`"
+    body: |
+      ```ruby
+      def save
+        raise IOError, "write failed"
+      ensure
+        cleanup   # raises Errno::EACCES
+      end
+
+      begin
+        save
+      rescue => e
+        p e.class, e.cause&.class
+      end
+      ```
+
+      Assume `cleanup` raises `Errno::EACCES`. What is printed?
+    choices:
+      - "`IOError`, `nil` - the original exception wins and the `ensure` error is discarded"
+      - "`Errno::EACCES`, `IOError` - the `ensure` error replaces the original, which survives only as `cause`"
+      - "`IOError`, `Errno::EACCES` - Ruby attaches the cleanup error as the cause of the original"
+      - "`Errno::EACCES`, `nil` - the original exception is lost entirely"
+    answer: 1
+    explanation: |
+      An exception raised while `ensure` runs replaces the one being propagated. Because the original
+      is `$!` at that moment, it is recorded as `cause`, so it is not entirely lost, but the class your
+      `rescue` sees is the cleanup error, and logs show "permission denied" instead of "write failed".
+      This is why `ensure` blocks should be defensive: `file&.close rescue nil` (or `close` inside its
+      own tiny `begin/rescue`) and never contain business logic. The same applies to `ensure` in
+      `File.open { }` style helpers: the block's error should win over `close` failures.
+    tags: [ensure, raise, cause]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-warn-stderr-full-message-backtrace
+    kind: open
+    difficulty: middle
+    title: "`warn`, `$stderr`, `full_message` and `backtrace`"
+    body: |
+      How do you print an exception the way Ruby does for uncaught errors, and what is the difference
+      between `puts e`, `warn e`, `e.message`, `e.full_message` and `e.backtrace`? Where does `warn`
+      write, and when is it suppressed?
+    answer: |
+      - `e.message` (same as `to_s`) is just the text. `puts e` prints `message` to **stdout**, which is
+        wrong for errors (it ends up in data pipelines instead of logs).
+      - `warn msg` writes to `$stderr` with a newline; `warn` with several args prints each; it is
+        silenced when `$VERBOSE` is `nil` (`ruby -W0`). `warn(msg, uplevel: 1)` prefixes the caller's
+        file:line, the idiom for deprecation warnings. `warn(category: :deprecated)` ties into
+        `Warning[:deprecated]`.
+      - `$stderr` is a global you can reassign (tests capture it with `StringIO`); `STDERR` is the
+        constant for the original stream. Use `$stderr` in code so redirection works.
+      - `e.backtrace` is an Array of `"file:line:in 'method'"` strings (or `nil` for an exception that
+        was never raised); `e.backtrace_locations` gives `Thread::Backtrace::Location` objects with
+        `path`, `lineno`, `label`.
+      - `e.full_message(highlight: false, order: :top)` renders message + class + backtrace + cause chain
+        in the same format as the default uncaught-exception handler, so `$stderr.puts e.full_message`
+        reproduces the crash output. `highlight: true` adds ANSI bold (default when stderr is a TTY),
+        `order: :bottom` prints the backtrace reversed with the message last, the format Ruby uses for
+        TTYs in 3.0-3.2.
+      - For structured logs use `message`, `class`, `backtrace.first(10)` and the `cause` chain, not
+        `full_message`.
+    explanation: |
+      Follow-up: "how do you shorten the backtrace in a library?" (`raise Err, "msg", caller` drops the
+      library frames; Rails uses backtrace cleaners), "how do you add context without losing the
+      original?" (wrap and let `cause` carry it; or `e.exception("#{e.message} while doing X")` which
+      returns a copy with the new message and the same backtrace).
+    tags: [warn, stderr, full_message, backtrace]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-detailed-message
+    kind: mcq
+    difficulty: senior
+    title: "`Exception#detailed_message` (Ruby 3.2)"
+    body: |
+      ```ruby
+      class ValidationError < StandardError
+        def initialize(msg, field:) = (super(msg); @field = field)
+
+        def detailed_message(highlight: false, **)
+          "#{super} [field=#{@field}]"
+        end
+      end
+
+      begin
+        raise ValidationError.new("too short", field: :name)
+      rescue => e
+        p e.message
+        p e.detailed_message
+      end
+      ```
+
+      What is printed, and why does Ruby 3.2 add `detailed_message` instead of telling you to override
+      `message`?
+    choices:
+      - "`\"too short\"` and `\"too short [field=name]\"`; `detailed_message` is only for your own calls"
+      - "`\"too short\"` and `\"too short (ValidationError) [field=name]\"`; the default uncaught-exception printer and `full_message` call `detailed_message`, so you can decorate output without changing `message` (which code may parse or compare)"
+      - "`\"too short [field=name]\"` twice; `detailed_message` overrides `message`"
+      - "A `NoMethodError`: `detailed_message` exists only on `RuntimeError`"
+    answer: 1
+    explanation: |
+      Ruby 3.2 split "the message" into `message` (what callers compare, log, re-raise with) and
+      `detailed_message(highlight:)`, which the interpreter's error printer and `full_message` use. The
+      default implementation appends ` (ClassName)` to the first line, which is why the output contains
+      `(ValidationError)` before your suffix. Overriding `detailed_message` lets libraries like
+      `error_highlight` and `did_you_mean` add hints without altering `message`. Your override must
+      accept and ignore unknown keywords (`**`) because future Rubies may pass more.
+    tags: [detailed_message, full_message]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-rescue-variable-scoping
+    kind: theory
+    difficulty: middle
+    title: "`rescue => e` scoping, `$!` and shadowing"
+    body: |
+      The `=> e` clause assigns the exception to a **local variable**, with the same scoping rules as any
+      other local. That has three practical consequences.
+
+      ```ruby
+      def process
+        begin
+          risky
+        rescue => e
+          log(e)
+        end
+        e   # still visible here: begin/end does not create a scope
+      end
+      ```
+
+      1. `e` is visible after the `begin/end` block (same method scope) and is `nil` if no exception was
+         raised; a `begin` body is not a new scope, unlike a block `{ }`.
+      2. Using the same name for an outer variable **overwrites** it:
+
+         ```ruby
+         e = "important"
+         begin; raise "x"; rescue => e; end
+         e   # => #<RuntimeError: x>
+         ```
+
+      3. Inside a block the exception variable is block-local only if it was not defined outside.
+
+      `$!` (alias `$ERROR_INFO` with `English`) is the thread-local "current exception": set when an
+      exception is raised, available inside `rescue`/`ensure`, and restored to the previous value when
+      the handler finishes. Bare `raise` re-raises `$!`, and a `raise` inside a handler stores `$!` as
+      the new exception's `cause`. `$@` is `$!.backtrace`.
+
+      ```ruby
+      begin
+        raise "a"
+      rescue => e
+        $!.equal?(e)      # => true
+        begin
+          raise "b"
+        rescue
+          $!.message      # => "b"
+        end
+        $!.message        # => "a"  (restored)
+      end
+      $!                  # => nil outside any handler
+      ```
+
+      `rescue` also accepts a dynamic list: `rescue *RETRYABLE => e` where `RETRYABLE` is an Array of
+      classes, and `rescue SomeModule` works for any module included in exception classes (matching
+      uses `===`, i.e. `Module#===`).
+    answer: |
+      **Q:** `rescue => e` inside a method, then `ensure` references `e`. Is it safe?
+
+      **A:** It is in scope, but it is `nil` when no exception happened and also `nil` if the exception
+      was not a `StandardError` (the rescue never ran). Use `$!` in `ensure` to see any in-flight
+      exception regardless of class, and guard for `nil` either way.
+    explanation: |
+      Follow-up: "how do you rescue by a module instead of a class?" Define `module MyLib::Error; end`
+      and `include` it in several exception classes; `rescue MyLib::Error` then matches them all via
+      `Module#===`. This is how `Timeout::Error`-like tagging works across unrelated hierarchies.
+    tags: [rescue, scope, $!]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-threads-report-abort-on-exception
+    kind: theory
+    difficulty: senior
+    title: "Exceptions in threads: `report_on_exception`, `abort_on_exception`, `join`"
+    body: |
+      An exception in a `Thread` does **not** propagate to the thread that created it. It kills the
+      thread and is stored until someone calls `join` or `value`.
+
+      ```ruby
+      t = Thread.new { raise IOError, "disk" }
+      sleep 0.1
+      t.status        # => nil   (terminated by exception; false means finished normally)
+      t.alive?        # => false
+      t.join          # re-raises IOError here, in the caller
+      t.value         # same: join + return the block value
+      ```
+
+      - `Thread.report_on_exception` (default `true` since 2.5): when a thread dies from an exception,
+        a message with the backtrace is printed to `$stderr` immediately ("#<Thread:...> terminated
+        with exception (report_on_exception is true)"). Each thread copies the global flag at creation,
+        and `t.report_on_exception = false` silences it per thread. Turn it off only for threads whose
+        `value` you always collect.
+      - `Thread.abort_on_exception` (default `false`): when `true`, an exception in **any** thread is
+        re-raised in the **main** thread, terminating the whole process. Useful in scripts and tests
+        ("no thread may fail silently"), dangerous in servers.
+      - If you never `join`, the exception is lost: fire-and-forget threads must wrap their body in
+        `begin/rescue` and report explicitly.
+      - `Thread#raise` injects an exception into another thread asynchronously (what `Timeout` and
+        `Thread#kill` build on); `Thread.handle_interrupt(Klass => :never)` defers such interrupts in
+        critical sections.
+      - `Exception` subclasses outside `StandardError` behave the same way: a `SystemExit` in a thread
+        does not exit the process until joined, which surprises people calling `exit` in a worker thread.
+      - Fibers and `Queue`-based worker pools follow the same rule: errors stay inside until you pull
+        them out, so collect results with `threads.map(&:value)` and let the first error surface.
+    answer: |
+      **Q:** `threads = urls.map { |u| Thread.new { fetch(u) } }; threads.each(&:join)` reports success
+      but some pages are missing. Where did the errors go?
+
+      **A:** `join` re-raises only the first failing thread's exception at the point where that
+      thread is joined; if `report_on_exception` was disabled or the output ignored, later failures are
+      invisible. Collect `threads.map(&:value)` (or wrap each body in `rescue` returning a Result) so
+      every thread's outcome is examined.
+    explanation: |
+      Follow-up: "how does this differ from `Concurrent::Future`/`Async`?" They capture the exception in
+      the future's state and re-raise on `value!`, similar semantics with nicer APIs. "What about the
+      GVL?" It does not change exception semantics, only that one Ruby thread runs at a time.
+    tags: [threads, report_on_exception, abort_on_exception]
+    source: https://docs.ruby-lang.org/en/3.3/Thread.html
+
+  - slug: ruby-errors-errno-family
+    kind: open
+    difficulty: middle
+    title: "The `Errno::*` family and `SystemCallError`"
+    body: |
+      What are `Errno::ENOENT`, `Errno::ECONNREFUSED`, `Errno::EACCES`? How are they related, how do
+      you rescue "any OS-level error", and how would you get the numeric code?
+    answer: |
+      - They are generated subclasses of `SystemCallError` (itself a `StandardError`), one per `errno`
+        constant from the C library: `ENOENT` (no such file, 2), `EACCES` (permission denied, 13),
+        `ECONNREFUSED`, `ECONNRESET`, `ETIMEDOUT`, `EPIPE`, `EEXIST`, `EMFILE` (too many open files)...
+      - Raised by anything that ends in a system call: `File.open`, `Dir.mkdir`, sockets, `Process.kill`,
+        `IO#read`. Messages are the OS text plus the argument: `No such file or directory @ rb_sysopen - /nope`.
+      - `rescue SystemCallError => e` catches all of them; `e.errno` returns the Integer,
+        `Errno::ENOENT::Errno` the class constant. `SystemCallError.new(2)` builds the right subclass
+        from a number.
+      - Two `Errno` classes with the same number compare equal via `===`, so `rescue Errno::EAGAIN`
+        also matches `Errno::EWOULDBLOCK` on platforms where they share a code.
+      - Network code typically rescues a list: `Errno::ECONNREFUSED, Errno::ECONNRESET,
+        Errno::ETIMEDOUT, Errno::EHOSTUNREACH, SocketError, IOError, Net::OpenTimeout` and then
+        wraps them into one app-level `NetworkError`.
+      - Prefer checking for the specific class over inspecting messages, and prefer non-raising APIs
+        when a miss is normal: `File.exist?` before `read` is racy; `File.read` + `rescue
+        Errno::ENOENT` is correct, `IO#read_nonblock(exception: false)` returns `:wait_readable`.
+    explanation: |
+      Follow-up: "how does `IO::WaitReadable` fit?" It is a module mixed into `Errno::EAGAIN` /
+      `EWOULDBLOCK` for non-blocking IO so you can `rescue IO::WaitReadable` portably, which is a nice
+      example of rescuing by module.
+    tags: [Errno, SystemCallError]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-exception-protocol-new-vs-raise
+    kind: open
+    difficulty: senior
+    title: "The `exception` protocol and `Exception.new` vs `raise`"
+    body: |
+      What does `raise` actually call on its first argument? What is the difference between an exception
+      object created with `.new` and one that has been raised? Can `raise` accept a non-exception object?
+    answer: |
+      - `raise obj, msg` calls `obj.exception(msg)` and raises what that returns. `Exception.exception`
+        (class method) is an alias for `new`; `Exception#exception` (instance) returns `self` when
+        called with no args or the same message, and otherwise a **clone** with the new message (same
+        class, same backtrace). That is what the "exception class/object expected" `TypeError` means
+        when you `raise 42`: Integer has no `exception`.
+      - So any object that implements `exception` can be raised: a `Result`-like object could return a
+        proper error; Rails' `ActiveModel::ValidationError` and some HTTP clients build errors this way.
+      - `MyError.new("x")` is just an object: `backtrace` and `backtrace_locations` are `nil`, `cause`
+        is `nil`. `raise` fills in the backtrace at the raise site (or uses the explicit third argument
+        / `set_backtrace`) and captures `$!` as `cause`. Raising the **same** instance twice keeps the
+        first backtrace unless you set a new one.
+      - Because of that, pre-built constants like `ERR = MyError.new("x")` are a smell: shared mutable
+        state (`message`, `backtrace`) across raises; use a class and raise fresh instances.
+      - `e.exception("extra context: #{e.message}")` is a handy way to re-raise with an enriched
+        message while keeping class and backtrace: `raise e.exception("while loading #{path}: #{e.message}")`.
+      - `Exception.to_tty?` and `full_message` are the printing side of the protocol;
+        `detailed_message` (3.2) the decorating side.
+    explanation: |
+      Follow-up: "why does `assert_raises` in Minitest return the exception?" Because tests often need
+      to assert on `message`, `cause` or custom readers. "What does `raise` do with a `Class` that is
+      not an `Exception` subclass?" `Class#exception` does not exist, so `TypeError` again.
+    tags: [exception-protocol, raise, backtrace]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-performance-cost
+    kind: open
+    difficulty: senior
+    title: "What do exceptions cost, and when does it matter?"
+    body: |
+      A hot path parses user input with `Integer(str) rescue nil` for millions of rows and profiles
+      badly. Explain where the cost of a raised exception comes from and what you would change.
+    answer: |
+      - Creating an exception object is cheap; **raising** is not: Ruby walks the VM stack to build the
+        backtrace (lazily materialised as strings, but the frame capture is proportional to stack depth),
+        unwinds frames running `ensure` blocks, and matches `rescue` clauses with `===`. In a simple
+        benchmark `Integer("x") rescue nil` is roughly 10x slower than the success path, and far worse
+        with deep stacks (Rails controllers: 100+ frames).
+      - The never-raised path costs almost nothing: a `begin/rescue` that does not fire is free, so
+        "wrap defensively" is not the problem; "raise for expected cases" is.
+      - Fix the example with the non-raising API: `Integer(str, exception: false)` (2.6+), or
+        `str.match?(/\A-?\d+\z/)`, or `str.to_i` when leniency is acceptable. Same idea elsewhere:
+        `Hash#fetch` with a default / `dig` instead of `rescue KeyError`, `find_by` instead of
+        `find rescue nil`, `Float(x, exception: false)`, `JSON.parse` only on trusted shapes.
+      - Also consider `caller`/`backtrace` work in logging: calling `e.backtrace` is what stringifies
+        locations, so logging full backtraces in a loop multiplies the cost.
+      - When the exceptional path is rare (1 in 10k), exceptions are the right tool and the cost is
+        irrelevant; measure with `benchmark-ips` before contorting code.
+      - `throw/catch` is cheaper than `raise` for control flow (no backtrace), but a plain return value
+        is cheaper and clearer still.
+    explanation: |
+      Follow-up: "does `rescue` itself add overhead to a method?" A negligible table entry in the
+      instruction sequence; no runtime cost unless an exception propagates through it. "Why are deep
+      stacks worse?" Backtrace capture is O(depth) per raise, and `ensure` blocks on each frame run
+      during unwinding.
+    tags: [performance, benchmark]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-errors-code-retry-with-backoff
+    kind: code
+    difficulty: middle
+    title: "Retry with exponential backoff"
+    body: |
+      Implement `with_retries(max_attempts:, base: 1, sleeper: method(:sleep))` that runs the block,
+      passing the attempt number (starting at 1). If the block raises a `StandardError`, wait
+      `base * 2**(attempt - 1)` seconds by calling `sleeper.call(seconds)` and retry, up to
+      `max_attempts` attempts in total. When the last attempt fails, re-raise the **original**
+      exception. Return the block's value on success. Do not use a real `sleep` in tests: the tests
+      inject a lambda as `sleeper`.
+
+      ```ruby
+      waits = []
+      with_retries(max_attempts: 4, sleeper: ->(s) { waits << s }) { |n| raise "x" if n < 3; n }
+      # => 3, and waits == [1, 2]
+      ```
+    starter_code: |
+      def with_retries(max_attempts:, base: 1, sleeper: method(:sleep))
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_succeeds_after_retries_with_exponential_waits
+          waits = []
+          result = with_retries(max_attempts: 4, sleeper: ->(s) { waits << s }) { |n| raise "x" if n < 3; n }
+          assert_equal 3, result
+          assert_equal [1, 2], waits
+        end
+
+        def test_first_try_success_does_not_sleep
+          waits = []
+          assert_equal :ok, with_retries(max_attempts: 3, sleeper: ->(s) { waits << s }) { :ok }
+          assert_empty waits
+        end
+
+        def test_reraises_original_after_max_attempts
+          calls = 0
+          err = assert_raises(ArgumentError) do
+            with_retries(max_attempts: 3, base: 0.5, sleeper: ->(_) {}) { calls += 1; raise ArgumentError, "nope" }
+          end
+          assert_equal "nope", err.message
+          assert_equal 3, calls
+        end
+
+        def test_custom_base
+          waits = []
+          with_retries(max_attempts: 3, base: 0.1, sleeper: ->(s) { waits << s }) { |n| raise "x" if n < 3 }
+          assert_equal [0.1, 0.2], waits
+        end
+
+        def test_does_not_retry_non_standard_errors
+          calls = 0
+          assert_raises(Interrupt) do
+            with_retries(max_attempts: 3, sleeper: ->(_) {}) { calls += 1; raise Interrupt }
+          end
+          assert_equal 1, calls
+        end
+      end
+    solution: |
+      def with_retries(max_attempts:, base: 1, sleeper: method(:sleep))
+        attempts = 0
+        begin
+          attempts += 1
+          yield attempts
+        rescue StandardError
+          raise if attempts >= max_attempts
+          sleeper.call(base * 2**(attempts - 1))
+          retry
+        end
+      end
+    explanation: |
+      The pattern interviewers want: counter declared **outside** `begin` (otherwise `retry` resets it),
+      `rescue StandardError` only (so `Interrupt`/`SystemExit` still stop the loop), bare `raise` to
+      re-raise the original with its backtrace, and an injected sleeper for testability. Production
+      versions add jitter (`rand * base`), a max delay, and a whitelist of retryable errors; libraries
+      like `retriable` or Sidekiq's retry schedule do the same thing.
+    tags: [retry, backoff]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-code-config-key-error-wrap
+    kind: code
+    difficulty: middle
+    title: "Translate `KeyError` into a domain error with `cause`"
+    body: |
+      Define `ConfigError < StandardError` and implement `load_config(hash)` that returns
+      `{ host:, port: }` where `host` comes from `hash.fetch("host")` and `port` is
+      `Integer(hash.fetch("port"))`. A missing key or a non-numeric port must raise `ConfigError` with
+      the message `"invalid config: <original message>"`, and the original `KeyError`/`ArgumentError`
+      must be available as `cause`.
+
+      ```ruby
+      load_config({ "host" => "db", "port" => "5432" }) # => { host: "db", port: 5432 }
+      load_config({ "host" => "db" })
+      # raises ConfigError, "invalid config: key not found: \"port\"", cause: KeyError
+      ```
+    starter_code: |
+      class ConfigError < StandardError; end
+
+      def load_config(hash)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_happy_path
+          assert_equal({ host: "db", port: 5432 }, load_config({ "host" => "db", "port" => "5432" }))
+        end
+
+        def test_missing_key_wrapped_with_cause
+          err = assert_raises(ConfigError) { load_config({ "host" => "db" }) }
+          assert_equal 'invalid config: key not found: "port"', err.message
+          assert_instance_of KeyError, err.cause
+          assert_equal "port", err.cause.key
+        end
+
+        def test_bad_port_wrapped_with_cause
+          err = assert_raises(ConfigError) { load_config({ "host" => "db", "port" => "abc" }) }
+          assert_match(/\Ainvalid config: invalid value for Integer/, err.message)
+          assert_instance_of ArgumentError, err.cause
+        end
+
+        def test_is_a_standard_error
+          assert ConfigError < StandardError
+        end
+      end
+    solution: |
+      class ConfigError < StandardError; end
+
+      def load_config(hash)
+        { host: hash.fetch("host"), port: Integer(hash.fetch("port")) }
+      rescue KeyError, ArgumentError => e
+        raise ConfigError, "invalid config: #{e.message}"
+      end
+    explanation: |
+      Method-level `rescue` with a class list, then `raise` inside the handler: Ruby sets `cause` to
+      the exception being handled automatically, so the `KeyError` (with its `key`) survives for
+      debugging while callers only need to know about `ConfigError`. `fetch` and `Integer()` are the
+      fail-fast primitives; `hash["port"].to_i` would silently turn `"abc"` into 0. Rescuing
+      `TypeError` as well would cover `Integer(nil)`.
+    tags: [KeyError, cause, wrapping, fetch]
+    source: https://docs.ruby-lang.org/en/3.3/Exception.html
+
+  - slug: ruby-errors-code-my-loop
+    kind: code
+    difficulty: senior
+    title: "Reimplement `Kernel#loop`"
+    body: |
+      Implement `my_loop` with the semantics of `Kernel#loop`: call the block repeatedly forever; if
+      the block raises `StopIteration`, stop and return that exception's `result`. Any other exception
+      propagates. `break value` inside the block must work as usual (it does automatically when you
+      `yield`). Without a block, return an Enumerator.
+
+      ```ruby
+      e = [1, 2].each
+      my_loop { e.next }        # => [1, 2]  (StopIteration#result is each's return value)
+      my_loop { break :done }   # => :done
+      ```
+    starter_code: |
+      def my_loop
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_returns_stop_iteration_result
+          e = [1, 2].each
+          seen = []
+          result = my_loop { seen << e.next }
+          assert_equal [1, 2], seen
+          assert_equal [1, 2], result
+        end
+
+        def test_break_value
+          n = 0
+          assert_equal :done, my_loop { n += 1; break :done if n == 3 }
+          assert_equal 3, n
+        end
+
+        def test_other_errors_propagate
+          assert_raises(ArgumentError) { my_loop { raise ArgumentError } }
+        end
+
+        def test_enumerator_without_block
+          enum = my_loop
+          assert_kind_of Enumerator, enum
+          assert_equal [0, 1, 2], enum.lazy.map { 0 }.each_with_index.map { |_, i| i }.first(3)
+        end
+
+        def test_stop_iteration_result_nil_when_raised_manually
+          assert_nil my_loop { raise StopIteration }
+        end
+      end
+    solution: |
+      def my_loop
+        return to_enum(:my_loop) { Float::INFINITY } unless block_given?
+
+        while true
+          yield
+        end
+      rescue StopIteration => e
+        e.result
+      end
+    explanation: |
+      Three details make this senior-level: `StopIteration#result` carries the underlying `each`'s
+      return value (that is how `loop { e.next }` returns the array), `break` from the block is a
+      non-local exit that passes straight through `rescue`/`ensure` untouched, and the enumerator form
+      needs a size block (`Float::INFINITY`) so `lazy` chains know it is unbounded. Rescuing at the
+      method level rather than around each `yield` is simpler and equivalent here. Note a manually
+      raised `StopIteration` has `result` `nil`.
+    tags: [loop, StopIteration, enumerator]
+    source: https://docs.ruby-lang.org/en/3.3/Kernel.html
+
+  - slug: ruby-errors-code-with-resource-ensure
+    kind: code
+    difficulty: middle
+    title: "A resource wrapper that always closes"
+    body: |
+      Implement `with_resource(resource)` that yields `resource` to the block, returns the block's
+      value, and **always** calls `resource.close` afterwards, exactly once, even if the block raises.
+      If the block raised, that exception must propagate unchanged even when `close` itself raises
+      (a failure in `close` must not mask the block's error); if the block succeeded and `close`
+      raises, let that error propagate.
+
+      ```ruby
+      r = FakeResource.new
+      with_resource(r) { |x| x.read }  # => r.read's value; r.closed? == true
+      ```
+    starter_code: |
+      def with_resource(resource)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FakeResource
+        attr_reader :close_calls
+        def initialize(close_error: nil) = (@close_calls, @close_error = 0, close_error)
+        def read = "data"
+        def closed? = @close_calls.positive?
+        def close
+          @close_calls += 1
+          raise @close_error if @close_error
+        end
+      end
+
+      class SolutionTest < Minitest::Test
+        def test_returns_block_value_and_closes
+          r = FakeResource.new
+          assert_equal "data", with_resource(r) { |x| x.read }
+          assert_equal 1, r.close_calls
+        end
+
+        def test_closes_once_when_block_raises
+          r = FakeResource.new
+          assert_raises(IOError) { with_resource(r) { raise IOError, "boom" } }
+          assert_equal 1, r.close_calls
+        end
+
+        def test_block_error_wins_over_close_error
+          r = FakeResource.new(close_error: Errno::EACCES.new("close"))
+          err = assert_raises(IOError) { with_resource(r) { raise IOError, "boom" } }
+          assert_equal "boom", err.message
+          assert_equal 1, r.close_calls
+        end
+
+        def test_close_error_propagates_on_success
+          r = FakeResource.new(close_error: Errno::EACCES.new("close"))
+          assert_raises(Errno::EACCES) { with_resource(r) { :ok } }
+        end
+
+        def test_break_still_closes
+          r = FakeResource.new
+          [1].each { with_resource(r) { break } }
+          assert_equal 1, r.close_calls
+        end
+      end
+    solution: |
+      def with_resource(resource)
+        failed = false
+        yield resource
+      rescue Exception
+        failed = true
+        raise
+      ensure
+        begin
+          resource.close
+        rescue StandardError
+          raise unless failed # a close failure must not mask the block's error
+        end
+      end
+    explanation: |
+      `ensure` guarantees `close` runs on normal return, on `raise` and on `break`. The subtle part is
+      the "block error wins" rule: an exception raised inside `ensure` would replace the in-flight one.
+      The reference solution checks `$!`: if an exception is already propagating, swallow the `close`
+      failure; if the block succeeded (`$!` is `nil`), re-raise it. This mirrors how `File.open { }`
+      and most connection pools behave.
+    tags: [ensure, resources]
+    source: https://docs.ruby-lang.org/en/3.3/syntax/exceptions_rdoc.html
+
+  - slug: ruby-errors-code-result-try
+    kind: code
+    difficulty: middle
+    title: "A tiny `Result` object: `Result.try`"
+    body: |
+      Implement a class `Result` with `Result.ok(value)`, `Result.err(error)`, readers `value` and
+      `error`, predicates `ok?` / `err?`, and `Result.try { ... }` which runs the block and returns
+      `ok(block_value)` or, if it raises a `StandardError`, `err(exception)`. Add `Result#then` that,
+      for an ok result, yields the value and returns the block's `Result` (so steps chain), and for an
+      err result returns itself without calling the block. Also add `value_or(default)`.
+
+      ```ruby
+      Result.try { Integer("42") }.then { |n| Result.ok(n * 2) }.value   # => 84
+      Result.try { Integer("x") }.then { |n| Result.ok(n * 2) }.err?     # => true
+      Result.try { Integer("x") }.value_or(0)                            # => 0
+      ```
+    starter_code: |
+      class Result
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_ok_and_err_constructors
+          assert Result.ok(1).ok?
+          refute Result.ok(1).err?
+          assert_equal 1, Result.ok(1).value
+          e = Result.err(ArgumentError.new("bad"))
+          assert e.err?
+          assert_equal "bad", e.error.message
+        end
+
+        def test_try_captures_standard_errors
+          r = Result.try { Integer("x") }
+          assert r.err?
+          assert_instance_of ArgumentError, r.error
+          assert_equal 42, Result.try { Integer("42") }.value
+        end
+
+        def test_try_lets_non_standard_errors_through
+          assert_raises(Interrupt) { Result.try { raise Interrupt } }
+        end
+
+        def test_then_chains_and_short_circuits
+          assert_equal 84, Result.try { Integer("42") }.then { |n| Result.ok(n * 2) }.value
+          called = false
+          r = Result.try { Integer("x") }.then { |_| called = true; Result.ok(0) }
+          assert r.err?
+          refute called
+        end
+
+        def test_value_or
+          assert_equal 0, Result.try { Integer("x") }.value_or(0)
+          assert_equal 5, Result.ok(5).value_or(0)
+        end
+      end
+    solution: |
+      class Result
+        attr_reader :value, :error
+
+        def self.ok(value) = new(value, nil, true)
+        def self.err(error) = new(nil, error, false)
+
+        def self.try
+          ok(yield)
+        rescue StandardError => e
+          err(e)
+        end
+
+        def initialize(value, error, ok)
+          @value, @error, @ok = value, error, ok
+        end
+
+        def ok? = @ok
+        def err? = !@ok
+        def then = ok? ? yield(value) : self
+        def value_or(default) = ok? ? value : default
+      end
+    explanation: |
+      This is the "exceptions vs return values" discussion turned into code: `try` converts the
+      exceptional path into data exactly once at a boundary, `then` makes failures short-circuit
+      without `rescue` noise, and only `StandardError` is captured so `Interrupt`/`SystemExit` still
+      behave. Real libraries (dry-monads `Result`, `Try`) add `fmap`, `or`, pattern matching via
+      `deconstruct_keys`; the core idea fits in 20 lines.
+    tags: [result, design]
+    source: https://blog.honeybadger.io/understanding-the-ruby-exception-hierarchy/
+
+  - slug: ruby-errors-code-rescuable-by-bare-rescue
+    kind: code
+    difficulty: junior
+    title: "Would a bare `rescue` catch it?"
+    body: |
+      Implement `rescuable?(klass)` that returns `true` if an exception of class `klass` would be
+      caught by a plain `rescue => e` (no class list), and `false` otherwise. Raise `ArgumentError` if
+      `klass` is not an exception class at all.
+
+      ```ruby
+      rescuable?(ZeroDivisionError) # => true
+      rescuable?(Interrupt)         # => false
+      rescuable?(String)            # raises ArgumentError
+      ```
+    starter_code: |
+      def rescuable?(klass)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def test_standard_errors_are_rescuable
+          assert rescuable?(ZeroDivisionError)
+          assert rescuable?(KeyError)
+          assert rescuable?(Errno::ENOENT)
+          assert rescuable?(StandardError)
+        end
+
+        def test_non_standard_errors_are_not
+          refute rescuable?(Interrupt)
+          refute rescuable?(SystemExit)
+          refute rescuable?(NoMemoryError)
+          refute rescuable?(NotImplementedError)
+          refute rescuable?(Exception)
+        end
+
+        def test_custom_classes
+          custom = Class.new(StandardError)
+          assert rescuable?(custom)
+          refute rescuable?(Class.new(Exception))
+        end
+
+        def test_non_exception_raises
+          assert_raises(ArgumentError) { rescuable?(String) }
+          assert_raises(ArgumentError) { rescuable?("KeyError") }
+        end
+      end
+    solution: |
+      def rescuable?(klass)
+        raise ArgumentError, "not an exception class" unless klass.is_a?(Class) && klass <= Exception
+        klass <= StandardError
+      end
+    explanation: |
+      `Module#<=` is the "is a subclass of or equal to" operator (`nil` when unrelated, which is why the
+      guard comes first). The test list doubles as a cheat sheet: `Errno::*` and `KeyError` are
+      rescuable, `Interrupt`, `SystemExit`, `NoMemoryError` and `NotImplementedError` (a `ScriptError`)
+      are not. Interviewers like this because it checks both the hierarchy knowledge and the
+      `<=`/`ancestors` API.
+    tags: [hierarchy, StandardError]
+    source: https://thoughtbot.com/blog/rescue-standarderror-not-exception

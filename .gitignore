@@ -1,0 +1,7 @@
+/.bundle/
+/vendor/bundle/
+/tmp/
+*.log
+erl_crash.dump
+.env
+.DS_Store

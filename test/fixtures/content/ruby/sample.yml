@@ -1,0 +1,27 @@
+language: ruby
+topic: sample
+items:
+  - slug: ruby-sample-mcq
+    kind: mcq
+    difficulty: junior
+    title: "Sample mcq"
+    body: "Which is falsy?"
+    choices: ["0", "nil", "\"\""]
+    answer: 1
+    explanation: Only nil and false are falsy.
+    tags: [truthiness]
+    source: https://docs.ruby-lang.org
+  - slug: ruby-sample-code
+    kind: code
+    difficulty: junior
+    title: "Sample code"
+    body: "Implement add(a, b)."
+    starter_code: "def add(a, b)\nend\n"
+    solution: "def add(a, b) = a + b\n"
+    tests: |
+      require "minitest/autorun"
+      class AddTest < Minitest::Test
+        def test_add = assert_equal 3, add(1, 2)
+      end
+    explanation: Trivial.
+    source: fixture

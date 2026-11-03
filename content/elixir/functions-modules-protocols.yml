@@ -1,0 +1,1598 @@
+language: elixir
+topic: functions-modules-protocols
+items:
+  - slug: elixir-fmp-arity-is-identity
+    kind: mcq
+    difficulty: junior
+    title: "How many functions does this module define?"
+    body: |
+      ```elixir
+      defmodule M do
+        def add(a, b), do: a + b
+        def add(a, b, c), do: a + b + c
+        def add(a, b) when is_float(a), do: Float.round(a + b, 2)
+      end
+      ```
+    choices:
+      - "One function, `add`, with three clauses"
+      - "Two functions: `add/2` (two clauses) and `add/3`"
+      - "Three functions, one per `def`"
+      - "It does not compile: `add/2` is defined twice"
+    answer: 1
+    explanation: |
+      In Elixir (and Erlang) a function's identity is its name **and** arity, written `add/2`.
+      `add/2` and `add/3` are unrelated functions that happen to share a name. The two `def add(a, b)`
+      lines are two clauses of the *same* function `add/2`, tried top to bottom (the compiler will warn
+      that the float clause can never match because the first clause already matches everything, and
+      that clauses should be grouped together). "One function with three clauses" is the Ruby-shaped
+      intuition; it is wrong because arity is part of the name.
+    tags: [arity, functions]
+    source: https://elixir.hexdocs.pm/modules-and-functions.html
+
+  - slug: elixir-fmp-capture-shorthand-limits
+    kind: mcq
+    difficulty: junior
+    title: "Which capture expression does NOT compile?"
+    body: |
+      Each line is meant to build an anonymous function with the `&` capture operator.
+      Which one is rejected by the compiler?
+
+      ```elixir
+      a = &(&1 + 1)
+      b = &{&1, &2}
+      c = & &1
+      d = &(1 + 2)
+      ```
+    choices:
+      - "`a` — arithmetic is not allowed inside a capture"
+      - "`b` — tuples cannot be captured"
+      - "`c` — a bare `&1` has no call to capture"
+      - "`d` — a capture must use at least one `&N` argument"
+    answer: 3
+    explanation: |
+      The shorthand `&(expr)` only works when `expr` mentions at least one positional placeholder
+      `&1`, `&2`, …; `&(1 + 2)` has none, so the compiler says "expected one of: &Mod.fun/arity,
+      &fun/arity, or &some_code(&1, ...) containing at least one argument". `& &1` is the identity
+      function (`Function.identity/1` exists for readability), and `&{&1, &2}` builds a tuple.
+      Other limits worth knowing: placeholders must be numbered without gaps (`&2` without `&1` is an
+      error), captures cannot be nested, and `&1` cannot appear outside the capture expression.
+    tags: [capture, anonymous-functions]
+    source: https://elixir.hexdocs.pm/anonymous-functions.html
+
+  - slug: elixir-fmp-closure-captures-value
+    kind: mcq
+    difficulty: junior
+    title: "What does `f.()` return after `x` is rebound?"
+    body: |
+      ```elixir
+      x = 1
+      f = fn -> x end
+      x = 2
+      f.()
+      ```
+    choices:
+      - "`1`"
+      - "`2`"
+      - "`nil` — `x` inside the fn is unbound"
+      - "A compile error: `x` cannot be rebound while captured"
+    answer: 0
+    explanation: |
+      Closures capture the **value** bound at the moment the `fn` is created, not the variable.
+      Rebinding `x = 2` afterwards creates a new binding; the closure still holds `1`. This is a direct
+      consequence of immutability: there is no shared mutable cell to observe. Candidates coming from
+      JavaScript or Ruby often answer `2`, because those languages close over the variable slot.
+      The same rule applies the other way around: assigning to `x` inside a `fn` never changes the
+      outer `x`.
+    tags: [closures, immutability]
+    source: https://elixir.hexdocs.pm/anonymous-functions.html
+
+  - slug: elixir-fmp-named-vs-anonymous
+    kind: open
+    difficulty: junior
+    title: "Named vs anonymous functions: what are the differences?"
+    body: |
+      Explain the differences between a named function (`def`) and an anonymous function (`fn`)
+      in Elixir. Cover definition, calling, identity and how you convert between them.
+    answer: |
+      - Named functions live inside a module (`def`/`defp`) and are identified by `Module.name/arity`;
+        anonymous functions are values created with `fn ... end` (or `&`) and can be bound to variables,
+        passed around and returned.
+      - Calling: `Mod.fun(x)` vs `fun.(x)` — the dot makes it explicit you are invoking a value.
+      - Anonymous functions are closures: they capture the values of variables in scope at creation.
+        Named functions have no environment.
+      - Both support multiple clauses, pattern matching and guards; all clauses of a `fn` must have the
+        same arity.
+      - `&Mod.fun/2` turns a named function into a first-class value; `&(&1 + 1)` is sugar for a `fn`.
+      - Named functions can be called recursively by name; an anonymous function has no name to recurse on
+        (you need a Y-combinator trick or a named helper).
+      - `defp` functions are private: not exported, not capturable from outside, invisible to `apply/3`.
+    explanation: |
+      Follow-ups: "Why the dot?" (to tell `is_atom(x)` from `is_atom.(x)` and because `fun` is a
+      variable, not a compile-time name). "Can a private function be captured?" Only from inside its
+      module. "What does `Function.info(fun)[:type]` return?" `:local` for closures, `:external` for
+      `&Mod.fun/n` captures.
+    tags: [functions, anonymous-functions]
+    source: https://elixir.hexdocs.pm/anonymous-functions.html
+
+  - slug: elixir-fmp-code-default-args
+    kind: code
+    difficulty: junior
+    title: "Greeter with default arguments and multiple arities"
+    body: |
+      Write a module `Greeter` with a function `greet/2` whose second argument defaults to `"Hello"`:
+
+      ```elixir
+      Greeter.greet("Ann")        #=> "Hello, Ann!"
+      Greeter.greet("Ann", "Hi")  #=> "Hi, Ann!"
+      Greeter.greet("", "Hi")     #=> "Hi, stranger!"
+      ```
+
+      An empty name must become `"stranger"`. Use pattern matching / multiple clauses, which means you
+      will need a bodiless function head for the default.
+    starter_code: |
+      defmodule Greeter do
+        # TODO: greet/2 with a default greeting of "Hello"
+        def greet(name, greeting) do
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule GreeterTest do
+        use ExUnit.Case
+
+        test "default greeting" do
+          assert Greeter.greet("Ann") == "Hello, Ann!"
+        end
+
+        test "custom greeting" do
+          assert Greeter.greet("Ann", "Hi") == "Hi, Ann!"
+        end
+
+        test "empty name becomes stranger" do
+          assert Greeter.greet("") == "Hello, stranger!"
+          assert Greeter.greet("", "Hi") == "Hi, stranger!"
+        end
+
+        test "both arities are exported" do
+          assert function_exported?(Greeter, :greet, 1)
+          assert function_exported?(Greeter, :greet, 2)
+        end
+      end
+    solution: |
+      defmodule Greeter do
+        def greet(name, greeting \\ "Hello")
+        def greet("", greeting), do: "#{greeting}, stranger!"
+        def greet(name, greeting), do: "#{greeting}, #{name}!"
+      end
+    explanation: |
+      `\\` declares a default; the compiler generates one function per arity (`greet/1` and `greet/2`),
+      which is why `function_exported?/3` is true for both. When a function with defaults has several
+      clauses, the defaults must be declared once on a bodiless head (`def greet(name, greeting \\ "Hello")`);
+      repeating them on each clause is a compile error. The default expression is evaluated on every call,
+      not once at definition time.
+    tags: [default-arguments, arity, code]
+    source: https://elixir.hexdocs.pm/modules-and-functions.html
+
+  - slug: elixir-fmp-defaults-multiple-clauses
+    kind: mcq
+    difficulty: middle
+    title: "What happens when defaults are declared on two clauses?"
+    body: |
+      ```elixir
+      defmodule J do
+        def join(a, b, sep \\ " ") when is_binary(a), do: a <> sep <> b
+        def join(a, b, sep \\ " "), do: "#{a}#{sep}#{b}"
+      end
+      ```
+    choices:
+      - "It compiles; both clauses share the default"
+      - "It compiles with a warning and the second default is ignored"
+      - "Compile error: defaults may only be declared once per definition — use a function head"
+      - "Runtime `FunctionClauseError` when `join/2` is called"
+    answer: 2
+    explanation: |
+      The compiler raises "def join/3 defines defaults multiple times. Elixir allows defaults to be
+      declared once per definition" and shows the fix: a bodiless head `def join(a, b, sep \\ " ")`
+      followed by the clauses without defaults. Function heads cannot carry patterns or guards, which is
+      exactly why the default has to be hoisted. This is one of the most common compile errors people hit
+      the first week with Elixir, so interviewers use it to check whether you actually wrote multi-clause
+      functions.
+    tags: [default-arguments, compile-errors]
+    source: https://elixir.hexdocs.pm/modules-and-functions.html
+
+  - slug: elixir-fmp-tail-calls-accumulator
+    kind: theory
+    difficulty: senior
+    title: "Tail calls, body recursion and the accumulator idiom"
+    body: |
+      Elixir has no loops; iteration is recursion. Two shapes matter:
+
+      ```elixir
+      # body-recursive: work happens after the recursive call returns
+      def sum([]), do: 0
+      def sum([h | t]), do: h + sum(t)
+
+      # tail-recursive: the recursive call is the last thing; state travels in an accumulator
+      def sum(list), do: sum(list, 0)
+      defp sum([], acc), do: acc
+      defp sum([h | t], acc), do: sum(t, acc + h)
+      ```
+
+      The BEAM guarantees **last-call optimisation**: a call in tail position reuses the current
+      stack frame, so `sum/2` runs in constant stack space and can loop forever (this is how a
+      GenServer's receive loop, `Stream.iterate` and every `loop/1` you write work). The body-recursive
+      `sum/1` grows the stack by one frame per element; for a million elements that is fine on the
+      BEAM (stacks live on the heap and grow), but it is not a loop.
+
+      Two nuances a senior candidate should know:
+
+      - The Erlang efficiency guide says the old rule "tail recursion is always faster" is a myth for
+        functions that **build a list**: a body-recursive `map` and a tail-recursive map plus
+        `:lists.reverse/1` cost about the same. Prefer the readable one; measure if it matters.
+      - For functions that do *not* build a list (sum, count, loops) the tail-recursive accumulator
+        version is still the right call because it uses constant memory.
+
+      The accumulator idiom is: public `f/1` delegates to private `f/2` with the initial state,
+      results are *prepended* (O(1)) and reversed once at the end.
+    answer: |
+      **Q:** Why does `def loop(state), do: loop(handle(receive_msg(), state))` not overflow the stack
+      after a billion iterations?
+      **A:** The recursive call is in tail position, so the BEAM replaces the current frame instead of
+      pushing a new one (last-call optimisation). Only a call that is the final expression qualifies;
+      `1 + loop(...)` is not a tail call because the addition still has to run afterwards.
+    explanation: |
+      Interviewers probe this with "is `try ... loop() ... rescue` a tail call?" (no: the `try` frame
+      must survive the call) and "why is `Enum.reduce/3` over a huge list memory-safe?" (it is tail
+      recursive with an accumulator). The body-vs-tail "myth" nuance from the Erlang efficiency guide
+      is what separates senior answers from rote ones.
+    tags: [recursion, tail-call, performance]
+    source: https://www.erlang.org/doc/system/listhandling.html
+
+  - slug: elixir-fmp-code-run-length-recursion
+    kind: code
+    difficulty: middle
+    title: "Run-length encode a list with explicit recursion"
+    body: |
+      Write `Rle.encode/1` that collapses consecutive equal elements into `{element, count}` tuples.
+      Use explicit recursion with an accumulator (no `Enum`/`Stream`).
+
+      ```elixir
+      Rle.encode([:a, :a, :b, :a, :a, :a])  #=> [a: 2, b: 1, a: 3]
+      Rle.encode([])                         #=> []
+      ```
+    starter_code: |
+      defmodule Rle do
+        def encode(list) do
+          # TODO: recurse with an accumulator; remember to reverse at the end
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule RleTest do
+        use ExUnit.Case
+
+        test "collapses runs" do
+          assert Rle.encode([:a, :a, :b, :a, :a, :a]) == [a: 2, b: 1, a: 3]
+        end
+
+        test "single elements" do
+          assert Rle.encode([1, 2, 3]) == [{1, 1}, {2, 1}, {3, 1}]
+        end
+
+        test "empty list" do
+          assert Rle.encode([]) == []
+        end
+
+        test "one long run" do
+          assert Rle.encode(List.duplicate("x", 5)) == [{"x", 5}]
+        end
+
+        test "does not use Enum" do
+          assert not String.contains?(inspect(Rle.__info__(:compile)), "Enum")
+        end
+      end
+    solution: |
+      defmodule Rle do
+        def encode(list), do: do_encode(list, [])
+
+        defp do_encode([], acc), do: :lists.reverse(acc)
+        defp do_encode([h | t], [{h, n} | acc]), do: do_encode(t, [{h, n + 1} | acc])
+        defp do_encode([h | t], acc), do: do_encode(t, [{h, 1} | acc])
+      end
+    explanation: |
+      The trick is matching the head of the accumulator in the same pattern as the head of the input:
+      `do_encode([h | t], [{h, n} | acc])` only matches when the current element equals the element of
+      the run being built (same variable `h` twice means "must be equal"). Results are prepended and the
+      accumulator reversed once at the end, giving O(n). Clause order matters: the "extend run" clause
+      must come before the "start new run" clause. The `__info__` test is only a nudge, not a real
+      enforcement; interviewers want to see the recursion.
+    tags: [recursion, accumulator, pattern-matching, code]
+    source: https://elixir.hexdocs.pm/recursion.html
+
+  - slug: elixir-fmp-partial-application-no-currying
+    kind: open
+    difficulty: middle
+    title: "Does Elixir curry? How do you partially apply a function?"
+    body: |
+      A candidate writes `add = fn a, b -> a + b end` and then `inc = add.(1)` expecting a
+      one-argument function. What happens, and what is the idiomatic way to get `inc`?
+    answer: |
+      - `add.(1)` raises `BadArityError` — Elixir functions are not curried; arity is fixed and every
+        call must supply all arguments.
+      - Partial application is done manually with a closure: `inc = fn x -> add.(1, x) end` or the
+        capture shorthand `inc = &add.(1, &1)`; for named functions `&Kernel.+(1, &1)`.
+      - The closure captures the *value* `1` at creation; it is a normal anonymous function of arity 1.
+      - Currying is uncommon in idiomatic Elixir because the pipe operator plus first-argument
+        convention (`Enum.map(list, fun)`) covers most composition needs.
+      - Libraries can add currying (there is no `Function.curry`), but interviews expect you to reach for
+        closures, `&`, and pipes.
+    explanation: |
+      Follow-up: "What is the arity of `&Enum.map(&1, &inc/1)`?" One: `&1` is the only placeholder.
+      Common mistake: thinking `&add/1` partially applies `add/2`; it instead looks for a function named
+      `add` with arity 1 and fails at compile time ("undefined function add/1").
+    tags: [currying, closures, higher-order-functions]
+    source: https://elixir.hexdocs.pm/anonymous-functions.html
+
+  - slug: elixir-fmp-import-only-scope
+    kind: mcq
+    difficulty: junior
+    title: "What does `import ... only:` leave available?"
+    body: |
+      ```elixir
+      defmodule Report do
+        import Enum, only: [map: 2]
+
+        def run(xs), do: xs |> map(&(&1 * 2)) |> filter(&(&1 > 2))
+      end
+      ```
+    choices:
+      - "It works: `filter/2` is still found in `Enum` because `only:` only affects warnings"
+      - "Compile error: `filter/2` is undefined — only `map/2` was imported"
+      - "It works but emits an 'unused import' warning"
+      - "Runtime `UndefinedFunctionError` the first time `run/1` is called"
+    answer: 1
+    explanation: |
+      `import Enum, only: [map: 2]` makes exactly `map/2` callable without the module prefix; `filter/2`
+      is still `Enum.filter/2` and must be written that way. Unqualified calls are resolved at compile
+      time (local, then imported), so the failure is a compile error, not a runtime one. `except:` is the
+      inverse. The docs recommend `only:` over bare `import Enum` to avoid name clashes and to make the
+      origin obvious; in your own code prefer `alias` and qualified calls.
+    tags: [import, scope]
+    source: https://elixir.hexdocs.pm/alias-require-and-import.html
+
+  - slug: elixir-fmp-alias-import-require-use
+    kind: open
+    difficulty: middle
+    title: "Explain `alias`, `import`, `require` and `use`"
+    body: |
+      What does each of `alias`, `import`, `require` and `use` do, and when do you need each?
+      Where is their effect visible?
+    answer: |
+      - `alias Foo.Bar` lets you write `Bar`; `alias Foo.Bar, as: B` picks another name. Pure
+        renaming, no code loading. `alias Foo.{Bar, Baz}` for siblings.
+      - `import Mod` brings functions/macros into the local namespace so you call `fun(x)` without a
+        prefix; restrict with `only: [fun: 1]` or `except:`. Prefer `only:` to avoid ambiguity.
+      - `require Mod` makes `Mod`'s **macros** available; macros expand at compile time, so the compiler
+        must know about the module first. Needed for `Integer.is_odd/1`, `Logger.debug/1` …
+        (`import` implies `require`.)
+      - `use Mod` calls `require Mod` and then invokes the `Mod.__using__/1` macro, which injects
+        arbitrary code (imports, `@behaviour`, default callback implementations) into the caller.
+        Use only when the library asks for it; it is the least transparent of the four.
+      - All four are **lexically scoped**: inside a function they apply only to that function body.
+    explanation: |
+      Follow-ups: "Why does `Integer.is_odd(3)` fail without `require Integer`?" Because it is a macro
+      (so it can be used in guards). "What does `use GenServer` actually do?" Adds
+      `@behaviour GenServer`, defines default callbacks marked `defoverridable`, and a `child_spec/1`.
+      Mistake: thinking `alias` loads or compiles the module — it is just a name mapping.
+    tags: [alias, import, require, use]
+    source: https://elixir.hexdocs.pm/alias-require-and-import.html
+
+  - slug: elixir-fmp-use-expands-to
+    kind: mcq
+    difficulty: middle
+    title: "What does `use Feature, opt: 1` expand to?"
+    body: |
+      Pick the expansion the compiler performs for `use Feature, opt: 1` inside `defmodule App`.
+    choices:
+      - "`alias Feature` followed by `Feature.init(opt: 1)` at runtime"
+      - "`require Feature` followed by the macro call `Feature.__using__(opt: 1)`"
+      - "`import Feature, only: [opt: 1]`"
+      - "It copies every public function of `Feature` into `App`"
+    answer: 1
+    explanation: |
+      `use` is a macro: it requires the module (so its macros are usable) and then calls the module's
+      `__using__/1` macro with the options; whatever quoted code `__using__` returns is injected into the
+      calling module. It is therefore an extension point, not inheritance — the injected code typically
+      sets `@behaviour`, `import`s helpers and defines overridable defaults. Nothing is copied
+      wholesale, and no runtime call happens unless the injected code makes one.
+    tags: [use, macros]
+    source: https://elixir.hexdocs.pm/alias-require-and-import.html
+
+  - slug: elixir-fmp-module-attributes-compile-time
+    kind: theory
+    difficulty: middle
+    title: "Module attributes are compile-time constants"
+    body: |
+      `@name value` inside a module stores a value in the module *while it is being compiled*.
+      Reading `@name` later in the same module inlines the value that was current at that point:
+
+      ```elixir
+      defmodule Cfg do
+        @timeout 5_000
+        @timeout_ms @timeout * 2          # computed at compile time
+        @tags [:a]
+        @tags [:b | @tags]                 # reassignment, not accumulation
+
+        def timeout, do: @timeout_ms       # literal 10_000 baked into the function
+        def tags, do: @tags                # [:b, :a]
+      end
+      ```
+
+      Consequences interviewers like:
+
+      - Any expression on the right-hand side runs **at compile time**. `@now DateTime.utc_now()`
+        freezes the build time forever; `@env System.get_env("X")` reads the *build* machine's env.
+      - Calling another module's function in an attribute creates a **compile-time dependency** on it.
+      - Attributes are not visible at runtime unless persisted; `Module.get_attribute/2` works only
+        during compilation. `@impl`, `@doc`, `@spec`, `@behaviour`, `@derive`, `@enforce_keys` are
+        attributes with special meaning to the compiler.
+      - `Module.register_attribute(__MODULE__, :x, accumulate: true)` turns repeated `@x` into a list
+        (newest first); this is how plug pipelines and `@callback` lists are collected.
+      - Reading an attribute that was never set emits a warning and yields `nil`.
+    answer: |
+      **Q:** `@now DateTime.utc_now()` and `def now, do: @now` — what does `Cfg.now()` return on two
+      calls a minute apart?
+      **A:** The same `DateTime` both times: the value was computed once when the module compiled and
+      is embedded as a literal in the function body.
+    explanation: |
+      Related follow-ups: "How do you read runtime config then?" — `Application.get_env/3` or
+      `Application.compile_env/3` (which makes the compile-time read explicit and verified at boot).
+      "Why does changing a config file not change `@attr`?" — because the module is not recompiled.
+    tags: [module-attributes, compile-time]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-fmp-attribute-frozen-at-compile
+    kind: mcq
+    difficulty: middle
+    title: "What is wrong with this cache-key helper?"
+    body: |
+      ```elixir
+      defmodule Keys do
+        @prefix System.get_env("CACHE_PREFIX") || "dev"
+        def key(id), do: "#{@prefix}:#{id}"
+      end
+      ```
+      The team sets `CACHE_PREFIX=prod` on the production servers, yet keys come out as `"dev:…"`.
+      Why?
+    choices:
+      - "`System.get_env/1` is not allowed in attributes and silently returns `nil`"
+      - "The attribute was evaluated at compile time on the build machine, where the variable was unset"
+      - "String interpolation of attributes needs `@prefix.()`"
+      - "`||` short-circuits to `\"dev\"` because env vars are charlists, which are falsy"
+    answer: 1
+    explanation: |
+      Attribute right-hand sides run during compilation. The release was compiled in CI, where
+      `CACHE_PREFIX` was not set, so `"dev"` was baked into the beam file; setting the variable at
+      runtime cannot change a literal. Fix: read it at runtime (`System.get_env/1` inside the function,
+      or `Application.get_env/3` populated by `config/runtime.exs`). Charlists are not falsy (only `nil`
+      and `false` are), and `System.get_env/1` returns a binary anyway.
+    tags: [module-attributes, configuration]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-fmp-code-behaviour-parser
+    kind: code
+    difficulty: middle
+    title: "Define a behaviour and two implementations"
+    body: |
+      Define a behaviour `Parser` with one callback `parse(String.t()) :: {:ok, term()} | :error`
+      and a helper `Parser.run(mod, input)` that calls `mod.parse(input)`.
+
+      Then implement two modules that adopt it with `@behaviour Parser` and `@impl true`:
+
+      - `IntParser.parse/1` — `"42"` → `{:ok, 42}`, anything that is not an integer → `:error`
+      - `BoolParser.parse/1` — `"true"`/`"false"` → `{:ok, true}`/`{:ok, false}`, else `:error`
+    starter_code: |
+      defmodule Parser do
+        # TODO: @callback parse(String.t()) :: {:ok, term()} | :error
+        def run(mod, input), do: mod.parse(input)
+      end
+
+      defmodule IntParser do
+        # TODO
+      end
+
+      defmodule BoolParser do
+        # TODO
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ParserBehaviourTest do
+        use ExUnit.Case
+
+        test "behaviour declares the callback" do
+          assert {:parse, 1} in Parser.behaviour_info(:callbacks)
+        end
+
+        test "int parser" do
+          assert IntParser.parse("42") == {:ok, 42}
+          assert IntParser.parse("-7") == {:ok, -7}
+          assert IntParser.parse("4x") == :error
+          assert IntParser.parse("") == :error
+        end
+
+        test "bool parser" do
+          assert BoolParser.parse("true") == {:ok, true}
+          assert BoolParser.parse("false") == {:ok, false}
+          assert BoolParser.parse("yes") == :error
+        end
+
+        test "dynamic dispatch through the behaviour" do
+          assert Parser.run(IntParser, "1") == {:ok, 1}
+          assert Parser.run(BoolParser, "1") == :error
+        end
+      end
+    solution: |
+      defmodule Parser do
+        @callback parse(String.t()) :: {:ok, term()} | :error
+        def run(mod, input), do: mod.parse(input)
+      end
+
+      defmodule IntParser do
+        @behaviour Parser
+
+        @impl true
+        def parse(s) do
+          case Integer.parse(s) do
+            {n, ""} -> {:ok, n}
+            _ -> :error
+          end
+        end
+      end
+
+      defmodule BoolParser do
+        @behaviour Parser
+
+        @impl true
+        def parse("true"), do: {:ok, true}
+        def parse("false"), do: {:ok, false}
+        def parse(_), do: :error
+      end
+    explanation: |
+      `@callback` records the contract; the compiler generates `behaviour_info/1` so tools (and your
+      tests) can introspect it. `@behaviour Parser` plus `@impl true` makes the compiler warn if a
+      callback is missing or misspelled. `Parser.run/2` shows the point of behaviours: the *module* is
+      the polymorphic value (`mod.parse(input)` dispatches on an atom), which is why they are the right
+      tool for pluggable adapters, GenServer callbacks and mocks.
+    tags: [behaviour, callback, code]
+    source: https://elixir.hexdocs.pm/typespecs.html
+
+  - slug: elixir-fmp-polymorphism-which-tool
+    kind: open
+    difficulty: senior
+    title: "Protocols vs behaviours vs pattern matching — when to use which?"
+    body: |
+      You need polymorphic behaviour in an Elixir codebase. Compare protocols, behaviours and
+      plain multi-clause pattern matching. When is each the right tool?
+    answer: |
+      - **Pattern matching** (multi-clause functions): all cases known and owned by you, in one place.
+        Fastest, simplest, closed set. Example: handling `{:ok, _}` / `{:error, _}`, a fixed set of
+        shapes.
+      - **Protocols** dispatch on the **data type** of the first argument (`Enumerable`, `String.Chars`,
+        `Inspect`). Open for extension: third parties can `defimpl` for their structs without touching
+        your code. Use when the set of types is open and the operation belongs to the data.
+      - **Behaviours** dispatch on a **module** (atom) that you pass or configure (`GenServer`, `Plug`,
+        `Ecto.Adapter`). Use for pluggable strategies, adapters, callbacks and for mocks (Mox is built on
+        behaviours). Compiler checks callbacks via `@impl`.
+      - Rule of thumb: "is it a property of the value?" → protocol; "is it a swappable module /
+        strategy?" → behaviour; "is it a closed set I own?" → pattern match.
+      - Cost: protocol dispatch adds a lookup unless consolidated (Mix consolidates in releases, so it is
+        cheap); behaviours cost one `mod.fun` remote call; pattern matching is a jump table.
+      - `Access` is a behaviour rather than a protocol on purpose: `data[key]` must work on `nil` and on
+        plain maps/lists without a protocol dispatch on every bracket.
+    explanation: |
+      Expect follow-ups: "Can a protocol have a default implementation?" (`@fallback_to_any` + `Any`,
+      or `@derive`). "How do you mock an HTTP client?" (behaviour + Mox / app config). "Why not just
+      `case` on `__struct__`?" (works but closed: external structs cannot be added without editing you.)
+    tags: [protocols, behaviours, polymorphism, design]
+    source: https://elixirforum.com/t/why-is-access-a-behaviour-instead-of-a-protocol-when-to-use-a-protocol-instead-of-a-behaviour/1020
+
+  - slug: elixir-fmp-impl-true-effect
+    kind: mcq
+    difficulty: middle
+    title: "What does `@impl true` actually do?"
+    body: |
+      A teammate says `@impl true` is "just documentation". Which statement is accurate?
+    choices:
+      - "It is purely cosmetic; the compiler ignores it"
+      - "It makes the function private to the behaviour's module"
+      - "It tells the compiler the function implements a callback: it warns if no such callback exists, warns on other unmarked callbacks, and sets `@doc false` by default"
+      - "It generates the function from the behaviour's default implementation"
+    answer: 2
+    explanation: |
+      With `@impl true` (or `@impl Behaviour`) the compiler checks that a matching `@callback` exists in
+      one of the module's behaviours — catching `handle_cast/3` typos that would otherwise be dead public
+      functions. Once one function is marked, every other callback implementation must be marked too, or
+      the compiler warns. Marked functions get `@doc false` unless you document them explicitly. It does
+      not change visibility and does not generate code; missing callbacks are reported regardless of
+      `@impl` (as warnings).
+    tags: [behaviour, impl]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-fmp-callbacks-optional-macro
+    kind: open
+    difficulty: middle
+    title: "`@callback`, `@optional_callbacks`, `@macrocallback`: what happens when a callback is missing?"
+    body: |
+      Explain the three attributes used to define a behaviour. If a module declares `@behaviour Foo`
+      but forgets one of the callbacks, what does the compiler do — and how do `GenServer` modules get
+      away with implementing only `init/1`?
+    answer: |
+      - `@callback name(args) :: return` declares a required function with a typespec.
+      - `@macrocallback` declares a required **macro** (rare; used by e.g. `Plug.Router`-style DSLs).
+      - `@optional_callbacks [name: arity]` marks callbacks that implementations may omit; the generated
+        `behaviour_info(:optional_callbacks)` lists them.
+      - A missing required callback is a **compile-time warning** ("function x/1 required by behaviour
+        Foo is not implemented"), not an error; the module still compiles, and the failure shows up at
+        runtime as `UndefinedFunctionError` when the callback is invoked.
+      - `use GenServer` injects default implementations for `handle_call/3`, `handle_cast/2`,
+        `handle_info/2`, `terminate/2`, `code_change/3` etc. and marks them `defoverridable`, so only
+        `init/1` is left for you. The optional ones (`format_status`, `handle_continue`, …) are in
+        `@optional_callbacks`.
+    explanation: |
+      Follow-ups: "How do you turn that warning into a failure in CI?" — `mix compile --warnings-as-errors`.
+      "How can you inspect a behaviour's callbacks at runtime?" — `Foo.behaviour_info(:callbacks)`.
+    tags: [behaviour, callback, optional-callbacks]
+    source: https://elixir.hexdocs.pm/typespecs.html
+
+  - slug: elixir-fmp-code-protocol-area
+    kind: code
+    difficulty: middle
+    title: "Define an `Area` protocol with a fallback"
+    body: |
+      Define structs `Circle` (field `r`) and `Rect` (fields `w`, `h`) and a protocol `Area` with
+      `area/1`:
+
+      - `Area.area(%Circle{r: 1})` → `3.141592653589793` (use `:math.pi()`)
+      - `Area.area(%Rect{w: 2, h: 3})` → `6`
+      - any other value → `{:error, :unsupported}` (use `@fallback_to_any` and an `Any` impl)
+    starter_code: |
+      defmodule Circle do
+        defstruct [:r]
+      end
+
+      defmodule Rect do
+        defstruct [:w, :h]
+      end
+
+      defprotocol Area do
+        # TODO: @fallback_to_any true
+        def area(shape)
+      end
+
+      # TODO: defimpl Area for Circle, Rect and Any
+    tests: |
+      ExUnit.start()
+
+      defmodule AreaProtocolTest do
+        use ExUnit.Case
+
+        test "circle" do
+          assert_in_delta Area.area(%Circle{r: 1}), 3.14159, 0.0001
+          assert_in_delta Area.area(%Circle{r: 2}), 12.56637, 0.0001
+        end
+
+        test "rect" do
+          assert Area.area(%Rect{w: 2, h: 3}) == 6
+          assert Area.area(%Rect{w: 0, h: 3}) == 0
+        end
+
+        test "fallback for unsupported types" do
+          assert Area.area(:triangle) == {:error, :unsupported}
+          assert Area.area(%{w: 1, h: 1}) == {:error, :unsupported}
+        end
+
+        test "impls are registered" do
+          assert Area.impl_for(%Circle{r: 1}) == Area.Circle
+          assert Area.impl_for(42) == Area.Any
+        end
+      end
+    solution: |
+      defmodule Circle do
+        defstruct [:r]
+      end
+
+      defmodule Rect do
+        defstruct [:w, :h]
+      end
+
+      defprotocol Area do
+        @fallback_to_any true
+        def area(shape)
+      end
+
+      defimpl Area, for: Circle do
+        def area(%Circle{r: r}), do: :math.pi() * r * r
+      end
+
+      defimpl Area, for: Rect do
+        def area(%Rect{w: w, h: h}), do: w * h
+      end
+
+      defimpl Area, for: Any do
+        def area(_), do: {:error, :unsupported}
+      end
+    explanation: |
+      A protocol dispatches on the type of its first argument: structs dispatch to their own impl, and a
+      plain map (`%{w: 1, h: 1}`) is a `Map`, not a `Rect`, so it hits `Any`. Without
+      `@fallback_to_any true` the `Any` impl is ignored and unsupported values raise
+      `Protocol.UndefinedError` — the docs call raising the proper default because a generic
+      implementation rarely fits every type. `Area.impl_for/1` is the introspection function interviewers
+      use to show that `defimpl` just creates modules named `Area.Circle`, `Area.Any`, etc.
+    tags: [protocols, defimpl, fallback-to-any, code]
+    source: https://elixir.hexdocs.pm/Protocol.html
+
+  - slug: elixir-fmp-protocol-consolidation
+    kind: theory
+    difficulty: senior
+    title: "How protocol dispatch works and what consolidation changes"
+    body: |
+      `defprotocol Area` generates a module whose `area/1` does `Area.impl_for!(value).area(value)`.
+      `impl_for/1` has to map a value to an implementation module: a struct dispatches to
+      `Area.<StructModule>`, a list to `Area.List`, an integer to `Area.Integer`, and so on, with
+      `Area.Any` as last resort when `@fallback_to_any` is set.
+
+      **Unconsolidated** (iex, `.exs` scripts, `Mix.install` with `consolidate_protocols: false`), that
+      lookup is dynamic: for every call the protocol checks whether `Area.Circle` exists and is loaded
+      (`Code.ensure_compiled`), which costs a code-server round trip. Implementations can be added at
+      any time.
+
+      **Consolidated** (default for Mix projects at compile time, always in releases), the compiler
+      collects every implementation on the code path once all beams are known and rewrites `impl_for/1`
+      into a fixed `case` over the known types — plain pattern matching, no lookups. Dispatch becomes as
+      cheap as a function clause.
+
+      Consequences:
+
+      - `Protocol.consolidated?(Enumerable)` is `true` in a compiled app, `false` in a script.
+      - Defining a `defimpl` at runtime (in a test file, in iex) in a consolidated app prints a warning
+        ("the Enumerable protocol has already been consolidated") and the new impl is **ignored**.
+        Fix: put impls in `lib/`, or set `consolidate_protocols: Mix.env() != :test` in `mix.exs`, or add
+        the test support path to `elixirc_paths`.
+      - Consolidation is the reason protocols are "free" in production and the usual reason an
+        `UndefinedError` only shows up for a type nobody implemented.
+    answer: |
+      **Q:** Your `defimpl Inspect, for: Secret` lives in `test/support/` and in tests the secret still
+      prints in full. Why?
+      **A:** The app's protocols were consolidated before the test support file compiled, so the late
+      implementation is ignored (with a warning). Move the impl to `lib/` or disable consolidation in
+      the `:test` env.
+    explanation: |
+      Related questions: "Why is the first call to a protocol in iex slow?" (dynamic impl lookup).
+      "Does consolidation apply to behaviours?" (no; behaviours have no dispatch machinery at all).
+    tags: [protocols, consolidation, performance]
+    source: https://elixir.hexdocs.pm/Protocol.html
+
+  - slug: elixir-fmp-code-inspect-hide-secret
+    kind: code
+    difficulty: middle
+    title: "Keep a password out of `inspect` output"
+    body: |
+      Define a struct `Credential` with fields `user` and `password`. Make sure that
+      `inspect(%Credential{user: "alice", password: "s3cret"})` never contains the password
+      (logs and crash reports call `inspect`), while `cred.password` still returns the real value.
+
+      ```elixir
+      inspect(%Credential{user: "alice", password: "s3cret"})
+      #=> "#Credential<user: \"alice\", ...>"
+      ```
+    starter_code: |
+      defmodule Credential do
+        # TODO: hide :password from inspect (hint: @derive {Inspect, ...})
+        defstruct [:user, :password]
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CredentialInspectTest do
+        use ExUnit.Case
+
+        @cred %Credential{user: "alice", password: "s3cret"}
+
+        test "password is hidden" do
+          refute inspect(@cred) =~ "s3cret"
+        end
+
+        test "user is still shown" do
+          assert inspect(@cred) =~ "alice"
+        end
+
+        test "interpolation of inspect also hides it" do
+          refute "cred: #{inspect(@cred)}" =~ "s3cret"
+        end
+
+        test "the field itself is intact" do
+          assert @cred.password == "s3cret"
+          assert Map.fetch!(@cred, :password) == "s3cret"
+        end
+      end
+    solution: |
+      defmodule Credential do
+        @derive {Inspect, except: [:password]}
+        defstruct [:user, :password]
+      end
+    explanation: |
+      `@derive {Inspect, except: [...]}` (or `only: [...]`) generates an `Inspect` implementation that
+      prints `#Credential<user: "alice", ...>` — the `...` signals hidden fields and the `#Name<>`
+      syntax tells readers it is no longer valid Elixir. A hand-written `defimpl Inspect, for: Credential`
+      using `Inspect.Algebra` gives full control (e.g. print `password: "[REDACTED]"`). Either way this
+      only affects *display*; it is not encryption, and anything that reads the struct directly still
+      sees the value. Ecto's `redact: true` field option does the same for schemas.
+    tags: [inspect, protocols, security, code]
+    source: https://elixir.hexdocs.pm/Inspect.html
+
+  - slug: elixir-fmp-code-enumerable-for-struct
+    kind: code
+    difficulty: senior
+    title: "Make a custom struct Enumerable"
+    body: |
+      `Deck` wraps a list of cards: `%Deck{cards: [...]}`. Implement the `Enumerable` protocol for it
+      so that every `Enum` function and the `in` operator work on a deck:
+
+      ```elixir
+      deck = %Deck{cards: [:ace, :king, :queen]}
+      Enum.count(deck)          #=> 3
+      :king in deck             #=> true
+      Enum.map(deck, &to_string/1)  #=> ["ace", "king", "queen"]
+      ```
+
+      Implement all four callbacks: `count/1`, `member?/2`, `reduce/3` and `slice/1`.
+      Delegate `reduce/3` to `Enumerable.List.reduce/3`.
+    starter_code: |
+      defmodule Deck do
+        defstruct cards: []
+      end
+
+      defimpl Enumerable, for: Deck do
+        # TODO: count/1, member?/2, reduce/3, slice/1
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule DeckEnumerableTest do
+        use ExUnit.Case
+
+        @deck %Deck{cards: [:ace, :king, :queen, :jack]}
+
+        test "count and membership" do
+          assert Enum.count(@deck) == 4
+          assert :king in @deck
+          refute :joker in @deck
+        end
+
+        test "map / filter / reduce go through reduce/3" do
+          assert Enum.map(@deck, &Atom.to_string/1) == ["ace", "king", "queen", "jack"]
+          assert Enum.reduce(@deck, 0, fn _, n -> n + 1 end) == 4
+        end
+
+        test "early termination works" do
+          assert Enum.take(@deck, 2) == [:ace, :king]
+          assert Enum.find(@deck, &(&1 == :queen)) == :queen
+        end
+
+        test "slicing and positional access" do
+          assert Enum.at(@deck, 1) == :king
+          assert Enum.slice(@deck, 1..2) == [:king, :queen]
+        end
+
+        test "empty deck" do
+          assert Enum.to_list(%Deck{}) == []
+          assert Enum.count(%Deck{}) == 0
+        end
+      end
+    solution: |
+      defmodule Deck do
+        defstruct cards: []
+      end
+
+      defimpl Enumerable, for: Deck do
+        def count(%Deck{cards: cards}), do: {:ok, length(cards)}
+
+        def member?(%Deck{cards: cards}, card), do: {:ok, card in cards}
+
+        def reduce(%Deck{cards: cards}, acc, fun), do: Enumerable.List.reduce(cards, acc, fun)
+
+        def slice(%Deck{cards: cards}) do
+          size = length(cards)
+          {:ok, size, fn start, len, _step -> Enum.slice(cards, start, len) end}
+        end
+      end
+    explanation: |
+      `reduce/3` is the only callback that is strictly required to do work; the other three are
+      optimisation hooks. `count/1` and `member?/2` return `{:ok, value}` when you can answer faster than a
+      full traversal, or `{:error, __MODULE__}` to fall back to the reduce-based default. `slice/1`
+      returns `{:ok, size, slicing_fun}` where the fun receives `start, length, step` (3-arity since
+      Elixir 1.14) — or `{:error, __MODULE__}` for the linear fallback. Delegating to
+      `Enumerable.List.reduce/3` gets `:cont`/`:halt`/`:suspend` handling for free, which is what makes
+      `Enum.take/2` stop early. Not `Map.from_struct` tricks: a struct is not a list of pairs.
+    tags: [enumerable, protocols, structs, code]
+    source: https://elixir.hexdocs.pm/Enumerable.html
+
+  - slug: elixir-fmp-string-chars-interpolation
+    kind: mcq
+    difficulty: junior
+    title: "What happens when you interpolate a map?"
+    body: |
+      ```elixir
+      user = %{name: "Ann"}
+      "user: #{user}"
+      ```
+    choices:
+      - "`\"user: %{name: \\\"Ann\\\"}\"` — interpolation calls `inspect/1`"
+      - "`\"user: Ann\"` — maps with one key are unwrapped"
+      - "Raises `Protocol.UndefinedError`: `String.Chars` is not implemented for `Map`"
+      - "Compile error: only binaries can be interpolated"
+    answer: 2
+    explanation: |
+      String interpolation calls `to_string/1`, which dispatches through the `String.Chars` protocol.
+      It is implemented for binaries, atoms, integers, floats, charlists, dates/times and a few more —
+      but deliberately **not** for maps, tuples or arbitrary structs, because there is no canonical text
+      form. If you want debugging output use `"#{inspect(user)}"` (the `Inspect` protocol is implemented
+      for everything). You can `defimpl String.Chars, for: MyStruct` to make `"#{my_struct}"` work.
+    tags: [string-chars, protocols, interpolation]
+    source: https://elixir.hexdocs.pm/protocols.html
+
+  - slug: elixir-fmp-enumerable-vs-collectable
+    kind: open
+    difficulty: senior
+    title: "`Enumerable` vs `Collectable`: why two protocols?"
+    body: |
+      `Enum.into(list, %{})` and `for x <- xs, into: MapSet.new()` both rely on a protocol that is
+      not `Enumerable`. Explain `Collectable`, how it differs from `Enumerable`, and why both exist.
+    answer: |
+      - `Enumerable` is about **reading**: it gives `Enum`/`Stream` a way to traverse a value
+        (`reduce/3` + optimisation hooks). It knows nothing about building values.
+      - `Collectable` is about **writing**: `into/1` returns an initial accumulator and a collector
+        function receiving `{:cont, elem}`, `:done` or `:halt`, so elements can be inserted one at a
+        time into a target (map, MapSet, binary, `IO.Stream`, a file stream).
+      - They are separate because many enumerables cannot be built element-by-element (ranges, streams,
+        `Date.Range`) and some collectables are not enumerable in a useful way (an `IO.Stream` you write
+        to). The two directions are independent concerns.
+      - `Enum.into/2`, `Enum.into/3` and the `:into` option of comprehensions are the public entry points;
+        `Enum.to_list/1` only needs `Enumerable`.
+      - Inserting into a non-empty list via `into` is deprecated (lists would need O(n) appends); use
+        `Enum.concat/2` or build and reverse instead.
+      - Implementing `Collectable` for your struct lets users do `Enum.into(items, %Deck{})`.
+    explanation: |
+      Follow-ups: "What does `Enum.into(%{a: 1}, [])` return?" (`[a: 1]`, a keyword list.) "Why can
+      `File.stream!/1` be used both as a source and an `into:` target?" (it implements both protocols.)
+    tags: [collectable, enumerable, protocols]
+    source: https://elixir.hexdocs.pm/Enumerable.html
+
+  - slug: elixir-fmp-apply-vs-dynamic-call
+    kind: mcq
+    difficulty: middle
+    title: "`apply/3` vs calling through a module variable"
+    body: |
+      ```elixir
+      mod = String
+      a = mod.upcase("x")
+      b = apply(String, :upcase, ["x"])
+      c = apply(mod, :upcase, ["x"])
+      ```
+      Which statement is correct?
+    choices:
+      - "Only `b` works; `mod.upcase` requires the module to be known at compile time"
+      - "All three return `\"X\"`; `apply/3` is needed when the function name or the argument list is only known at runtime"
+      - "`a` compiles but returns a function reference, not `\"X\"`"
+      - "`apply/3` can also call private functions, which is why it exists"
+    answer: 1
+    explanation: |
+      A module is just an atom, so `mod.upcase("x")` is an ordinary remote call resolved at runtime —
+      this is how behaviours and `GenServer` callbacks are invoked. `apply/3` does the same, but lets you
+      pass the function **name** as an atom and the arguments as a **list** of runtime length; if all
+      three are known at compile time the compiler inlines it into a normal call. `apply/3` can call only
+      public functions and never macros. When calling dynamically, remember that `mod.fun` and
+      `apply/3` both skip compile-time `xref` checks, so typos surface only at runtime.
+    tags: [apply, dynamic-dispatch]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-fmp-function-exported-ensure-loaded
+    kind: open
+    difficulty: senior
+    title: "How do you check at runtime whether a module implements a function?"
+    body: |
+      A plugin system receives a module name and wants to call `mod.render/1` only if it exists.
+      Someone wrote `if function_exported?(mod, :render, 1), do: mod.render(x)`. In production the
+      branch is sometimes skipped even though the function exists. Why, and what is the correct check?
+    answer: |
+      - `function_exported?/3` only answers `true` if the module is **already loaded** in the VM; it
+        never loads it. In a release modules are loaded lazily on first call (unless the system runs in
+        embedded mode), so a module nobody has called yet reports `false`.
+      - Correct: `Code.ensure_loaded?(mod) and function_exported?(mod, :render, 1)`, or
+        `Code.ensure_loaded(mod)` + `function_exported?`, or `mod.__info__(:functions)` after loading.
+      - For your own project at compile time, `Code.ensure_compiled!/1` waits for the module to be
+        compiled; use it in macros, not in runtime code.
+      - Alternatives: make the contract explicit with a behaviour and `@optional_callbacks`, then check
+        `mod.behaviour_info(:optional_callbacks)`; or just call and rescue `UndefinedFunctionError`
+        (clear but hides typos).
+      - Related: `macro_exported?/3` for macros, `Code.loaded?/1` (1.15+) to check without loading.
+    explanation: |
+      Follow-up: "Why does it work in `iex -S mix` and tests?" Interactive mode has usually loaded the
+      module already, so the bug hides until a cold release boot. Senior answer mentions the embedded
+      vs interactive code loading modes.
+    tags: [function-exported, code-loading, releases]
+    source: https://elixir.hexdocs.pm/Code.html
+
+  - slug: elixir-fmp-defoverridable-super
+    kind: open
+    difficulty: middle
+    title: "How do `use`-injected defaults get overridden? Explain `defoverridable` and `super`"
+    body: |
+      `use GenServer` gives you a default `handle_info/2`, yet you can define your own without a
+      "redefining function" error. Explain the mechanism and show how a library author would use it.
+    answer: |
+      - Inside `__using__/1` the library defines default functions in a `quote` block and then lists them
+        with `defoverridable handle_info: 2, terminate: 2` (or `defoverridable GenServer` to mark all
+        callbacks of a behaviour).
+      - `defoverridable` tells the compiler: if the host module later defines a function with the same
+        name/arity, discard the default silently instead of raising "already defined".
+      - In the overriding definition `super(args)` calls the discarded default, so you can wrap it
+        (`def handle_info(msg, state) do log(msg); super(msg, state) end`).
+      - The default is only kept if it is overridden; otherwise it is compiled as-is.
+      - Typical uses: `use GenServer`/`Plug.Builder`/`Phoenix.Controller` defaults, `child_spec/1`,
+        test-case templates. Overusing it hides behaviour, so libraries pair it with `@behaviour` and
+        `@impl true` so the compiler still checks arities.
+    explanation: |
+      Follow-up: "What happens if you `defoverridable` a function and then re-define it with a
+      different arity?" — nothing is overridden; you get two functions. Mistake: calling `super` for
+      a function that was not marked overridable is a compile error ("no super defined").
+    tags: [defoverridable, super, use, metaprogramming]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-fmp-code-defdelegate-facade
+    kind: code
+    difficulty: junior
+    title: "Build a facade with `defdelegate`"
+    body: |
+      Write a module `Coll` that forwards calls to the standard library using `defdelegate`
+      (no bodies written by hand):
+
+      - `Coll.first(list)` → `List.first/1`
+      - `Coll.size(enum)` → `Enum.count/1` (note the different name — use `as:`)
+      - `Coll.reverse(enum)` → `Enum.reverse/1`
+      - `Coll.uniq(enum)` → `Enum.uniq/1`
+
+      ```elixir
+      Coll.size([1, 2, 3])  #=> 3
+      Coll.first([])        #=> nil
+      ```
+    starter_code: |
+      defmodule Coll do
+        # TODO: defdelegate first(list), to: List
+        # TODO: size/1 -> Enum.count/1, reverse/1, uniq/1
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule CollDelegateTest do
+        use ExUnit.Case
+
+        test "delegates work" do
+          assert Coll.first([9, 8]) == 9
+          assert Coll.first([]) == nil
+          assert Coll.size([1, 2, 3]) == 3
+          assert Coll.size(%{a: 1}) == 1
+          assert Coll.reverse([1, 2, 3]) == [3, 2, 1]
+          assert Coll.uniq([1, 1, 2]) == [1, 2]
+        end
+
+        test "functions are public and have the right arity" do
+          assert Enum.sort(Coll.__info__(:functions)) == [first: 1, reverse: 1, size: 1, uniq: 1]
+        end
+
+        test "size uses Enum.count under the hood" do
+          assert Coll.size(1..10) == 10
+        end
+      end
+    solution: |
+      defmodule Coll do
+        defdelegate first(list), to: List
+        defdelegate size(enum), to: Enum, as: :count
+        defdelegate reverse(enum), to: Enum
+        defdelegate uniq(enum), to: Enum
+      end
+    explanation: |
+      `defdelegate fun(args), to: Mod, as: :name` generates a public function whose body is just
+      `Mod.name(args)`; `as:` defaults to the same name. Delegates are public, cannot target macros, and
+      count as real functions in `__info__(:functions)`. They are the idiomatic way to build a context
+      facade (`MyApp.Accounts` delegating to `MyApp.Accounts.Users`) without copy-pasting bodies, and the
+      compiler keeps a dependency so a renamed target fails loudly.
+    tags: [defdelegate, modules, code]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-fmp-enforce-keys-bypass
+    kind: mcq
+    difficulty: junior
+    title: "Which of these bypasses `@enforce_keys`?"
+    body: |
+      ```elixir
+      defmodule User do
+        @enforce_keys [:id]
+        defstruct [:id, :name]
+      end
+      ```
+      Which expression returns a `%User{}` with `id: nil` instead of raising?
+    choices:
+      - "`%User{}`"
+      - "`%User{name: \"Ann\"}`"
+      - "`struct(User, name: \"Ann\")`"
+      - "`struct!(User, name: \"Ann\")`"
+    answer: 2
+    explanation: |
+      `@enforce_keys` is checked when a struct is built with the literal `%User{...}` syntax (the
+      error is raised at compile time if the literal is static: "the following keys must also be given
+      when building struct User: [:id]"). `Kernel.struct/2` and `struct!/2` skip that check: they start
+      from the struct's defaults and merge the given fields (`struct!/2` only rejects *unknown* keys).
+      Updates `%{user | ...}` are not checked either. So `@enforce_keys` is a construction guard, not a
+      validation: treat it as documentation plus a safety net, not as a non-null constraint.
+    tags: [structs, enforce-keys]
+    source: https://elixir.hexdocs.pm/structs.html
+
+  - slug: elixir-fmp-code-custom-exception
+    kind: code
+    difficulty: middle
+    title: "A custom exception with a computed message"
+    body: |
+      Define an exception `InsufficientFunds` with fields `balance` and `amount` and a `message/1`
+      that renders `"cannot withdraw 50 from balance 20"`. Then write `Bank.withdraw(balance, amount)`
+      that returns the new balance or raises it:
+
+      ```elixir
+      Bank.withdraw(100, 30)  #=> 70
+      Bank.withdraw(20, 50)   #=> ** (InsufficientFunds) cannot withdraw 50 from balance 20
+      ```
+    starter_code: |
+      defmodule InsufficientFunds do
+        # TODO: defexception [:balance, :amount] and message/1
+      end
+
+      defmodule Bank do
+        def withdraw(balance, amount) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule BankExceptionTest do
+        use ExUnit.Case
+
+        test "withdraw within balance" do
+          assert Bank.withdraw(100, 30) == 70
+          assert Bank.withdraw(50, 50) == 0
+        end
+
+        test "raises a custom exception with a computed message" do
+          assert_raise InsufficientFunds, "cannot withdraw 50 from balance 20", fn ->
+            Bank.withdraw(20, 50)
+          end
+        end
+
+        test "exception carries its fields and implements Exception" do
+          e = %InsufficientFunds{balance: 1, amount: 2}
+          assert Exception.exception?(e)
+          assert Exception.message(e) == "cannot withdraw 2 from balance 1"
+          assert e.balance == 1
+        end
+
+        test "can be rescued by module" do
+          result =
+            try do
+              Bank.withdraw(0, 1)
+            rescue
+              e in InsufficientFunds -> {:short_by, e.amount - e.balance}
+            end
+
+          assert result == {:short_by, 1}
+        end
+      end
+    solution: |
+      defmodule InsufficientFunds do
+        defexception [:balance, :amount]
+
+        @impl true
+        def message(%__MODULE__{balance: b, amount: a}),
+          do: "cannot withdraw #{a} from balance #{b}"
+      end
+
+      defmodule Bank do
+        def withdraw(balance, amount) when amount <= balance, do: balance - amount
+
+        def withdraw(balance, amount),
+          do: raise(InsufficientFunds, balance: balance, amount: amount)
+      end
+    explanation: |
+      `defexception` defines a struct and makes the module implement the `Exception` behaviour
+      (`exception/1` and `message/1`). The default `exception/1` accepts a keyword list and merges it
+      into the struct, which is what `raise Mod, key: val` calls. If the struct has no `:message` field
+      you must implement `message/1` yourself — computing the text lazily from fields keeps the data
+      structured for pattern matching in `rescue`. `assert_raise/3` compares against
+      `Exception.message/1`, so the test passes only if `message/1` is correct.
+    tags: [exceptions, defexception, code]
+    source: https://elixir.hexdocs.pm/Exception.html
+
+  - slug: elixir-fmp-reraise-stacktrace
+    kind: open
+    difficulty: middle
+    title: "Wrapping and re-raising exceptions without losing the stacktrace"
+    body: |
+      You catch an exception in a library boundary, want to log it, and then let it propagate.
+      Compare `raise e`, `reraise e, __STACKTRACE__` and wrapping it in your own exception.
+      What does each do to the stacktrace?
+    answer: |
+      - `rescue e -> log(e); raise e` **re-raises from the rescue clause**, so the stacktrace now points
+        at your `raise`, not at the original failure site. Debugging gets harder.
+      - `reraise e, __STACKTRACE__` raises the same exception while **preserving** the original
+        stacktrace (`__STACKTRACE__` is only valid inside `rescue`/`catch`).
+      - `reraise MyError, [reason: e], __STACKTRACE__` (3-arity: module/struct, attributes, stacktrace)
+        wraps the original in a domain exception yet keeps the original trace; store the cause in a field
+        so callers can inspect it.
+      - `raise/1` with a struct re-uses the exception; `raise/2` with a module calls `Mod.exception/1`.
+      - In OTP code prefer **not** rescuing at all: let the process crash and the supervisor restart it
+        ("let it crash"); rescue only at boundaries where you must translate errors (HTTP layer,
+        background job).
+    explanation: |
+      Follow-up: "What is the difference between `rescue` and `catch`?" — `rescue` handles Elixir
+      exceptions (`raise`); `catch` handles `throw`, `exit` and `:error` kinds. "Why do exceptions
+      cost more than `{:error, _}`?" — the stacktrace capture; so use tuples for expected failures.
+    tags: [exceptions, reraise, stacktrace]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-fmp-code-eval-string-dangers
+    kind: open
+    difficulty: senior
+    title: "Why is `Code.eval_string/3` dangerous, and what do you use instead?"
+    body: |
+      A feature request: let admins type small formulas like `"price * 1.2"` in the UI and evaluate
+      them on the server. A colleague proposes `Code.eval_string(formula, price: price)`.
+      Assess the proposal and offer alternatives.
+    answer: |
+      - `Code.eval_string/3` runs arbitrary Elixir with the **full privileges of the VM**: the string can
+        call `System.cmd/2`, `File.rm_rf/1`, `:erlang.halt/0`, open sockets, read secrets. The docs say
+        plainly: never use it with untrusted input.
+      - It is also slow (compiles on every call), creates atoms (`String.to_atom`, module names) that are
+        never garbage-collected, and bypasses compile-time checks and Dialyzer.
+      - "Admins only" is not a security boundary — accounts get phished and sessions leak.
+      - Alternatives: parse the formula into a small AST yourself (a few hundred lines with a tokenizer or
+        `NimbleParsec`) and evaluate with a whitelisted set of operators; or use `Code.string_to_quoted/1`
+        and **walk the quoted AST**, rejecting anything that is not an arithmetic node or a known
+        variable, before evaluating with `Code.eval_quoted/2`; or use a dedicated expression library.
+      - Same category of risk: `String.to_atom/1` on user input (atom table exhaustion),
+        `:erlang.binary_to_term/1` without the `:safe` option, `Module.concat/1` with user strings.
+    explanation: |
+      Follow-up: "Is `Code.string_to_quoted/1` itself safe?" — parsing is safe; evaluation is not, so the
+      allow-list walk is where the security lives. Interviewers also like the hint that `eval` inside
+      a `Task` with a timeout does not contain the damage (the code runs with the same permissions).
+    tags: [code-eval, security, metaprogramming]
+    source: https://elixir.hexdocs.pm/Code.html
+
+  - slug: elixir-fmp-dunder-module-nested
+    kind: mcq
+    difficulty: junior
+    title: "What does `__MODULE__` return in a nested module?"
+    body: |
+      ```elixir
+      defmodule Outer do
+        defmodule Inner do
+          def me, do: __MODULE__
+        end
+
+        def inner, do: Inner.me()
+      end
+
+      Outer.inner()
+      ```
+    choices:
+      - "`Inner`"
+      - "`Outer.Inner`"
+      - "`Outer`"
+      - "`:\"Elixir.Outer\"` because `__MODULE__` is evaluated at call time in `Outer`"
+    answer: 1
+    explanation: |
+      Nesting `defmodule` inside another module just prefixes the name: the inner module is
+      `Outer.Inner` (the atom `:"Elixir.Outer.Inner"`); the compiler also adds an automatic
+      `alias Outer.Inner` inside `Outer`, which is why `Inner.me()` works there. `__MODULE__` is a
+      compile-time literal for the module being compiled, so it is `Outer.Inner` regardless of who calls
+      the function. There is no lexical parent relationship at runtime — `Outer.Inner` could have been
+      defined in another file.
+    tags: [modules, nesting, __MODULE__]
+    source: https://elixir.hexdocs.pm/alias-require-and-import.html
+
+  - slug: elixir-fmp-typespecs-dialyzer
+    kind: theory
+    difficulty: senior
+    title: "Typespecs and what Dialyzer actually checks"
+    body: |
+      Typespecs are annotations, not types the compiler enforces:
+
+      ```elixir
+      defmodule Wallet do
+        @type t :: %__MODULE__{balance: non_neg_integer(), currency: String.t()}
+        @enforce_keys [:currency]
+        defstruct balance: 0, currency: nil
+
+        @spec deposit(t(), pos_integer()) :: {:ok, t()} | {:error, :invalid_amount}
+        def deposit(%__MODULE__{} = w, amount) when amount > 0,
+          do: {:ok, %{w | balance: w.balance + amount}}
+        def deposit(_, _), do: {:error, :invalid_amount}
+      end
+      ```
+
+      - `@type t :: %__MODULE__{...}` is the convention for "the struct of this module"; other modules
+        write `Wallet.t()`. `@typep` is private, `@opaque` hides the structure from callers.
+      - `@spec f(arg_types) :: return` documents the contract; the compiler **ignores** it at runtime.
+        A function returning `nil` despite its spec will not raise.
+      - **Dialyzer** (via `dialyxir`) performs *success typing*: it only reports code that can **never**
+        succeed (a call with an impossible type, a pattern that can never match, a spec the
+        implementation contradicts). It never reports "might be wrong"; so no false positives by design,
+        but it also misses a lot. It is slow on first run (builds a PLT) and is used in CI, not in the
+        editor loop.
+      - Specs feed ExDoc, help Dialyzer narrow types across module boundaries, and are what
+        `@callback` definitions are made of.
+      - Elixir is gradually adding a **set-theoretic type system** (`$ x` warnings since 1.17 about
+        mismatched struct fields, binaries, etc.); typespecs may be phased into it, but today
+        `@spec` + Dialyzer is still the standard answer.
+    answer: |
+      **Q:** `@spec age(User.t()) :: integer()` but the function sometimes returns `nil`. What happens at
+      runtime, and who would notice?
+      **A:** Nothing at runtime — specs are not checked. Dialyzer notices only if it can prove the
+      spec is wrong for *every* path (e.g. the function can only return `nil`); if `nil` is one of
+      several possible returns it will typically report a spec/implementation mismatch
+      ("invalid contract") when the inferred success type is not a subtype of the spec.
+    explanation: |
+      Interview follow-ups: "What is a PLT?" (persistent lookup table of analysed OTP/dep modules),
+      "Why does Dialyzer complain about `Map.get/2` returning `term()`?" (specs of stdlib are wide, so
+      you often need a guard or a narrower spec), "Difference between `@type` and `@opaque`?" (callers
+      of an opaque type may not pattern match its internals).
+    tags: [typespecs, dialyzer, types]
+    source: https://elixir.hexdocs.pm/typespecs.html
+
+  - slug: elixir-fmp-spec-not-runtime
+    kind: mcq
+    difficulty: middle
+    title: "What does a violated `@spec` do at runtime?"
+    body: |
+      ```elixir
+      @spec parse(String.t()) :: {:ok, integer()} | :error
+      def parse(s), do: Integer.parse(s)   # returns {42, ""} or :error
+      ```
+      `parse("42")` is called in production. What happens?
+    choices:
+      - "Raises `FunctionClauseError` because `{42, \"\"}` does not match the spec"
+      - "Returns `{42, \"\"}`; specs are never checked at runtime (Dialyzer may flag it statically)"
+      - "Returns `{:ok, 42}`; the spec coerces the return value"
+      - "Compile error: the compiler type-checks specs against the body"
+    answer: 1
+    explanation: |
+      Typespecs are documentation and input for static tools. The BEAM runs the function exactly as
+      written and returns `{42, ""}`. Dialyzer would catch this one, since the function can *never*
+      return the spec'd shape (success typing finds a contradiction). Elixir's newer built-in type
+      checker warns about some structural mismatches at compile time, but still never inserts runtime
+      checks. If you need runtime guarantees, use guards and pattern matching in the function head.
+    tags: [typespecs, dialyzer]
+    source: https://elixir.hexdocs.pm/typespecs.html
+
+  - slug: elixir-fmp-doc-false-deprecated-defp
+    kind: open
+    difficulty: middle
+    title: "`defp` vs `@doc false` vs `@deprecated`: hiding and retiring functions"
+    body: |
+      When would you use each of `defp`, `@doc false` and `@deprecated "..."` on a function?
+      What does each change for callers and tooling?
+    answer: |
+      - `defp`: truly private — not exported, invisible to `apply/3`, `function_exported?/3`, other
+        modules and tests. Use for internals. Cannot be used as a callback or captured outside.
+      - `@doc false`: the function stays **public** (other modules in your app can call it — needed for
+        cross-module internals, macros that expand to calls, GenServer callbacks) but it is hidden from
+        ExDoc and marked as not part of the public API. `@moduledoc false` hides a whole module.
+        `@impl true` sets it automatically for callbacks.
+      - `@deprecated "Use foo/2 instead"`: the function keeps working, but the Mix compiler emits a
+        warning at every call site in *other* projects/modules; ExDoc shows the notice. Use it for one
+        release cycle before removal in a library. Putting "deprecated" only in `@doc` does not warn.
+      - Order of retirement for a library: `@deprecated` (warn) → remove in next major. For internals:
+        `@doc false` while still called across modules, `defp` once the caller moves in.
+    explanation: |
+      Follow-up: "How do you make a `@doc false` function unreachable to users at runtime?" You cannot;
+      it is a convention. "What does `@doc since: "1.2.0"` do?" Metadata rendered by ExDoc.
+    tags: [defp, doc, deprecated, api-design]
+    source: https://elixir.hexdocs.pm/Module.html
+
+  - slug: elixir-fmp-then-pipe
+    kind: mcq
+    difficulty: junior
+    title: "What does this `then/2` pipeline return?"
+    body: |
+      ```elixir
+      5
+      |> then(&(&1 * 2))
+      |> tap(&IO.inspect/1)
+      |> then(fn x -> {:ok, x + 1} end)
+      ```
+    choices:
+      - "`{:ok, 11}`"
+      - "`{:ok, 10}`"
+      - "`10`"
+      - "`:ok` — `tap/2` returns the result of `IO.inspect/1`"
+    answer: 0
+    explanation: |
+      `then(value, fun)` calls `fun.(value)` and returns its result, which makes it possible to pipe
+      into a position other than the first argument or into an anonymous function. `tap(value, fun)`
+      calls `fun` for side effects and returns the **original** value (`IO.inspect/1` also returns its
+      argument, but `tap` would discard whatever the function returned anyway). So: `5 → 10 → (prints
+      10, still 10) → {:ok, 11}`. Before `then/2` (1.12) people wrote `|> (fn x -> ... end).()` or a
+      private helper.
+    tags: [then, tap, pipe]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-fmp-code-compose-functions
+    kind: code
+    difficulty: middle
+    title: "Compose a list of functions into one"
+    body: |
+      Write `Fun.compose/1` that takes a list of one-argument functions and returns a single
+      function applying them **left to right**, and `Fun.compose/2` for exactly two functions.
+      An empty list composes to the identity function.
+
+      ```elixir
+      f = Fun.compose([&(&1 + 1), &(&1 * 2), &Integer.to_string/1])
+      f.(3)                      #=> "8"
+      Fun.compose([]).(:x)       #=> :x
+      Fun.compose(&String.trim/1, &String.upcase/1).(" a ")  #=> "A"
+      ```
+    starter_code: |
+      defmodule Fun do
+        def compose(funs) when is_list(funs) do
+          # TODO: fold the list into one function
+        end
+
+        def compose(f, g) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule FunComposeTest do
+        use ExUnit.Case
+
+        test "applies left to right" do
+          f = Fun.compose([&(&1 + 1), &(&1 * 2), &Integer.to_string/1])
+          assert f.("" <> "3" |> String.to_integer()) == "8"
+          assert f.(0) == "2"
+        end
+
+        test "empty list is identity" do
+          assert Fun.compose([]).(:x) == :x
+          assert Fun.compose([]).([1, 2]) == [1, 2]
+        end
+
+        test "single function" do
+          assert Fun.compose([&String.upcase/1]).("a") == "A"
+        end
+
+        test "two-arity version" do
+          assert Fun.compose(&String.trim/1, &String.upcase/1).(" a ") == "A"
+          assert is_function(Fun.compose(& &1, & &1), 1)
+        end
+
+        test "returned value is a closure, not applied eagerly" do
+          f = Fun.compose([fn _ -> raise "boom" end])
+          assert is_function(f, 1)
+        end
+      end
+    solution: |
+      defmodule Fun do
+        def compose(funs) when is_list(funs) do
+          Enum.reduce(funs, &Function.identity/1, &compose(&2, &1))
+        end
+
+        def compose(f, g), do: fn x -> g.(f.(x)) end
+      end
+    explanation: |
+      Functions are values, so composition is just a closure that calls one after the other. The
+      list version folds with `Enum.reduce/3`: the accumulator is "everything so far", the identity
+      function (`&Function.identity/1` or `& &1`) is the neutral element, and `&compose(&2, &1)` keeps the
+      left-to-right order (`reduce` passes `element, acc`, so the earlier functions must run first).
+      Nothing runs until the composed function is called — that is the "closure, not applied eagerly"
+      test. Alternative one-liner: `fn x -> Enum.reduce(funs, x, & &1.(&2)) end`.
+    tags: [higher-order-functions, closures, composition, code]
+    source: https://elixir.hexdocs.pm/Function.html
+
+  - slug: elixir-fmp-compilation-order-deps
+    kind: open
+    difficulty: senior
+    title: "Module compilation order and compile-time dependencies"
+    body: |
+      Explain how Elixir decides the order in which modules in a Mix project are compiled, what a
+      compile-time dependency is, and why a large project can get slow incremental builds. How would
+      you diagnose and fix it?
+    answer: |
+      - Elixir compiles files **in parallel**; there is no fixed order. When a module references
+        another at compile time (a macro, a struct `%Other{}`, an attribute `@x Other.fun()`, `use`,
+        `import`, `require`) the compiler **pauses** that file until the dependency is available
+        (`Code.ensure_compiled`). A cycle of compile-time dependencies is a deadlock error.
+      - Runtime dependencies (calling `Other.fun()` inside a function body) do not block compilation and
+        do not trigger recompilation when `Other` changes.
+      - Compile-time deps are *transitive*: if `A` imports `B` and `B` uses a struct from `C`, changing
+        `C` recompiles `A`. In large apps one hot module (a `Macros`/`Helpers` module `use`d everywhere)
+        can force hundreds of recompiles per change.
+      - Diagnose with `mix xref graph --label compile --sink Mod` and `mix xref trace file.ex`
+        (1.15+), or `mix compile --verbose`.
+      - Fix: replace `import`/`use` of heavy modules with `alias` + runtime calls; move structs used in
+        patterns into small leaf modules; avoid `@attr OtherMod.fun()`; prefer `Application.compile_env`
+        over custom compile-time config modules; use `Code.ensure_loaded?` sparingly.
+      - "Exports" dependencies (structs, behaviours) are cheaper than full compile deps since 1.11: a
+        change to `C`'s function bodies does not recompile `A`, only a change to `C`'s struct/exports.
+    explanation: |
+      Follow-up: "Why does `defmodule` order inside one file matter for a struct?" — `%Foo{}` in a
+      pattern requires `Foo` compiled first; in the same file define it above its users or the
+      compiler errors with "Foo.__struct__/1 is undefined, cannot expand struct". Senior candidates
+      mention `mix xref` by name.
+    tags: [compilation, xref, build-performance]
+    source: https://elixir.hexdocs.pm/Code.html
+
+  - slug: elixir-fmp-def-vs-defmacro-binding
+    kind: theory
+    difficulty: junior
+    title: "`def` vs `defmacro`, and peeking at scope with `binding/0`"
+    body: |
+      A **function** (`def`) receives evaluated values at runtime. A **macro** (`defmacro`) receives
+      the *code* of its arguments as quoted expressions (AST) at **compile time** and returns new code
+      that replaces the call:
+
+      ```elixir
+      defmodule Dbg do
+        defmacro log(expr) do
+          code = Macro.to_string(expr)
+          quote do
+            value = unquote(expr)
+            IO.puts(unquote(code) <> " = " <> inspect(value))
+            value
+          end
+        end
+      end
+
+      require Dbg
+      Dbg.log(1 + 2)   # prints "1 + 2 = 3" — a function could never see the text "1 + 2"
+      ```
+
+      Rules of thumb: macros need `require` (or `import`) before use because expansion happens during
+      compilation; `if`, `unless`, `|>`, `def` itself and `Logger.debug/1` are macros; use a macro
+      only when a function cannot do the job (needs the source, must run at compile time, or must not
+      evaluate its arguments). Macros are covered in depth in their own topic.
+
+      `Kernel.binding/0` returns the current variables as a keyword list — handy in iex and for debugging
+      closures and generated code:
+
+      ```elixir
+      x = 1; y = "a"
+      binding()   #=> [x: 1, y: "a"]
+      ```
+
+      `binding/1` takes a context for hygienic macro variables. Both are compile-time constructs, so
+      the result reflects variables visible at that point of the source.
+    answer: |
+      **Q:** Why does `Integer.is_even(4)` fail with "undefined function" unless you `require Integer`,
+      while `Integer.to_string(4)` works without it?
+      **A:** `is_even/1` is a macro (so it can be used in guards) and must be expanded at compile
+      time; `require` tells the compiler to make the module's macros available. `to_string/1` is a
+      plain function resolved at runtime.
+    explanation: |
+      Follow-up candidates get: "Can a macro call a function defined in the same module?" Only if that
+      function is defined *before* the macro is used, in a separate module or a previously compiled
+      one; macros run during the compilation of the caller.
+    tags: [macros, def, binding]
+    source: https://elixir.hexdocs.pm/Kernel.html

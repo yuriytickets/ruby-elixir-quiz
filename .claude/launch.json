@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "quiz", "runtimeExecutable": "bundle", "runtimeArgs": ["exec", "rackup", "--host", "127.0.0.1", "-p", "9292"], "port": 9292 }
+  ]
+}

@@ -1,0 +1,1775 @@
+language: ruby
+topic: rails-web-layer
+items:
+  - slug: ruby-web-request-lifecycle
+    kind: theory
+    difficulty: junior
+    title: "The Rails request lifecycle"
+    body: |
+      What happens between a browser sending `GET /posts/1` and HTML coming back:
+
+      1. **Web server** (Puma: a process with a thread pool; multiple workers = forked
+         processes) parses HTTP and builds a Rack `env` hash (`REQUEST_METHOD`, `PATH_INFO`,
+         `HTTP_*` headers, `rack.input`...).
+      2. **`config.ru`** → `run Rails.application`. The application is a Rack app; its `call(env)`
+         enters the **middleware stack** (`bin/rails middleware` lists ~25 of them: `HostAuthorization`,
+         `Static`, `Executor`, `RequestId`, `Rails::Rack::Logger`, `ShowExceptions`/`DebugExceptions`,
+         `Cookies`, `Session::CookieStore`, `Flash`, `Rack::Head`, `ConditionalGet`, `ETag`...).
+         Each middleware can short-circuit (static file, bad host) or wrap the rest.
+      3. **Router** (`ActionDispatch::Routing::RouteSet`, itself a Rack app) matches verb + path
+         against `config/routes.rb`, fills `params[:id] = "1"`, `params[:controller]`, `:action`,
+         and dispatches to `PostsController.action(:show)`, which is again a Rack endpoint.
+      4. **Controller**: `ActionDispatch::Request` wraps `env`; callbacks (`before_action`) run,
+         then the action; `render`/`redirect_to`/`head` sets the response, or implicit render
+         of `app/views/posts/show.html.erb` inside the layout.
+      5. **View**: templates are compiled to Ruby methods once, helpers and partials execute,
+         ERB output is HTML-escaped by default.
+      6. The `[status, headers, body]` triple travels back **up** through the middleware
+         (ETag computed, cookies/session serialised, logs written) to Puma, which writes the
+         HTTP response.
+
+      ```ruby
+      # the whole thing is "just" Rack:
+      status, headers, body = Rails.application.call(Rack::MockRequest.env_for("/posts/1"))
+      ```
+
+      Useful detail: the `Executor` middleware wraps the request so autoloading/reloading,
+      connection checkout and `CurrentAttributes` reset happen per request; Active Job and
+      Action Cable use the same executor.
+    answer: |
+      **Q:** In which layer are `params[:id]` and `params[:controller]` set, and what object
+      does the controller read them from?
+      **A:** The router sets them as path parameters on the Rack env
+      (`action_dispatch.request.path_parameters`); the controller reads them through
+      `ActionDispatch::Request#params`, merged with query and body parameters.
+    explanation: |
+      Interviewers want the order (server → Rack → middleware → router → controller → view →
+      back through middleware) and the fact that every layer speaks Rack's `call(env)` contract.
+    tags: [rack, lifecycle, middleware]
+    source: https://guides.rubyonrails.org/rails_on_rack.html
+
+  - slug: ruby-web-rack-interface
+    kind: mcq
+    difficulty: junior
+    title: "The Rack contract"
+    body: |
+      Which object is a valid Rack application?
+    choices:
+      - "`->(env) { \"<h1>Hi</h1>\" }`"
+      - "`->(env) { [200, { \"content-type\" => \"text/html\" }, [\"<h1>Hi</h1>\"]] }`"
+      - "`->(request, response) { response.write(\"Hi\") }`"
+      - "`->(env) { { status: 200, body: \"Hi\" } }`"
+    answer: 1
+    explanation: |
+      A Rack app is any object responding to `call(env)` that returns a three-element array:
+      an Integer status, a Hash of headers (lower-case keys since Rack 3), and a body that
+      responds to `each` yielding Strings (so `["..."]`, not a bare String, which stopped being
+      enumerable in Ruby 1.9) and optionally `close`. `env` is a Hash with CGI-style keys
+      (`REQUEST_METHOD`, `PATH_INFO`, `QUERY_STRING`, `rack.input`). A lambda works because it
+      responds to `call`; so does a class instance, and `config.ru` is just `run app`
+      with `use Middleware` lines evaluated by `Rack::Builder`. Option C is the Sinatra/Express
+      mental model, not Rack.
+    tags: [rack]
+    source: https://guides.rubyonrails.org/rails_on_rack.html
+
+  - slug: ruby-web-rack-head-middleware-code
+    kind: code
+    difficulty: middle
+    title: "Write a Rack::Head-style middleware"
+    body: |
+      Implement a Rack middleware class `HeadFilter` that reproduces `Rack::Head`:
+
+      - `HeadFilter.new(app)` wraps any Rack app (an object responding to `call(env)`);
+      - `call(env)` delegates to the app **once** and returns its `[status, headers, body]`;
+      - when `env["REQUEST_METHOD"]` is `"HEAD"`, return the same status and headers but an
+        **empty body** (`[]`); if the original body responds to `close`, call it (so streaming
+        bodies and files are released);
+      - every other method passes the response through untouched.
+
+      ```ruby
+      app = ->(env) { [200, { "content-type" => "text/plain" }, ["hello"]] }
+      HeadFilter.new(app).call("REQUEST_METHOD" => "GET")   # => [200, {...}, ["hello"]]
+      HeadFilter.new(app).call("REQUEST_METHOD" => "HEAD")  # => [200, {...}, []]
+      ```
+    starter_code: |
+      class HeadFilter
+        def initialize(app)
+          @app = app
+        end
+
+        def call(env)
+          # TODO
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class ClosableBody
+        attr_reader :closed
+        def initialize(*chunks) = (@chunks = chunks; @closed = false)
+        def each(&) = @chunks.each(&)
+        def close = (@closed = true)
+      end
+
+      class SolutionTest < Minitest::Test
+        HEADERS = { "content-type" => "text/plain", "content-length" => "5" }.freeze
+
+        def app_with(body, calls)
+          ->(env) { calls << env["REQUEST_METHOD"]; [200, HEADERS.dup, body] }
+        end
+
+        def test_get_passes_through
+          calls = []
+          status, headers, body = HeadFilter.new(app_with(["hello"], calls)).call("REQUEST_METHOD" => "GET")
+          assert_equal 200, status
+          assert_equal HEADERS, headers
+          assert_equal ["hello"], body.to_a
+          assert_equal ["GET"], calls
+        end
+
+        def test_head_strips_body_keeps_headers
+          calls = []
+          status, headers, body = HeadFilter.new(app_with(["hello"], calls)).call("REQUEST_METHOD" => "HEAD")
+          assert_equal 200, status
+          assert_equal HEADERS, headers
+          assert_equal [], body.to_a
+          assert_equal ["HEAD"], calls
+        end
+
+        def test_head_closes_original_body
+          original = ClosableBody.new("a", "b")
+          HeadFilter.new(app_with(original, [])).call("REQUEST_METHOD" => "HEAD")
+          assert original.closed
+        end
+
+        def test_get_does_not_close_body
+          original = ClosableBody.new("a")
+          HeadFilter.new(app_with(original, [])).call("REQUEST_METHOD" => "GET")
+          refute original.closed
+        end
+
+        def test_works_with_any_callable_app
+          inner = Class.new do
+            def call(env) = [404, { "x" => "y" }, ["nope"]]
+          end.new
+          status, headers, body = HeadFilter.new(inner).call("REQUEST_METHOD" => "HEAD")
+          assert_equal [404, { "x" => "y" }, []], [status, headers, body.to_a]
+        end
+      end
+    solution: |
+      class HeadFilter
+        def initialize(app)
+          @app = app
+        end
+
+        def call(env)
+          status, headers, body = @app.call(env)
+          return [status, headers, body] unless env["REQUEST_METHOD"] == "HEAD"
+
+          body.close if body.respond_to?(:close)
+          [status, headers, []]
+        end
+      end
+    explanation: |
+      This is the entire shape of Rack middleware: keep the next app, call it, and act on the
+      env before and/or the response after. The body-closing detail is the Rack spec's rule that
+      whoever discards a body must `close` it (otherwise `Rack::Files` leaks file handles and
+      streaming responses never finish). Rails inserts `Rack::Head` near the bottom of its stack,
+      which is why a `HEAD` request hits your controller action like a `GET` but returns no body
+      while keeping `content-length`.
+    tags: [rack, middleware, coding]
+    source: https://guides.rubyonrails.org/rails_on_rack.html
+
+  - slug: ruby-web-middleware-ordering
+    kind: open
+    difficulty: senior
+    title: "Middleware ordering pitfalls"
+    body: |
+      You write a middleware that reads `env["rack.session"][:user_id]` to tag logs and
+      install it with `config.middleware.use MyTagger`. In production the session is always
+      `nil`-ish and logs are untagged, yet in a controller `session[:user_id]` works. Explain
+      why, and describe the rules you follow when placing middleware.
+    answer: |
+      - `use` appends to the **bottom** of the stack, below `ActionDispatch::Session::CookieStore`,
+        so on the way *in* the session should be available... but the session is lazily loaded:
+        `env["rack.session"]` is a `Request::Session` object that only decrypts the cookie when
+        you call `[]` on it, and that requires `ActionDispatch::Cookies` *above* it to have run.
+        If instead you used `insert_before ActionDispatch::Cookies` (common when copying
+        examples), there is no session at all. Check with `bin/rails middleware` and place the
+        tagger with `insert_after ActionDispatch::Session::CookieStore` (or `Flash`).
+      - Rules: anything that needs reloading/autoloaded constants or a DB connection must sit
+        **below** `ActionDispatch::Executor` (it wraps the request in the executor); anything that
+        must see exceptions as responses goes below `ShowExceptions`; `RequestId` must run before
+        the logger that prints it; `Rack::Deflater`/compression goes *above* `ETag` so ETags are
+        computed on uncompressed bodies (or below, consistently) and above `ConditionalGet`;
+        `Rack::Cors` must be high enough to answer `OPTIONS` preflights before `HostAuthorization`
+        would reject them is wrong — keep `HostAuthorization` first, put Cors right after it;
+        `Rack::Attack`/rate limiting as high as possible to shed load cheaply.
+      - Middleware is instantiated once at boot: don't store per-request state in ivars (threads
+        share the instance); don't reference reloadable app classes directly (hold the name and
+        `constantize` lazily, or put the middleware in `lib/` and `require` it).
+      - The stack is frozen after boot; changes need a restart. In tests, `Rails.application`
+        middleware is the same, so `ActionDispatch::IntegrationTest` exercises it while
+        controller tests do not.
+      - Debugging: `bin/rails middleware`, `Rails.application.middleware.map(&:name)`,
+        and a throwaway middleware that `pp env.keys`.
+    explanation: |
+      Follow-up: "Why is the session not just a hash in env?" lazy decryption costs; and because
+      the cookie jar is only materialised by `ActionDispatch::Cookies`. "What is
+      `Rails.application.executor` and why do jobs use it too?" to reset `CurrentAttributes`,
+      release connections and support reloading for any unit of work, not only HTTP.
+    tags: [rack, middleware]
+    source: https://guides.rubyonrails.org/rails_on_rack.html
+
+  - slug: ruby-web-tiny-router-code
+    kind: code
+    difficulty: middle
+    title: "Implement a tiny route matcher"
+    body: |
+      Model `config/routes.rb` + `ActionDispatch::Routing`. Write a class `Router` with:
+
+      - `add(verb, pattern, to)` — registers a route; `pattern` is a path like `"/posts/:id/comments"`
+        where `:name` segments match exactly one non-empty path segment (no `/`), and `to` is
+        `"controller#action"`;
+      - `match(verb, path)` — returns a Hash `{ controller:, action:, params: { "id" => "42" } }`
+        for the **first** route (in registration order) whose verb and pattern match the whole
+        path, or `nil` if none does. Verb comparison is case-sensitive on upper-case verbs.
+      - `"/"` must match only `"/"`. A trailing slash in `path` is ignored (`"/posts/"` matches `"/posts"`).
+
+      ```ruby
+      r = Router.new
+      r.add("GET",  "/posts",     "posts#index")
+      r.add("GET",  "/posts/:id", "posts#show")
+      r.add("POST", "/posts",     "posts#create")
+
+      r.match("GET", "/posts/42")   # => { controller: "posts", action: "show", params: { "id" => "42" } }
+      r.match("DELETE", "/posts/1") # => nil
+      ```
+    starter_code: |
+      class Router
+        def initialize
+          @routes = []
+        end
+
+        def add(verb, pattern, to)
+          # TODO
+        end
+
+        def match(verb, path)
+          # TODO
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        def router
+          r = Router.new
+          r.add("GET",    "/",                        "pages#root")
+          r.add("GET",    "/posts",                   "posts#index")
+          r.add("GET",    "/posts/new",               "posts#new")
+          r.add("GET",    "/posts/:id",               "posts#show")
+          r.add("PATCH",  "/posts/:id",               "posts#update")
+          r.add("GET",    "/posts/:post_id/comments/:id", "comments#show")
+          r.add("GET",    "/files/:name",             "files#show")
+          r
+        end
+
+        def test_static_and_root
+          assert_equal({ controller: "pages", action: "root", params: {} }, router.match("GET", "/"))
+          assert_equal({ controller: "posts", action: "index", params: {} }, router.match("GET", "/posts"))
+          assert_equal({ controller: "posts", action: "index", params: {} }, router.match("GET", "/posts/"))
+        end
+
+        def test_dynamic_segments
+          assert_equal({ controller: "posts", action: "show", params: { "id" => "42" } }, router.match("GET", "/posts/42"))
+          assert_equal({ controller: "comments", action: "show", params: { "post_id" => "7", "id" => "9" } },
+                       router.match("GET", "/posts/7/comments/9"))
+          assert_equal({ "name" => "report.pdf" }, router.match("GET", "/files/report.pdf")[:params])
+        end
+
+        def test_first_match_wins
+          assert_equal "new", router.match("GET", "/posts/new")[:action]
+        end
+
+        def test_verb_matters
+          assert_equal "update", router.match("PATCH", "/posts/42")[:action]
+          assert_nil router.match("DELETE", "/posts/42")
+          assert_nil router.match("POST", "/posts")
+        end
+
+        def test_no_partial_matches
+          assert_nil router.match("GET", "/posts/42/extra")
+          assert_nil router.match("GET", "/post")
+          assert_nil router.match("GET", "/posts//")
+          assert_nil router.match("GET", "/users")
+        end
+      end
+    solution: |
+      class Router
+        Route = Struct.new(:verb, :segments, :controller, :action)
+
+        def initialize
+          @routes = []
+        end
+
+        def add(verb, pattern, to)
+          controller, action = to.split("#", 2)
+          @routes << Route.new(verb, split(pattern), controller, action)
+        end
+
+        def match(verb, path)
+          segments = split(path)
+          @routes.each do |route|
+            next unless route.verb == verb && route.segments.size == segments.size
+            params = {}
+            ok = route.segments.zip(segments).all? do |pat, seg|
+              if pat.start_with?(":")
+                !seg.empty? && (params[pat[1..]] = seg)
+              else
+                pat == seg
+              end
+            end
+            return { controller: route.controller, action: route.action, params: params } if ok
+          end
+          nil
+        end
+
+        private
+
+        def split(path)
+          path.sub(%r{/\z}, "").split("/", -1).drop(1)
+        end
+      end
+    explanation: |
+      Real Rails compiles each route into a regexp-backed `Journey` pattern and matches top to
+      bottom, which is why `/posts/new` must be declared before `/posts/:id` (and why `resources`
+      emits `new` before `show`). Segment-by-segment comparison gives the same "first match
+      wins, whole path must match, `:id` never spans a slash" semantics, and the extracted
+      `params` are what the controller sees as `params[:id]`. The `split("/", -1)` keeps the
+      empty segment from `/posts//` so it correctly fails to match.
+    tags: [routing, coding]
+    source: https://guides.rubyonrails.org/routing.html
+
+  - slug: ruby-web-resources-seven-routes
+    kind: mcq
+    difficulty: junior
+    title: "What does resources :photos generate?"
+    body: |
+      With `resources :photos`, which request maps to `PhotosController#update`?
+    choices:
+      - "`POST /photos/:id`"
+      - "`PATCH /photos/:id` (and `PUT /photos/:id`)"
+      - "`PUT /photos/:id/update`"
+      - "`POST /photos/:id/edit`"
+    answer: 1
+    explanation: |
+      `resources` creates seven routes: `GET /photos` index, `GET /photos/new` new,
+      `POST /photos` create, `GET /photos/:id` show, `GET /photos/:id/edit` edit,
+      `PATCH|PUT /photos/:id` update, `DELETE /photos/:id` destroy, with helpers `photos_path`,
+      `new_photo_path`, `edit_photo_path(photo)`, `photo_path(photo)`. Browsers only send GET/POST,
+      so forms carry `_method=patch` and `Rack::MethodOverride` rewrites the verb. `only:`/`except:`
+      trim the set; `resource :profile` (singular) has no index and no `:id`.
+    tags: [routing]
+    source: https://guides.rubyonrails.org/routing.html
+
+  - slug: ruby-web-member-vs-collection
+    kind: mcq
+    difficulty: junior
+    title: "member vs collection routes"
+    body: |
+      ```ruby
+      resources :photos do
+        member { post :publish }
+        collection { get :search }
+      end
+      ```
+
+      Which paths and helpers are generated?
+    choices:
+      - "`POST /photos/:id/publish` → `publish_photo_path(photo)`; `GET /photos/search` → `search_photos_path`"
+      - "`POST /photos/publish/:id` → `photos_publish_path`; `GET /photos/:id/search` → `photo_search_path`"
+      - "`POST /publish/photos/:id` → `publish_photo_path`; `GET /search/photos` → `search_photos_path`"
+      - "Both are nested under `/photos/:id`; `member` and `collection` only change the helper name"
+    answer: 0
+    explanation: |
+      `member` routes act on one record and include `:id` (`params[:id]`, helper
+      `publish_photo_path`); `collection` routes act on the set, have no `:id`, and get the plural
+      helper (`search_photos_path`). Shorthand: `post :publish, on: :member`. A classic bug is
+      declaring `get :search` inside the block without `member`/`collection`: it becomes a nested
+      route `/photos/:photo_id/search` with `params[:photo_id]`.
+    tags: [routing]
+    source: https://guides.rubyonrails.org/routing.html
+
+  - slug: ruby-web-namespace-vs-scope
+    kind: mcq
+    difficulty: middle
+    title: "namespace vs scope"
+    body: |
+      You want `/articles` served by `Admin::ArticlesController` with helper `articles_path`.
+      Which declaration does that?
+    choices:
+      - "`namespace :admin do resources :articles end`"
+      - "`scope module: \"admin\" do resources :articles end`"
+      - "`scope \"/admin\" do resources :articles end`"
+      - "`resources :articles, as: :admin`"
+    answer: 1
+    explanation: |
+      `namespace :admin` changes all three things: path prefix `/admin/articles`, controller
+      module `Admin::`, helper prefix `admin_articles_path`. `scope module: "admin"` changes only the
+      controller module; `scope "/admin"` (or `scope path:`) changes only the URL; `scope as: :admin`
+      changes only the helper. Combine them when you need two of the three. Note that `namespace`
+      also expects the controller file at `app/controllers/admin/articles_controller.rb` (Zeitwerk).
+    tags: [routing]
+    source: https://guides.rubyonrails.org/routing.html
+
+  - slug: ruby-web-routing-constraints-order
+    kind: open
+    difficulty: middle
+    title: "Route order, constraints and root"
+    body: |
+      A route file has `get "/:slug", to: "pages#show"` declared near the top. After adding it,
+      `/posts` started rendering a page instead of the posts index. Explain why, how you would
+      fix it, and what constraints are for.
+    answer: |
+      - Routes match **top to bottom**, first match wins; `/:slug` matches any single-segment
+        path, including `/posts`, so everything declared below it is shadowed. Move catch-all
+        routes to the bottom of the file (and `root` near the top since it's the most hit).
+      - Narrow it with a **segment constraint**: `get "/:slug", to: "pages#show",
+        constraints: { slug: /[a-z0-9-]+/ }` (anchors are added for you; the regexp cannot
+        contain `^`/`$`), or limit it to known slugs with a lambda/object constraint
+        `constraints: ->(req) { Page.exists?(slug: req.path_parameters[:slug]) }` (DB hit per
+        request, so cache) or a class responding to `matches?(request)`.
+      - **Request-based constraints** match on request attributes: `constraints: { subdomain: "api" }`,
+        `format: :json`, or a `constraints` block wrapping many routes
+        (`constraints(subdomain: "admin") do ... end`), commonly used for API subdomains and
+        feature flags.
+      - Verify with `bin/rails routes -g slug` / `-c pages`, and `bin/rails routes --unused`
+        (7.1) to find dead routes.
+      - Related gotchas: `resources :posts` already defines `/posts/new` before `/posts/:id`; a
+        custom `get "posts/:id/..."` must be declared relative to that; `:id` constraints are
+        also the way to allow dots in ids (`id: /[^\/]+/`) because the default segment regexp
+        stops at `.` for format detection.
+    explanation: |
+      Follow-up: "What's the difference between `constraints: { id: /\d+/ }` and validating in the
+      controller?" an unmatched constraint falls through to the next route / 404 before any
+      controller code runs. "How do you route to a Rack app?" `mount Sidekiq::Web => "/sidekiq"`.
+    tags: [routing]
+    source: https://guides.rubyonrails.org/routing.html
+
+  - slug: ruby-web-strong-params-permit-code
+    kind: code
+    difficulty: middle
+    title: "Implement a strong-parameters permit"
+    body: |
+      Model `ActionController::Parameters#permit`. Write a method `permit(params, *filters)`:
+
+      - `params` is a Hash with **String** keys (as from a form); the result is a new Hash with
+        String keys containing only permitted entries;
+      - a Symbol filter (`:name`) permits that key only if its value is a **scalar**: String,
+        Integer, Float, `true`/`false` or `nil`. Hashes and arrays are dropped for scalar filters;
+      - a Hash filter maps a key to a nested filter: `tags: []` permits an array of scalars
+        (non-scalar elements dropped), `address: [:city, :zip]` permits a nested hash with
+        those scalar keys (recursively, the same rules);
+      - keys not mentioned are dropped; missing keys are simply absent from the result.
+
+      ```ruby
+      raw = { "name" => "Ann", "admin" => true, "tags" => ["a", { "x" => 1 }], "address" => { "city" => "Kyiv", "lat" => 1.0 } }
+      permit(raw, :name, tags: [], address: [:city])
+      # => { "name" => "Ann", "tags" => ["a"], "address" => { "city" => "Kyiv" } }
+      ```
+    starter_code: |
+      def scalar?(value)
+        # TODO
+      end
+
+      def permit(params, *filters)
+        # TODO: return a new hash with only the permitted keys/values
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class SolutionTest < Minitest::Test
+        RAW = {
+          "name" => "Ann",
+          "age" => 30,
+          "admin" => true,
+          "nick" => nil,
+          "tags" => ["a", "b", { "evil" => 1 }, ["nested"]],
+          "address" => { "city" => "Kyiv", "zip" => "01001", "lat" => 50.4, "geo" => { "x" => 1 } },
+          "roles" => { "0" => "admin" }
+        }.freeze
+
+        def test_permits_scalars_only
+          assert_equal({ "name" => "Ann", "age" => 30, "admin" => true, "nick" => nil },
+                       permit(RAW, :name, :age, :admin, :nick))
+        end
+
+        def test_drops_unpermitted_and_non_scalar_values
+          assert_equal({ "name" => "Ann" }, permit(RAW, :name, :tags, :address, :missing))
+          assert_equal({}, permit(RAW, :roles))
+        end
+
+        def test_array_of_scalars
+          assert_equal({ "tags" => ["a", "b"] }, permit(RAW, tags: []))
+        end
+
+        def test_nested_hash
+          assert_equal({ "address" => { "city" => "Kyiv", "zip" => "01001" } },
+                       permit(RAW, address: [:city, :zip, :geo]))
+          assert_equal({ "address" => { "geo" => { "x" => 1 } } }, permit(RAW, address: [geo: [:x]]))
+        end
+
+        def test_mixed_filters_and_immutability
+          result = permit(RAW, :name, tags: [], address: [:city])
+          assert_equal({ "name" => "Ann", "tags" => ["a", "b"], "address" => { "city" => "Kyiv" } }, result)
+          assert_equal 7, RAW.size
+          refute_same RAW["address"], result["address"]
+        end
+
+        def test_nested_filter_on_non_hash_value_is_dropped
+          assert_equal({}, permit({ "address" => "Main st" }, address: [:city]))
+          assert_equal({}, permit({ "tags" => "a,b" }, tags: []))
+        end
+      end
+    solution: |
+      def scalar?(value)
+        case value
+        when String, Integer, Float, TrueClass, FalseClass, NilClass then true
+        else false
+        end
+      end
+
+      def permit(params, *filters)
+        filters.each_with_object({}) do |filter, out|
+          case filter
+          when Symbol, String
+            key = filter.to_s
+            out[key] = params[key] if params.key?(key) && scalar?(params[key])
+          when Hash
+            filter.each do |key, nested|
+              key = key.to_s
+              value = params[key]
+              if nested == []
+                out[key] = value.select { |v| scalar?(v) } if value.is_a?(Array)
+              elsif value.is_a?(Hash)
+                out[key] = permit(value, *nested)
+              end
+            end
+          end
+        end
+      end
+    explanation: |
+      `ActionController::Parameters#permit` works exactly like this: scalar filters only let
+      through "permitted scalar" types (String, Symbol, Numeric, booleans, nil, Date/Time,
+      uploaded files, StringIO), `key: []` allows an array of scalars, `key: [:a, :b]` recurses,
+      and `key: {}` allows an arbitrary nested hash. Everything unmentioned is dropped and,
+      depending on `config.action_controller.action_on_unpermitted_parameters`, logged or
+      raised. Also note the result is a *new* object: the original `params` are untouched, and
+      Rails returns a `Parameters` with `permitted? == true`, which is what mass assignment
+      (`Model.new(attrs)`) checks before accepting a hash.
+    tags: [controllers, strong-params, security, coding]
+    source: https://guides.rubyonrails.org/action_controller_overview.html
+
+  - slug: ruby-web-forbidden-attributes-error
+    kind: mcq
+    difficulty: junior
+    title: "Passing params straight to the model"
+    body: |
+      ```ruby
+      def create
+        @user = User.new(params[:user])
+        ...
+      end
+      ```
+
+      With `params[:user]` present, what happens in Rails 4+?
+    choices:
+      - "It works; strong parameters only apply to `update`"
+      - "`ActiveModel::ForbiddenAttributesError` is raised because the hash was not permitted"
+      - "Only attributes listed in `attr_accessible` are assigned"
+      - "The user is created with every submitted attribute, including `admin`"
+    answer: 1
+    explanation: |
+      `params[:user]` is an `ActionController::Parameters` whose `permitted?` is false. Mass
+      assignment (`new`, `create`, `update`, `assign_attributes`) checks for that flag and raises
+      `ForbiddenAttributesError`. The fix is the whitelist: `params.require(:user).permit(:name, :email)`
+      (Rails 8: `params.expect(user: [:name, :email])`, which also returns 400 instead of 500
+      when the shape is wrong). Option D describes the pre-Rails-4 mass-assignment vulnerability
+      that strong parameters replaced (`attr_accessible` was the Rails 3 opt-in model-side guard).
+      `to_unsafe_h` or `permit!` deliberately bypass the check and are red flags in review.
+    tags: [controllers, strong-params, security]
+    source: https://guides.rubyonrails.org/action_controller_overview.html
+
+  - slug: ruby-web-double-render-error
+    kind: mcq
+    difficulty: middle
+    title: "DoubleRenderError"
+    body: |
+      ```ruby
+      def show
+        if @post.draft?
+          redirect_to posts_path, alert: "Not published"
+        end
+        render :show
+      end
+      ```
+
+      For a draft post, what happens?
+    choices:
+      - "The redirect wins because it was called first; `render` is ignored"
+      - "`AbstractController::DoubleRenderError` is raised: `redirect_to` does not stop the action"
+      - "The page renders `show` and then redirects, so the user sees a flash on the index"
+      - "Rails renders `show` with a 302 status"
+    answer: 1
+    explanation: |
+      `render` and `redirect_to` only *set* the response; they don't return from the method.
+      Calling either twice in one action raises `DoubleRenderError`. Fix with
+      `redirect_to(...) and return` / `return redirect_to(...)`, or restructure with `if/else`.
+      The same holds for `head`. The contrast is `before_action`: a callback that renders or
+      redirects *does* halt the chain (`performed?` is true), so the action never runs; that's the
+      idiomatic place for the guard. Related: `render ... and return` works because `render`
+      returns a truthy value, but `redirect_to ... && return` reads worse, hence the `and` idiom.
+    tags: [controllers, rendering]
+    source: https://guides.rubyonrails.org/layouts_and_rendering.html
+
+  - slug: ruby-web-render-vs-redirect
+    kind: open
+    difficulty: middle
+    title: "render vs redirect_to"
+    body: |
+      After a failed `create` you `render :new`; after a successful one you `redirect_to @post`.
+      Explain the mechanics of each, why the convention is this way, and what the status codes
+      should be when Turbo is involved.
+    answer: |
+      - `render` builds the response body **in this request**: same `params`, same instance
+        variables, one round trip. URL stays `/posts` (the POST URL), so a browser refresh
+        re-submits the form.
+      - `redirect_to` sends a `302 Found` (or `303`) with `Location`; the browser makes a **new GET**
+        request, so ivars are gone and data must be passed via the URL, the DB, or `flash`.
+        Hence PRG (Post/Redirect/Get): refreshing after success doesn't duplicate the write and
+        the URL is shareable.
+      - Why render on failure: you need the submitted (invalid) object with its `errors` to
+        re-fill the form; a redirect would lose it (or you'd stuff it in the session).
+      - Status codes: for a failed form under Turbo you must respond with `render :new, status:
+        :unprocessable_entity` (422), otherwise Turbo ignores the 200 HTML response and the
+        errors never show. Redirects after a non-GET under Turbo should be `303 See Other`
+        (`redirect_to @post, status: :see_other`) so the follow-up is a GET even for
+        `DELETE`/`PATCH`; Rails scaffolds generate exactly this.
+      - `redirect_back_or_to`, `redirect_to ... , allow_other_host: false` (open-redirect
+        protection, default raises `UnsafeRedirectError` for foreign hosts in 7.0+), and
+        `head :no_content` for API endpoints with no body.
+      - `render` variants: `render json:`, `render plain:`, `render partial:`, `render status:
+        :not_found`, `render :new` vs `render "posts/new"`, `layout: false`.
+    explanation: |
+      Follow-up: "Why does `flash` survive a redirect but ivars don't?" it's stored in the session
+      for exactly one subsequent request; `flash.now` for the render case.
+    tags: [controllers, rendering, turbo]
+    source: https://guides.rubyonrails.org/layouts_and_rendering.html
+
+  - slug: ruby-web-rescue-from-order
+    kind: mcq
+    difficulty: middle
+    title: "Which rescue_from handler runs?"
+    body: |
+      ```ruby
+      class ApplicationController < ActionController::Base
+        rescue_from StandardError,                with: :render_500
+        rescue_from ActiveRecord::RecordNotFound, with: :render_404
+      end
+
+      class PostsController < ApplicationController
+        rescue_from ActiveRecord::RecordNotFound, with: :render_custom_404
+      end
+      ```
+
+      `PostsController#show` raises `ActiveRecord::RecordNotFound`. Which handler runs?
+    choices:
+      - "`render_500`: `StandardError` was declared first and matches"
+      - "`render_404`: the most specific class in the base controller wins"
+      - "`render_custom_404`: handlers are searched from the last declared to the first, and subclass declarations come after the parent's"
+      - "All three, from most specific to least specific"
+    answer: 2
+    explanation: |
+      `rescue_from` handlers are stored in declaration order and searched **in reverse**, so the
+      last matching declaration wins; a subclass's handlers are appended after its parent's and
+      therefore take precedence. That's also why the convention is to declare generic classes
+      (`StandardError`) first and specific ones last — the opposite of a `rescue` clause chain.
+      Only one handler runs. Exceptions raised inside a handler propagate normally. Handlers
+      don't run for exceptions in middleware (those hit `ShowExceptions`/`exceptions_app`), and
+      rescuing `Exception` is a bad idea (it swallows `SystemExit`, `NoMemoryError`).
+    tags: [controllers, errors]
+    source: https://api.rubyonrails.org/classes/ActiveSupport/Rescuable/ClassMethods.html
+
+  - slug: ruby-web-sessions-cookies
+    kind: theory
+    difficulty: middle
+    title: "Sessions, signed and encrypted cookies"
+    body: |
+      Rails' default session store is the **cookie store**: the whole session hash is serialised
+      (JSON), encrypted and signed with keys derived from `secret_key_base`, and sent back to the
+      browser in `_app_session`. Nothing is stored server-side.
+
+      ```ruby
+      session[:user_id] = user.id        # written on the way out of the request
+      cookies[:theme] = "dark"           # plain, readable and editable by the user
+      cookies.signed[:ref] = 42          # readable but tamper-proof (HMAC)
+      cookies.encrypted[:token] = "..."  # unreadable and tamper-proof (AES-256-GCM)
+      cookies.permanent[:x] = 1          # expires in 20 years
+      cookies[:a] = { value: 1, httponly: true, secure: true, same_site: :lax, expires: 1.day }
+      ```
+
+      Consequences interviewers probe:
+
+      - **4 KB limit** per cookie → `ActionDispatch::Cookies::CookieOverflow`; store ids, not
+        objects. Bigger or sensitive data → `:cache_store`, `:active_record_store` (gem) or a
+        Redis-backed store, where the cookie holds only a session id.
+      - **No server-side invalidation**: with the cookie store you can't log out "everywhere"
+        or expire a stolen cookie except by rotating `secret_key_base` (logs out everyone) or
+        keeping a per-user session version in the DB and checking it. Server-side stores
+        can delete the row.
+      - Session fixation: call `reset_session` on login so the attacker's pre-set id is discarded.
+      - Lazy loading: the cookie is only decrypted when `session` is first accessed.
+      - Flags: `httponly` (JS can't read), `secure` (HTTPS only, forced by `config.force_ssl`),
+        `SameSite=Lax` by default since Rails 6.1, which is a CSRF mitigation on its own.
+      - `secret_key_base` lives in credentials (or `SECRET_KEY_BASE`); rotating it needs
+        `config.action_dispatch.cookies_rotations` to keep old cookies readable for a while.
+    answer: |
+      **Q:** Why can't you "log out all devices" by deleting something on the server when using
+      the default session store?
+      **A:** The cookie store keeps the entire session inside the client's encrypted cookie;
+      the server holds no record to delete. You need a server-side store or a per-user token
+      stored in the DB that the session must match.
+    explanation: |
+      Expected points: what signed vs encrypted guarantees (integrity vs confidentiality), the
+      size limit, and the lack of server-side revocation with the cookie store.
+    tags: [sessions, cookies, security]
+    source: https://guides.rubyonrails.org/action_controller_overview.html
+
+  - slug: ruby-web-csrf-protection
+    kind: mcq
+    difficulty: middle
+    title: "How protect_from_forgery works"
+    body: |
+      Which statement about Rails CSRF protection is correct?
+    choices:
+      - "The authenticity token is verified on every request, including GET"
+      - "Non-GET requests must carry a token (form field `authenticity_token` or `X-CSRF-Token` header) that matches the one stored in the session; otherwise `InvalidAuthenticityToken` (or a null session) results"
+      - "The token is stored in a plain cookie and compared with the form field, so it works without sessions"
+      - "API-only apps get the same protection automatically because `ActionController::API` includes `protect_from_forgery`"
+    answer: 1
+    explanation: |
+      `protect_from_forgery with: :exception` (default via `default_protect_from_forgery` in new
+      apps) verifies a per-session secret on every non-GET/HEAD request. The token is rendered by
+      `form_with` as a hidden field and by `csrf_meta_tags` for JS (Turbo/Rails-UJS copy it into
+      `X-CSRF-Token`); it is masked per request so it can't be read through compression attacks
+      (BREACH). GET must be safe/idempotent, so it is not checked. `with: :null_session` (used for
+      APIs with token auth) empties the session instead of raising. `ActionController::API` does
+      **not** include the module, because token-authenticated APIs aren't vulnerable to classic
+      CSRF; cookie-authenticated SPAs on the same site still need it (or SameSite cookies).
+      Per-form tokens (`per_form_csrf_tokens`) and origin checking (`forgery_protection_origin_check`)
+      tighten it further.
+    tags: [security, csrf]
+    source: https://guides.rubyonrails.org/security.html
+
+  - slug: ruby-web-cors-vs-csrf
+    kind: open
+    difficulty: senior
+    title: "CORS vs CSRF"
+    body: |
+      A frontend on `app.example.com` calls your Rails API on `api.example.com` with
+      cookie-based sessions. The team is confused about CORS and CSRF. Explain what each
+      mechanism protects, how they interact, and how you'd configure Rails.
+    answer: |
+      - **CSRF** is the server's problem: a malicious site makes the victim's browser send a
+        state-changing request *with the victim's cookies*. Defences: the synchroniser token
+        (`protect_from_forgery`), `SameSite=Lax/Strict` cookies (Lax, the Rails default since 6.1,
+        blocks cookies on cross-site POSTs but not on top-level GET navigations, hence GET must be
+        safe), `Origin`/`Referer` checks.
+      - **CORS** is the browser's same-origin policy relaxation: by default JS on `app.example.com`
+        cannot *read* a response from `api.example.com` (the request may still be *sent* for
+        "simple" requests). The server opts in with `Access-Control-Allow-Origin`, and for
+        non-simple requests (JSON body, custom headers, PUT/DELETE) the browser first sends an
+        `OPTIONS` preflight. CORS does not protect against CSRF: a form POST from evil.com is a
+        simple request, is sent with cookies, and the server executes it even if the attacker
+        can't read the response.
+      - With cookies across subdomains you need both: `rack-cors` with an explicit `origins
+        "https://app.example.com"` (never `*` together with `credentials: true`), and CSRF
+        protection that the SPA satisfies by reading the token from a cookie/endpoint and sending
+        `X-CSRF-Token`; cookie `domain: ".example.com"`, `same_site: :lax` or `:none` + `secure`.
+      - Simpler alternatives: same-origin via a reverse proxy (`/api` on the app host) removes
+        CORS entirely; token (Bearer) auth instead of cookies removes CSRF but needs secure
+        token storage on the client.
+      - `rack-cors` must sit high in the middleware stack so preflights get answered before
+        auth/sessions; `HostAuthorization` must allow the API host.
+    explanation: |
+      Follow-up: "Does `Access-Control-Allow-Origin: *` make you vulnerable to CSRF?" No
+      (browsers refuse credentials with `*`), but it leaks responses to any site. "Why is a GET
+      that changes state dangerous?" `<img src>` from any site sends cookies with no CORS and no
+      CSRF token.
+    tags: [security, cors, csrf]
+    source: https://guides.rubyonrails.org/security.html
+
+  - slug: ruby-web-xss-html-safe-raw-sanitize
+    kind: mcq
+    difficulty: junior
+    title: "Which view line is safe against XSS?"
+    body: |
+      `@comment.body` contains `<script>alert(1)</script>` typed by a user. Which line does
+      **not** execute the script?
+    choices:
+      - "`<%= raw @comment.body %>`"
+      - "`<%= @comment.body.html_safe %>`"
+      - "`<%== @comment.body %>`"
+      - "`<%= sanitize @comment.body %>`"
+    answer: 3
+    explanation: |
+      ERB escapes every `<%= %>` output unless the string is marked `html_safe`. `raw`, `.html_safe`
+      and `<%== %>` all mark the string as safe *without changing it*, so the script runs: they are
+      "I promise this is safe", not "make this safe". `sanitize` parses the HTML with Loofah and
+      strips tags/attributes outside an allowlist (`<script>` is removed; pass `tags:`/`attributes:`
+      to customise), so it is the correct choice for user-supplied rich text. For plain text, just
+      `<%= @comment.body %>` (escaped) is enough. Other XSS entry points to remember: `link_to
+      "x", params[:url]` with a `javascript:` URL, `content_tag` attributes, JSON embedded in
+      `<script>` (use `json_escape`/`to_json` inside `<%= %>`), and `html_safe` on interpolated
+      strings in helpers (use `safe_join`/`tag` helpers instead).
+    tags: [security, xss, views]
+    source: https://guides.rubyonrails.org/security.html
+
+  - slug: ruby-web-params-vs-request
+    kind: open
+    difficulty: middle
+    title: "params vs request, and keeping secrets out of logs"
+    body: |
+      Explain what `params` contains and where each part comes from, what `request` gives you
+      that `params` doesn't, and how you keep passwords and tokens out of `log/production.log`.
+    answer: |
+      - `params` is an `ActionController::Parameters` built from three sources merged together:
+        **path parameters** from the router (`:id`, `:controller`, `:action`), the **query
+        string** (`?page=2`) and the **request body** (form-encoded, multipart, or JSON when
+        `Content-Type: application/json`, parsed by `ActionDispatch::ParamsParser`). Keys are
+        indifferent (`params[:id] == params["id"]`); values are always Strings (or arrays/hashes
+        of strings) except JSON bodies; `[]` syntax builds arrays, `[key]` nested hashes.
+        `request.query_parameters`, `request.request_parameters`, `request.path_parameters`
+        separate the sources when it matters (e.g. an id in the body shouldn't override the path).
+      - `request` (`ActionDispatch::Request`) exposes everything else: `method`, `headers`
+        (`request.headers["Authorization"]`), `remote_ip` (respects `X-Forwarded-For` through
+        `RemoteIp`), `host`, `subdomain`, `url`/`fullpath`, `format`, `xhr?`, `content_type`,
+        `raw_post`/`body.read`, `request_id`, `session`, `cookies`, `env`, `variant`.
+      - Log filtering: `config.filter_parameters += [:password, :token, /secret/]` (new apps
+        ship a default list) replaces values with `[FILTERED]` in params logging, in
+        `request.filtered_parameters` and in error reporters; it is substring matching, so
+        `:passw` covers `password_confirmation`. It does **not** filter the query string in the
+        request URL line, headers, or things you log yourself — never put secrets in URLs,
+        and use `Rails.logger` with care. `ActiveRecord` logs bind values, so `encrypts` or
+        `filter_attributes` on the model (`self.filter_attributes = [:ssn]`) hides them in `inspect`
+        and SQL logs.
+    explanation: |
+      Follow-up: "Why can `params[:user][:id]` from the body override the URL id?" it can't
+      when you use `params[:id]` from the path, but careless merging does; prefer path params
+      for identity. "What does `wrap_parameters` do?" wraps a JSON body under the controller's
+      model key so `params[:user]` works for `{"name": ...}` bodies.
+    tags: [controllers, params, logging, security]
+    source: https://guides.rubyonrails.org/action_controller_overview.html
+
+  - slug: ruby-web-turbo-hotwire
+    kind: theory
+    difficulty: middle
+    title: "Turbo Drive, Frames and Streams"
+    body: |
+      Hotwire (HTML over the wire) is Rails' default front-end stack since 7.0: **Turbo** +
+      **Stimulus** (small JS controllers bound via `data-controller`). Turbo has three layers:
+
+      - **Turbo Drive** intercepts link clicks and form submissions, fetches the page with
+        `fetch`, and swaps the `<body>` (merging `<head>`) without a full reload. Nothing to write;
+        the costs are JS that assumes a fresh page load (`DOMContentLoaded` fires once → use
+        `turbo:load` or Stimulus) and the 422/303 status rules for forms.
+      - **Turbo Frames**: `<turbo-frame id="comment_5">` scopes navigation. A link or form
+        inside the frame replaces *only* that frame with the matching `<turbo-frame id>` from the
+        response (the rest of the response is discarded). `data-turbo-frame="_top"` breaks out;
+        `src=` lazy-loads a frame; a missing frame in the response leaves the frame empty and logs
+        an error, a classic debugging question.
+      - **Turbo Streams**: server-sent fragments that mutate the DOM:
+        `<turbo-stream action="append" target="comments"><template>...</template></turbo-stream>`
+        with actions append/prepend/replace/update/remove/before/after (7+: refresh). Delivered
+        either as the response to a form (`format.turbo_stream { render turbo_stream:
+        turbo_stream.append(:comments, @comment) }`) or **broadcast** over Action Cable
+        (`broadcasts_to ->(c) { c.post }` in the model + `turbo_stream_from @post` in the view).
+
+      ```erb
+      <%= turbo_frame_tag dom_id(@post) do %>
+        <%= render @post %>
+        <%= link_to "Edit", edit_post_path(@post) %>   <%# response replaces just this frame %>
+      <% end %>
+      ```
+
+      Interview framing: Frames = lazy/partial navigation without JS; Streams = targeted DOM
+      updates, including real-time via Cable; Stimulus for behaviour; and `turbo: false`
+      attributes to opt out. Morphing + page refresh broadcasts (Turbo 8) reduce the need for
+      hand-written streams.
+    answer: |
+      **Q:** A form inside a `turbo-frame` submits, the server responds 200 with the full page,
+      and nothing changes on screen. Why?
+      **A:** Turbo looks for a `<turbo-frame>` with the same id in the response; the full page
+      doesn't contain it (or the form rendered without a 422 status), so the frame isn't updated.
+      Render the frame in the response, respond with a `turbo_stream`, or target `_top`.
+    explanation: |
+      Candidates should separate the three layers and know the two most common failure modes:
+      missing matching frame id, and 200 instead of 422 on invalid forms.
+    tags: [turbo, hotwire, frontend]
+    source: https://turbo.hotwired.dev/handbook/introduction
+
+  - slug: ruby-web-views-partials-content-for
+    kind: open
+    difficulty: middle
+    title: "Partials, collection rendering, content_for and i18n in views"
+    body: |
+      Walk through the view toolbox: how partials get their locals, what `render @comments`
+      does, when you use `content_for`/`yield`, where helper methods live, and how `t(".title")`
+      resolves.
+    answer: |
+      - Partials are files starting with `_` rendered with `render "form", post: @post` (explicit
+        `locals`; 7.1 adds strict locals via a `<%# locals: (post:, highlight: false) %>` magic
+        comment so a missing/extra local raises). Avoid relying on instance variables leaking into
+        partials; it couples them to the controller.
+      - `render @comments` (or `render partial: "comments/comment", collection: @comments`)
+        picks `_comment.html.erb` from the model's `to_partial_path`, sets the local `comment`
+        plus `comment_counter`/`comment_iteration`, and with `cached: true` fetches all fragment
+        caches in one multi-read. `render @comments` on an empty collection returns `nil`, hence
+        `render(@comments) || "No comments"`.
+      - `content_for :sidebar do ... end` stores markup from the template; the layout emits it with
+        `yield :sidebar` (or `content_for(:sidebar)`); `content_for?(:sidebar)` lets the layout
+        branch. Used for per-page `<title>`, extra `<head>` tags, sidebars. `provide` is the
+        streaming-safe variant that doesn't keep looking for more blocks.
+      - Helpers: modules under `app/helpers` are all mixed into every view by default
+        (`config.action_controller.include_all_helpers`), so they share one namespace; keep them
+        small and pure, prefer presenters/view components for logic with state. `helper_method
+        :current_user` exposes a controller method to views.
+      - Layouts: `app/views/layouts/application.html.erb` wraps every template with `yield`;
+        `layout "admin"` per controller, `render layout: false`, nested layouts via
+        `render template: "layouts/application"`.
+      - i18n: `t(".title")` in `app/views/posts/index.html.erb` is lazy lookup for
+        `en.posts.index.title`; `t("errors.x", default: ...)`, interpolation `%{name}`, pluralisation
+        `count:`, `l(date, format: :short)` for localisation, `I18n.locale` set per request in a
+        `before_action` / `around_action I18n.with_locale`. Missing keys render a `<span
+        class="translation_missing">` in dev and can raise in tests via
+        `config.i18n.raise_on_missing_translations`.
+    explanation: |
+      Follow-up: "Why are helpers global and what's the alternative?" `ViewComponent`/`Phlex` or
+      `ActionView::Component`-style objects with explicit inputs and unit tests. "What is a
+      `locals:` magic comment good for?" documenting the partial's contract and catching typos.
+    tags: [views, partials, i18n]
+    source: https://guides.rubyonrails.org/layouts_and_rendering.html
+
+  - slug: ruby-web-russian-doll-caching
+    kind: theory
+    difficulty: senior
+    title: "Fragment caching, Russian dolls and cache_key_with_version"
+    body: |
+      **Fragment caching** stores a rendered chunk of a view in `Rails.cache`:
+
+      ```erb
+      <% cache @post do %>          <%# key: views/posts/show:<template digest>/posts/1-20240101120000000000 %>
+        <%= render @post %>
+        <% @post.comments.each do |comment| %>
+          <% cache comment do %>    <%# inner doll %>
+            <%= render comment %>
+          <% end %>
+        <% end %>
+      <% end %>
+      ```
+
+      The key is built from `cache_key_with_version` → `"posts/1-<updated_at>"` (6.1+ also
+      supports `cache_versioning`, where the key is `posts/1` and the version is stored with the
+      entry so keys stay stable), plus a **template digest** (MD5 of the ERB and the partials it
+      renders) so deploying a changed template busts the cache automatically. Passing an array
+      (`cache [@post, current_user.role]`) composes keys; a relation gives a
+      `posts/query-<sql digest>-<count>-<max updated_at>` key.
+
+      **Russian-doll caching** nests fragments so an edited comment only re-renders *its* doll,
+      while the outer doll is rebuilt from the still-valid inner ones. It needs the parent's
+      `updated_at` to change when a child changes: `belongs_to :post, touch: true`. Without
+      `touch` the outer fragment serves stale comments forever (until `updated_at` of the post
+      changes for another reason). `render @comments, cached: true` does the same for
+      collections with a single multi-fetch.
+
+      Pitfalls to know: anything in the fragment that varies per user (name, CSRF token,
+      permissions) must be in the key or kept outside; cached HTML with `t()` needs the locale
+      in the key; entries are never actively deleted, so expiration is purely by key change
+      (plus the store's eviction / `expires_in`); `touch` chains on hot parents cause write
+      contention; dev has caching off unless `bin/rails dev:cache`.
+    answer: |
+      **Q:** Comments are edited but the post page keeps showing the old text, even though each
+      comment is wrapped in its own `cache comment` block. What's missing?
+      **A:** `belongs_to :post, touch: true` on `Comment`. The outer `cache @post` key is based on
+      the post's `updated_at`; without touching the parent its key never changes and the stale
+      outer fragment is served without looking at the inner ones.
+    explanation: |
+      The two things to state crisply: the key = model key + template digest, and the
+      `touch: true` requirement for nesting. Then the per-user and locale pitfalls.
+    tags: [caching, views, performance]
+    source: https://guides.rubyonrails.org/caching_with_rails.html
+
+  - slug: ruby-web-fresh-when-stale-etag
+    kind: mcq
+    difficulty: middle
+    title: "fresh_when and conditional GET"
+    body: |
+      ```ruby
+      def show
+        @post = Post.find(params[:id])
+        fresh_when @post
+      end
+      ```
+
+      A browser that already has this page sends `If-None-Match` with the ETag it received.
+      What happens when the post hasn't changed?
+    choices:
+      - "Rails skips the DB query and returns the cached HTML from `Rails.cache`"
+      - "The action runs the query, `fresh_when` compares the ETag, and Rails responds `304 Not Modified` without rendering the view"
+      - "Rails renders the view, then `Rack::ETag` discards the body when the hashes match"
+      - "Nothing special: `fresh_when` only sets `Cache-Control: public`"
+    answer: 1
+    explanation: |
+      `fresh_when(record)` sets `ETag` (from `cache_key_with_version`, template digest and
+      `etag { }` additions like `current_user.id`) and `Last-Modified` (from `updated_at`), then
+      checks the request's `If-None-Match`/`If-Modified-Since`; on a match it sets 304 and
+      marks the response performed, so the template is never rendered and the implicit render
+      is skipped. You save the render, **not** the query. `stale?` is the same check in `if`
+      form for custom responses (`if stale?(@post) then respond_to ... end`). Option C is what
+      happens *without* `fresh_when`: `Rack::ETag` hashes the fully rendered body and
+      `Rack::ConditionalGet` turns matches into 304, saving bandwidth but no server work.
+      Rails emits weak ETags (`W/"..."`) by default; `strong_etag:` for byte-exact needs.
+      Add `expires_in 10.minutes, public: true` for shared-cache/CDN caching.
+    tags: [caching, http]
+    source: https://guides.rubyonrails.org/caching_with_rails.html
+
+  - slug: ruby-web-cache-key-builder-code
+    kind: code
+    difficulty: middle
+    title: "Build Rails-style cache keys"
+    body: |
+      Implement the key scheme ActiveRecord uses for fragment caching. Records are any objects
+      responding to `id` and `updated_at` (a `Time`). Write:
+
+      - `cache_key(record)` → `"<collection>/<id>"` where `<collection>` is the record's class
+        name, lower-cased, with `"s"` appended (`Post` → `"posts"`);
+      - `cache_version(record)` → `updated_at` in UTC formatted as `%Y%m%d%H%M%S%6N`
+        (year, month, day, hour, minute, second, microseconds); `nil` when `updated_at` is `nil`;
+      - `cache_key_with_version(record)` → `"<cache_key>-<cache_version>"`, or just `cache_key`
+        when the version is `nil`;
+      - `collection_cache_key(records)` → `"<collection>/query-<md5>-<count>-<max version>"`
+        where `<md5>` is `Digest::MD5.hexdigest` of the ids joined with `","`, `<count>` is the
+        number of records and `<max version>` is the version of the most recently updated
+        record; for an empty array return `"<collection>/query-<md5 of \"\">-0"`. The
+        `collection` is taken from the first record (or the `name` keyword argument for an
+        empty array: `collection_cache_key([], name: "posts")`).
+
+      ```ruby
+      Post = Struct.new(:id, :updated_at)
+      p = Post.new(1, Time.utc(2024, 1, 2, 3, 4, 5, 678901))
+      cache_key(p)               # => "posts/1"
+      cache_key_with_version(p)  # => "posts/1-20240102030405678901"
+      ```
+    starter_code: |
+      require "digest"
+
+      def cache_key(record)
+        # TODO
+      end
+
+      def cache_version(record)
+        # TODO
+      end
+
+      def cache_key_with_version(record)
+        # TODO
+      end
+
+      def collection_cache_key(records, name: nil)
+        # TODO
+      end
+    tests: |
+      require "minitest/autorun"
+      require "digest"
+
+      Post = Struct.new(:id, :updated_at)
+      Comment = Struct.new(:id, :updated_at)
+
+      class SolutionTest < Minitest::Test
+        T1 = Time.utc(2024, 1, 2, 3, 4, 5, 678901)
+        T2 = Time.new(2024, 6, 1, 12, 0, 0, "+02:00")   # 10:00:00 UTC
+
+        def test_cache_key
+          assert_equal "posts/1", cache_key(Post.new(1, T1))
+          assert_equal "comments/42", cache_key(Comment.new(42, T1))
+        end
+
+        def test_cache_version_uses_utc_microseconds
+          assert_equal "20240102030405678901", cache_version(Post.new(1, T1))
+          assert_equal "20240601100000000000", cache_version(Post.new(1, T2))
+          assert_nil cache_version(Post.new(1, nil))
+        end
+
+        def test_cache_key_with_version
+          assert_equal "posts/1-20240102030405678901", cache_key_with_version(Post.new(1, T1))
+          assert_equal "posts/7", cache_key_with_version(Post.new(7, nil))
+        end
+
+        def test_collection_cache_key
+          records = [Post.new(1, T1), Post.new(2, T2), Post.new(3, T1)]
+          expected = "posts/query-#{Digest::MD5.hexdigest('1,2,3')}-3-20240601100000000000"
+          assert_equal expected, collection_cache_key(records)
+        end
+
+        def test_collection_cache_key_changes_with_membership_and_updates
+          a = collection_cache_key([Post.new(1, T1), Post.new(2, T1)])
+          b = collection_cache_key([Post.new(1, T1), Post.new(3, T1)])
+          c = collection_cache_key([Post.new(1, T1), Post.new(2, T2)])
+          refute_equal a, b
+          refute_equal a, c
+        end
+
+        def test_empty_collection
+          assert_equal "posts/query-#{Digest::MD5.hexdigest('')}-0", collection_cache_key([], name: "posts")
+        end
+      end
+    solution: |
+      require "digest"
+
+      def collection_name(record)
+        "#{record.class.name.downcase}s"
+      end
+
+      def cache_key(record)
+        "#{collection_name(record)}/#{record.id}"
+      end
+
+      def cache_version(record)
+        record.updated_at&.getutc&.strftime("%Y%m%d%H%M%S%6N")
+      end
+
+      def cache_key_with_version(record)
+        version = cache_version(record)
+        version ? "#{cache_key(record)}-#{version}" : cache_key(record)
+      end
+
+      def collection_cache_key(records, name: nil)
+        name ||= collection_name(records.first)
+        digest = Digest::MD5.hexdigest(records.map(&:id).join(","))
+        key = "#{name}/query-#{digest}-#{records.size}"
+        newest = records.map { |r| cache_version(r) }.compact.max
+        newest ? "#{key}-#{newest}" : key
+      end
+    explanation: |
+      This mirrors `ActiveRecord::Integration#cache_key` / `cache_version` (the `:usec` timestamp
+      format, UTC normalisation so servers in different zones agree, `nil` version for records
+      without timestamps) and `ActiveRecord::Relation#cache_key`, which hashes the query SQL
+      (here the ids) and appends `COUNT` and `MAX(updated_at)` fetched in one query. Membership
+      changes alter the digest/count, updates alter the max timestamp — that's why a collection
+      key invalidates correctly without touching parents. One Ruby detail worth mentioning:
+      `Time#utc` mutates the receiver, so prefer `getutc` in real code to avoid changing the
+      record's `updated_at` object as a side effect of building a key.
+    tags: [caching, coding]
+    source: https://api.rubyonrails.org/classes/ActiveRecord/Integration.html
+
+  - slug: ruby-web-active-job-adapters-idempotency
+    kind: open
+    difficulty: senior
+    title: "Sidekiq vs Solid Queue, and writing jobs that survive retries"
+    body: |
+      Your team is choosing between Sidekiq and Solid Queue (Rails 8 default) and has had
+      incidents with duplicated emails and double charges from retried jobs. Compare the
+      adapters and describe how you design jobs to be safe.
+    answer: |
+      - **Active Job** is the adapter-agnostic API (`perform_later`, `set(wait:, queue:)`,
+        `retry_on`, `discard_on`, GlobalID serialisation of records); the backend does storage
+        and execution. Switching adapters doesn't migrate already-enqueued jobs.
+      - **Sidekiq**: Redis-backed, very high throughput, mature UI, Pro/Enterprise features
+        (batches, unique jobs, rate limits); at-least-once with retries; extra infrastructure
+        (Redis) and memory for queues; its native API is faster than going through Active Job.
+      - **Solid Queue**: tables in your relational DB (uses `FOR UPDATE SKIP LOCKED`), no Redis,
+        transactional enqueueing with your data when sharing the DB, supervisor + workers +
+        dispatcher processes, recurring tasks in `config/recurring.yml`, `limits_concurrency`,
+        Mission Control UI. Throughput limited by the DB; polling adds latency; a separate
+        `queue` database is the default in production to isolate load.
+      - **Delivery semantics are at-least-once** in both: a worker can die after doing the work
+        but before acking, the network can time out after the charge succeeded, and `retry_on`
+        re-runs the whole `perform`. Design for it:
+        - idempotency keys: pass a stable key (`order.id`, a UUID stored on the record) to the
+          payment provider / mail log; check "already done" before acting
+          (`return if order.charged?`), ideally with a unique index so the check is atomic;
+        - make state transitions guarded updates: `Order.where(id:, state: "pending").update_all(state: "charging")`
+          and proceed only if one row changed;
+        - keep jobs small and single-purpose; split "charge" and "send receipt" so a failure in
+          one doesn't repeat the other;
+        - enqueue after commit (`after_commit`, or 7.2 `enqueue_after_transaction_commit`) so a
+          job never runs for a row that was rolled back; pass ids, not objects, and expect
+          `ActiveJob::DeserializationError` (discard it) when the record was deleted;
+        - unique-job constraints (Sidekiq Enterprise, `solid_queue` concurrency controls,
+          or a lock row) for "one in flight per entity"; explicit `retry_on SomeError, wait:
+          :polynomially_longer, attempts: 5` with a dead-letter policy, and alerting on the
+          failed set.
+    explanation: |
+      Follow-up: "Why not exactly-once?" impossible across process boundaries without
+      coordination; idempotent consumers are the practical answer. "When would you still pick
+      Sidekiq in 2025?" very high job volumes or when the DB is already the bottleneck.
+    tags: [active-job, sidekiq, solid-queue, idempotency]
+    source: https://guides.rubyonrails.org/active_job_basics.html
+
+  - slug: ruby-web-retry-on-discard-on
+    kind: mcq
+    difficulty: senior
+    title: "What happens to a job that raises?"
+    body: |
+      ```ruby
+      class SyncJob < ApplicationJob
+        retry_on Net::OpenTimeout, wait: :polynomially_longer, attempts: 3
+        discard_on ActiveJob::DeserializationError
+
+        def perform(user_id) = Sync.call(User.find(user_id))
+      end
+      ```
+
+      `Sync.call` raises `ActiveRecord::RecordNotFound` because the user was deleted. What
+      happens with the Solid Queue adapter?
+    choices:
+      - "The job is retried 3 times with growing delays, then discarded"
+      - "The job is discarded silently because `RecordNotFound` is a kind of deserialization error"
+      - "The exception propagates: the job is marked failed after one attempt (Solid Queue does not retry on its own), and `retry_on`/`discard_on` don't apply because the class doesn't match"
+      - "Active Job retries any `StandardError` 25 times by default, like Sidekiq"
+    answer: 2
+    explanation: |
+      `retry_on` and `discard_on` match by exception class (and ancestors); `RecordNotFound`
+      is neither `Net::OpenTimeout` nor `DeserializationError` (that one is raised by GlobalID
+      when the *argument* record is gone, i.e. if you had passed `user` instead of `user_id`).
+      Active Job itself never retries; the adapter decides. Sidekiq's native 25-retry policy
+      applies to Active Job jobs as well, which hides this class of bug, while Solid Queue
+      and GoodJob rely solely on `retry_on`, so the job lands in failed executions after one
+      run. The fix is `discard_on ActiveRecord::RecordNotFound` (or `rescue_from` with a log),
+      and passing ids rather than records when deletion is possible. `attempts: 3` counts the
+      *total* executions; `wait: :polynomially_longer` (7.1 name for `:exponentially_longer`) backs
+      off with jitter.
+    tags: [active-job, retries]
+    source: https://guides.rubyonrails.org/active_job_basics.html
+
+  - slug: ruby-web-action-cable-basics
+    kind: open
+    difficulty: senior
+    title: "How Action Cable works"
+    body: |
+      Explain the moving parts of Action Cable (connection, channel, stream, adapter), how
+      authentication works, and what changes when you run several Puma processes.
+    answer: |
+      - One **WebSocket** per browser tab, upgraded at `/cable` by the Action Cable Rack endpoint;
+        it can be mounted in the app process or run standalone (`cable/config.ru`). The
+        connection is handled on an event loop (nio4r), not in the Puma request thread.
+      - **`ApplicationCable::Connection`** is the authentication point: `identified_by :current_user`
+        and `connect` reads `cookies.encrypted[:session]`/`cookies.signed` (no `session` helper,
+        no controller) and `reject_unauthorized_connection` otherwise. Identification is what
+        lets you `disconnect` a user from the server side.
+      - **Channels** (`ChatChannel < ApplicationCable::Channel`) are the server-side
+        counterpart of a client `consumer.subscriptions.create("ChatChannel", { room: 1 })`:
+        `subscribed` authorises and calls `stream_for room` / `stream_from "chat_#{id}"`;
+        client actions map to public methods via `perform("speak", data)`.
+      - **Broadcasting**: `ChatChannel.broadcast_to(room, payload)` or
+        `ActionCable.server.broadcast("chat_1", ...)` publishes on the **adapter** (Redis pub/sub,
+        PostgreSQL `NOTIFY`, Solid Cable's DB polling in Rails 8, or `async` in dev/test). Each
+        server process subscribes to the broadcast channel and pushes to its own sockets, which
+        is exactly why the adapter is mandatory with more than one process: without a shared
+        pub/sub, a broadcast from the process handling the HTTP POST never reaches sockets held
+        by another process.
+      - Turbo Streams ride on top: `turbo_stream_from @post` + `broadcasts_to` in the model.
+      - Operational points: long-lived connections count against the DB pool only while a
+        channel runs DB code (wrap in the executor automatically); `config.action_cable.allowed_request_origins`
+        for CSRF-like origin checks; sticky sessions are not required (pub/sub does the fan-out),
+        but load balancers must support WebSocket upgrades and idle timeouts; prefer
+        broadcasting from `after_commit`/jobs, not inside transactions.
+    explanation: |
+      Follow-up: "Why does it work in development with one process but not on Heroku with two
+      dynos?" the `async` adapter is in-process only. "How do you scale?" more cable processes
+      behind a WebSocket-aware LB and Redis/Solid Cable as the shared bus.
+    tags: [action-cable, websockets, realtime]
+    source: https://guides.rubyonrails.org/action_cable_overview.html
+
+  - slug: ruby-web-deliver-later
+    kind: mcq
+    difficulty: junior
+    title: "deliver_now vs deliver_later"
+    body: |
+      ```ruby
+      UserMailer.with(user: @user).welcome.deliver_later
+      ```
+
+      Which statement is correct?
+    choices:
+      - "The email is rendered and sent immediately in the request, then logged to the job queue"
+      - "An `ActionMailer::MailDeliveryJob` is enqueued with the mailer, method and GlobalID-serialised arguments; rendering and SMTP happen in the worker"
+      - "It only works with Sidekiq; with the default adapter it falls back to `deliver_now`"
+      - "The mailer action runs now (template rendered) but SMTP delivery happens later"
+    answer: 1
+    explanation: |
+      `welcome` returns a lazy `MessageDelivery`; nothing is rendered until `deliver_now` or
+      the job runs. `deliver_later` enqueues `ActionMailer::MailDeliveryJob` on the `mailers`
+      queue through whatever Active Job adapter is configured (the inline `async` adapter in
+      dev, Solid Queue in Rails 8 production) with `params` and arguments serialised via GlobalID,
+      so a deleted user causes `DeserializationError` in the worker. Consequences: use
+      `deliver_later` from `after_commit`, not `after_save`; pass records, not unserialisable
+      objects; and `deliver_later(wait: 1.hour)`/`queue:` options exist. In tests
+      `assert_enqueued_email_with` checks the enqueue, `perform_enqueued_jobs` runs it.
+    tags: [action-mailer, active-job]
+    source: https://guides.rubyonrails.org/action_mailer_basics.html
+
+  - slug: ruby-web-credentials-master-key
+    kind: mcq
+    difficulty: junior
+    title: "credentials.yml.enc and master.key"
+    body: |
+      Which statement about Rails encrypted credentials is correct?
+    choices:
+      - "`config/master.key` is committed to git so CI can decrypt `credentials.yml.enc`"
+      - "`config/credentials.yml.enc` is committed; `config/master.key` (or `RAILS_MASTER_KEY`) is kept out of git and provided to each environment"
+      - "Both files are ignored by git; credentials are re-generated on every deploy"
+      - "`credentials.yml.enc` is only read in production; development uses `config/secrets.yml`"
+    answer: 1
+    explanation: |
+      `bin/rails credentials:edit` decrypts the YAML with `config/master.key` (git-ignored by
+      the generator) into an editor and re-encrypts on save; the encrypted file is safe to
+      commit, the key travels through secrets management as the `RAILS_MASTER_KEY` env var. Values
+      are read with `Rails.application.credentials.aws[:secret]` (or `.dig`). Per-environment
+      files (`credentials/production.yml.enc` + `production.key`, via `--environment production`)
+      let staging and production differ. `secret_key_base` for production comes from
+      credentials or the env var; missing it makes boot fail. `config/secrets.yml` was the
+      Rails 5.1 predecessor and was removed in 7.2. Losing `master.key` means losing every
+      secret in the file, so back it up outside git.
+    tags: [configuration, security]
+    source: https://guides.rubyonrails.org/security.html
+
+  - slug: ruby-web-initializers-after-initialize-to-prepare
+    kind: open
+    difficulty: senior
+    title: "Initializers, after_initialize, to_prepare and environments"
+    body: |
+      An initializer in `config/initializers/payments.rb` does
+      `PaymentGateway.client = Gateway.new(Rails.application.credentials.gateway_key)` and
+      references `Order::STATUSES`. In development, changing `Order` causes mysterious
+      "stale constant" behaviour, and in production boot sometimes fails. Explain the boot
+      sequence and where each kind of code belongs.
+    answer: |
+      - Boot order: `config/boot.rb` (Bundler) → `config/application.rb` (frameworks, `config.*`)
+        → `config/environments/<Rails.env>.rb` → railtie/engine initializers → **`config/initializers/*.rb`**
+        in alphabetical order → `config.after_initialize` blocks → eager loading (production:
+        `config.eager_load = true`) → routes loaded lazily / on first request. `Rails.env` comes
+        from `RAILS_ENV` (falling back to `RACK_ENV`, then `development`); `Rails.env.production?`
+        is a string inquirer.
+      - Initializers run **once at boot**, before the app is fully configured in some respects
+        and before reloading exists. Referencing an autoloaded, *reloadable* constant (`Order`)
+        there is the bug: the initializer holds the class object from boot; after a reload
+        `Order` is a new class, so `Order::STATUSES` captured at boot is stale and `is_a?`
+        checks fail. Rails 7 warns/raises for this during initialization.
+      - Fix: code that must re-run on every reload goes in `Rails.application.config.to_prepare
+        { ... }` (runs once in production, before each request after a change in development),
+        or defer the lookup (`-> { Order::STATUSES }`, or a string constant name constantized at
+        call time), or make the dependency non-reloadable (`lib/` with `require`,
+        `autoload_once_paths`).
+      - `config.after_initialize` runs after *all* initializers and frameworks are set up — right
+        for things that need the full config (e.g. reading another initializer's result) but
+        still boot-only.
+      - Why production boot fails: credentials missing (`RAILS_MASTER_KEY`), or an initializer
+        touching the DB/Redis during `assets:precompile` or image build where no services exist;
+        guard with `unless ENV["SECRET_KEY_BASE_DUMMY"]` / lazy connections, and never do
+        network I/O at boot.
+      - Environments: `config/environments/*.rb` override `application.rb`; new envs
+        (`staging`) are just another file plus `database.yml` section, though many teams prefer
+        `production` + env vars so staging matches prod exactly.
+    explanation: |
+      Follow-up: "What's the difference between `to_prepare` and `after_initialize` in
+      production?" none at runtime (both once), the difference exists only with reloading.
+      "Why alphabetical initializers?" so you can order with `01_` prefixes; cross-initializer
+      dependencies are a smell.
+    tags: [configuration, boot, zeitwerk]
+    source: https://guides.rubyonrails.org/configuring.html
+
+  - slug: ruby-web-zeitwerk-naming
+    kind: mcq
+    difficulty: junior
+    title: "Which file defines Admin::HTMLParser under Zeitwerk?"
+    body: |
+      With default inflections, which file is expected to define `Admin::HTMLParser` so that
+      autoloading works?
+    choices:
+      - "`app/services/admin/HTMLParser.rb`"
+      - "`app/services/admin/html_parser.rb`, which Zeitwerk expects to define `Admin::HtmlParser` unless you add `inflect.acronym \"HTML\"`"
+      - "`app/services/admin_html_parser.rb`"
+      - "Any file, as long as it is `require`d in an initializer"
+    answer: 1
+    explanation: |
+      Zeitwerk maps file paths to constants: directories are namespaces, `snake_case.rb` is
+      `camelize`d, and `app/*` subdirectories are root namespaces (so `app/services/admin/x.rb`
+      is `Admin::X`, not `Services::Admin::X`). `html_parser` camelizes to `HtmlParser`; to get
+      `HTMLParser` add `inflect.acronym "HTML"` in `config/initializers/inflections.rb` (or
+      `Rails.autoloaders.main.inflector.inflect("html_parser" => "HTMLParser")`). A mismatch
+      surfaces as `NameError: uninitialized constant` or, in production with eager loading, as
+      `Zeitwerk::NameError` at boot — run `bin/rails zeitwerk:check`. Explicit `require` of
+      autoloadable files is wrong: it bypasses reloading and can define the constant twice.
+      `lib/` is not autoloaded unless `config.autoload_lib(ignore: %w[assets tasks])` (7.1+).
+    tags: [zeitwerk, autoloading]
+    source: https://guides.rubyonrails.org/autoloading_and_reloading_constants.html
+
+  - slug: ruby-web-rails-cache-stampede
+    kind: open
+    difficulty: senior
+    title: "Rails.cache stores, fetch, and cache stampedes"
+    body: |
+      ```ruby
+      Rails.cache.fetch("homepage/stats", expires_in: 5.minutes) { Stats.compute }  # takes 3s
+      ```
+
+      When the entry expires under load, the DB falls over. Explain why, how to fix it with
+      Rails.cache's own options, and how you choose a cache store.
+    answer: |
+      - A **stampede / dog-pile**: at expiry every concurrent request misses, and N requests
+        run `Stats.compute` at once. `fetch` is read-or-compute with no coordination.
+      - `race_condition_ttl: 10.seconds`: on a miss for a recently expired key, the first
+        reader extends the stale entry by 10s and recomputes, while other readers keep serving
+        the stale value. Works only with stores that keep expired entries briefly (Memcached,
+        Redis, Solid Cache, file), and only for *expired*, not *missing*, keys.
+      - Other mitigations: `skip_nil: true`, jittered `expires_in`, background refresh (a job
+        writes the key on a schedule, requests never compute), a lock key with `write(..., unless_exist: true)`
+        (`add` semantics) so one process computes, and `Rails.cache.fetch_multi` to batch reads.
+        Never cache AR objects (marshal size, stale associations, class reload issues); cache
+        ids or plain data.
+      - Stores: `:memory_store` (per process, no sharing, fine in dev/tests),
+        `:file_store`, `:mem_cache_store` (Dalli, LRU, fastest for small values),
+        `:redis_cache_store` (persistence, larger values, shared with Sidekiq if you're not
+        careful), **Solid Cache** (Rails 8 default: SQL-backed, bigger-than-RAM, FIFO eviction
+        by `max_size`/`max_age` in `config/cache.yml`, no extra service; higher latency than
+        Memcached but great hit rate), `:null_store` (no-op). All go through the same API
+        (`read`/`write`/`fetch`/`delete`/`increment`/`exist?`, `expires_in`, `expires_at` (7.1),
+        `compress`, `coder`, `namespace`, `version`).
+      - `LocalCache` middleware adds a per-request in-memory layer, so repeated reads in one
+        request don't hit the store; `Rails.cache.with_local_cache` for jobs.
+      - Observability: `cache_read.active_support` notifications, hit/miss ratios; key naming
+        with versions so deploys don't need mass invalidation (`Rails.cache.delete_matched` is
+        O(n) and absent on Memcached).
+    explanation: |
+      Follow-up: "Why doesn't `race_condition_ttl` help on a cold cache?" there is no stale
+      entry to serve; warm keys at deploy or accept one computation with a lock. "Solid Cache
+      vs Redis?" fewer moving parts and larger capacity vs lower latency.
+    tags: [caching, rails-cache, performance]
+    source: https://guides.rubyonrails.org/caching_with_rails.html
+
+  - slug: ruby-web-activesupport-concern
+    kind: theory
+    difficulty: middle
+    title: "ActiveSupport::Concern and included do"
+    body: |
+      A plain Ruby module can't easily add class-level macros (`validates`, `scope`) to its
+      host: `self.included(base)` + `base.extend(ClassMethods)` + `base.class_eval do ... end` is
+      the manual recipe. `ActiveSupport::Concern` packages it and solves dependency ordering.
+
+      ```ruby
+      module Archivable
+        extend ActiveSupport::Concern
+
+        included do                       # evaluated with class_eval on the including class
+          scope :archived, -> { where.not(archived_at: nil) }
+          validates :archived_at, comparison: { less_than_or_equal_to: -> { Time.current } }, allow_nil: true
+        end
+
+        class_methods do                  # becomes ClassMethods, auto-extended
+          def archive_all = find_each(&:archive!)
+        end
+
+        def archive! = update!(archived_at: Time.current)     # instance methods as usual
+      end
+
+      class Post < ApplicationRecord
+        include Archivable
+      end
+      ```
+
+      Why it exists beyond sugar: if concern `B` `include`s concern `A`, with plain modules the
+      `included` hook of `A` fires with `B` (a module) as the base, so `scope` is undefined.
+      `Concern` records `A` as a dependency and runs both hooks against the *final class*.
+
+      Guidance interviewers expect: concerns are for **shared behaviour** across models or
+      controllers (`Trashable`, `Authenticatable`), not for chopping a huge model into
+      files by topic — that hides coupling and makes it unclear where a method lives
+      (`app/models/post/*` namespaced concerns are common in Basecamp-style code, and
+      `app/controllers/concerns` for controller macros). Prefer explicit objects when the
+      "concern" has its own state.
+    answer: |
+      **Q:** Why does `included do ... end` work with `scope`/`validates` while a plain module
+      body does not?
+      **A:** The block is `class_eval`ed on the including class when it is included, so `self`
+      is the AR class and its macros are available. In a plain module body `self` is the module,
+      and `included(base)` needs `base.class_eval` to achieve the same.
+    explanation: |
+      Points: `included` block semantics, `class_methods`, dependency resolution between
+      concerns, and the design caveat about using concerns to split a God model.
+    tags: [activesupport, concerns, modules]
+    source: https://api.rubyonrails.org/classes/ActiveSupport/Concern.html
+
+  - slug: ruby-web-notifications-and-tagged-logging
+    kind: open
+    difficulty: middle
+    title: "ActiveSupport::Notifications and tagged logging"
+    body: |
+      You need to measure how long every call to an external payment API takes, surface it
+      in logs correlated with the request id, and later feed it to an APM. How do you use
+      `ActiveSupport::Notifications` and tagged logging for this?
+    answer: |
+      - Instrument the code once: `ActiveSupport::Notifications.instrument("request.payments",
+        endpoint: "charge") { client.charge(...) }`. The block is timed; the payload hash plus
+        `:exception`/`:exception_object` (if it raised) is delivered to subscribers. The event name
+        convention is `"<action>.<library>"`.
+      - Subscribe anywhere (an initializer): `ActiveSupport::Notifications.subscribe("request.payments")
+        do |event| ... end` with `ActiveSupport::Notifications::Event` (`event.duration` in ms,
+        `event.payload`, `event.allocations`, `cpu_time`), or `monotonic_subscribe`. Subscribers run
+        **synchronously in the instrumented thread**, so keep them cheap and non-raising; a slow
+        subscriber slows the request. Use regex subscriptions (`/\.payments$/`) for families.
+      - Rails itself emits `process_action.action_controller`, `sql.active_record`,
+        `cache_read.active_support`, `perform.active_job`, `deliver.action_mailer`, which is how
+        log subscribers, APMs and `rails-mini-profiler` work; `ActiveSupport::LogSubscriber`
+        subclasses map events to log lines (`def request(event)`).
+      - Correlation: `Rails.logger` is an `ActiveSupport::TaggedLogging` instance;
+        `config.log_tags = [:request_id, ->(req) { req.session[:user_id] }]` prefixes every line
+        of a request with `[uuid] [42]`, and `Rails.logger.tagged("payments") { ... }` adds ad-hoc
+        tags (threads/fibers get their own tag stack). `ActionDispatch::RequestId` sets the id
+        from `X-Request-Id` or generates one, so it can be propagated to the payment API header
+        and to the job (`job.provider_job_id`, or pass it explicitly).
+      - Formatting: `config.log_formatter`, JSON logs via a custom formatter or `lograge`
+        (which itself subscribes to `process_action`); `config.log_level`; 7.1
+        `Rails.error.report`/`ActiveSupport::ErrorReporter` for exceptions; `Rails.event` (8.1).
+    explanation: |
+      Follow-up: "What happens if a subscriber raises?" since Rails 7.1 all subscribers still run and
+      an `InstrumentationSubscriberError` wrapping all failures is raised afterwards; before, the
+      first failure aborted the rest. "How do you unit test instrumentation?"
+      `ActiveSupport::Notifications.subscribed(callback, "name") { ... }` or
+      `assert_notifications_count` (7.2).
+    tags: [instrumentation, logging, observability]
+    source: https://guides.rubyonrails.org/active_support_instrumentation.html
+
+  - slug: ruby-web-action-controller-api
+    kind: mcq
+    difficulty: middle
+    title: "What ActionController::API leaves out"
+    body: |
+      You generate an app with `rails new api --api`. Which statement is correct?
+    choices:
+      - "Controllers inherit from `ActionController::API`, which drops view rendering, cookies/session, flash, CSRF and the browser-oriented middleware, keeping `render json:`, callbacks, `rescue_from` and strong params"
+      - "`ActionController::API` is `ActionController::Base` with `protect_from_forgery` disabled; everything else is identical"
+      - "API mode removes Active Record and uses Active Model only"
+      - "API mode cannot serve HTML at all, even if you add `ActionView` back"
+    answer: 0
+    explanation: |
+      `ActionController::API` includes a smaller set of modules (`ApiRendering`, `Renderers::All`,
+      `StrongParameters`, `Callbacks`, `Rescue`, `Instrumentation`, `ParamsWrapper`, `BasicImplicitRender`,
+      `ConditionalGet`, `HttpAuthentication`...) and skips `Cookies`, `Flash`, `RequestForgeryProtection`,
+      `Helpers`, layouts and `respond_to` HTML defaults; the middleware stack omits cookies,
+      session, flash, `MethodOverride`, `Rack::Head`'s browser niceties, etc. You can add modules
+      back (`include ActionController::Cookies`, `ActionController::MimeResponds`) and middleware
+      (`config.middleware.use ActionDispatch::Cookies`) when a session is needed for an SPA.
+      `rails new --api` also skips asset pipeline, JS and view generators, and `jbuilder`
+      remains for JSON templates. HTML is possible by inheriting a specific controller from
+      `ActionController::Base`, so option D is false.
+    tags: [api, controllers]
+    source: https://guides.rubyonrails.org/api_app.html
+
+  - slug: ruby-web-api-design-versioning-pagination
+    kind: open
+    difficulty: senior
+    title: "Designing a public JSON API: versioning, serialization, pagination, rate limits"
+    body: |
+      You're asked to expose `/api` for third parties. Describe how you would version it,
+      serialize responses, paginate collections and rate-limit clients in Rails 7.2+/8, and the
+      trade-offs of each choice.
+    answer: |
+      - **Versioning**: URL path (`namespace :api do namespace :v1 do resources :posts end end`
+        → `Api::V1::PostsController`) is explicit, cacheable and easy to route/document; header
+        versioning (`Accept: application/vnd.myapp.v2+json` via a routing `constraints:` class)
+        keeps URLs stable but is harder to test in a browser and with CDNs. Share logic through
+        base controllers/concerns, version serializers, and sunset old versions with a
+        `Deprecation`/`Sunset` header. Avoid versioning in the query string.
+      - **Serialization**: `render json: post` calls `as_json` (quick, leaks columns); `jbuilder`
+        templates (`json.extract! post, :id, :title`, partials, caching with `json.cache!`);
+        serializer objects (`active_model_serializers`, `blueprinter`, `alba`, `oj` for speed) keep
+        the shape explicit and testable; JSON:API if clients need a standard. Always whitelist
+        fields; never serialize AR objects by default; set `Content-Type` properly and return
+        errors as structured JSON (`errors.details`) with the right status (422, 404, 401, 403).
+      - **Pagination**: offset (`page`/`per_page`, `pagy`/`kaminari`) is simple but
+        `OFFSET 100000` scans and shifts under writes; keyset/cursor (`WHERE id > ?` ordered by
+        a unique column, opaque cursor) is stable and O(log n), so prefer it for public feeds.
+        Cap `per_page`, return `Link` headers or a `meta` block, include total counts only when
+        cheap (`count` on a big table is not).
+      - **Rate limiting**: Rails 7.2 `rate_limit to: 100, within: 1.minute, by: -> { request.headers["X-Api-Key"] },
+        with: -> { head :too_many_requests }, only: :create` in the controller, backed by
+        `Rails.cache` (so a shared store like Redis/Solid Cache in production; `:memory_store`
+        would be per process); `Rack::Attack` for IP-level throttles before the app; return
+        `429` with `Retry-After` and `X-RateLimit-*` headers; separate limits per plan.
+      - Cross-cutting: token auth (`authenticate_or_request_with_http_token`, hashed API keys),
+        `ActionController::API`, `ETag`/`fresh_when` for GETs, CORS only if browsers call it,
+        request specs (`ActionDispatch::IntegrationTest`) as the primary test layer, OpenAPI docs,
+        idempotency keys on POST.
+    explanation: |
+      Follow-up: "Why is `rate_limit` keyed on the cache store a problem with `memory_store`?"
+      each Puma worker counts separately. "What breaks with offset pagination?" skipped or
+      duplicated rows when inserts happen between pages, and slow deep pages.
+    tags: [api, versioning, pagination, rate-limiting]
+    source: https://api.rubyonrails.org/classes/ActionController/RateLimiting/ClassMethods.html
+
+  - slug: ruby-web-rails-8-solid-stack-health-check
+    kind: theory
+    difficulty: senior
+    title: "Rails 8 defaults: Solid Queue/Cache/Cable, authentication generator, /up"
+    body: |
+      Rails 7.1–8 pushed the "no PaaS, no Redis" direction. What a senior candidate should
+      be able to describe:
+
+      - **`/up` health check (7.1)**: `Rails.application.routes.draw { get "up" => "rails/health#show" }`
+        is generated by default. `Rails::HealthController#show` returns `200` with a green page
+        if the app booted and can serve a request, `500` otherwise. It deliberately does **not**
+        check the database, Redis or queues: it's a liveness probe for load balancers and Kamal,
+        not a readiness/dependency check — add your own endpoint for those, and keep `/up`
+        exempt from auth and `HostAuthorization` problems (`config.hosts`).
+      - **Solid Queue** (default Active Job adapter in 8): jobs, scheduled executions, recurring
+        tasks and concurrency controls as tables, claimed with `FOR UPDATE SKIP LOCKED`; runs
+        via `bin/jobs` (supervisor → workers/dispatcher), in production on a separate
+        `queue` database by default (`config/database.yml` multi-db, `config.solid_queue.connects_to`),
+        or in-process in Puma with `SOLID_QUEUE_IN_PUMA` for small apps.
+      - **Solid Cache** (default `cache_store` in 8): SQL-backed, bigger-than-memory cache with
+        FIFO/LRU-ish eviction by `max_size`/`max_age`, encrypted entries optional, `cache` database.
+      - **Solid Cable** (default Action Cable adapter in production): pub/sub by polling a
+        `solid_cable_messages` table, messages kept ~1 day; replaces Redis for broadcasts.
+      - **Authentication generator** (`bin/rails generate authentication`): `User` with
+        `has_secure_password`, `Session` model (DB-backed sessions = revocable), `Current.session`,
+        `Authentication` concern with `require_authentication`/`allow_unauthenticated_access`,
+        `authenticate_by` (constant-time), password reset via `generates_token_for`, `rate_limit`
+        on login, and a signed `session_id` cookie. No roles, no sign-up, no OAuth: it's a
+        starting point to own rather than Devise.
+      - Also default in 8: **Propshaft** instead of Sprockets, **Kamal 2** + **Thruster**
+        for deployment, SQLite tuned for production (WAL, immediate transactions), and
+        `params.expect`.
+
+      ```yaml
+      # config/database.yml (production, Rails 8 generator)
+      production:
+        primary: { <<: *default, database: storage/production.sqlite3 }
+        cache:   { <<: *default, database: storage/production_cache.sqlite3, migrations_paths: db/cache_migrate }
+        queue:   { <<: *default, database: storage/production_queue.sqlite3, migrations_paths: db/queue_migrate }
+        cable:   { <<: *default, database: storage/production_cable.sqlite3, migrations_paths: db/cable_migrate }
+      ```
+    answer: |
+      **Q:** Your load balancer marks instances healthy via `/up`, but the app is failing every
+      request with database timeouts. Why does `/up` still return 200, and what should you do?
+      **A:** `/up` only proves the process booted and can respond; it never touches the DB.
+      Add a readiness endpoint that checks dependencies (e.g. `ActiveRecord::Base.connection.execute("SELECT 1")`,
+      queue depth) with a timeout, and point readiness probes at it while keeping `/up` as liveness.
+    explanation: |
+      Expect questions on what the Solid trio replaces (Sidekiq/Redis for jobs, Memcached/Redis
+      for cache, Redis pub/sub for Cable), the separate databases, and the semantics of `/up`.
+    tags: [rails-8, solid-queue, solid-cache, health-check]
+    source: https://guides.rubyonrails.org/8_0_release_notes.html
+
+  - slug: ruby-web-asset-pipeline-propshaft-importmap
+    kind: mcq
+    difficulty: middle
+    title: "Propshaft, importmap and jsbundling"
+    body: |
+      Which statement about the Rails 7+/8 asset options is correct?
+    choices:
+      - "Propshaft transpiles and bundles JavaScript like Sprockets did, just faster"
+      - "Propshaft only fingerprints and serves files from `app/assets` and the `builds` directory; importmap-rails loads ES modules directly from the browser without bundling, and jsbundling-rails delegates bundling to esbuild/bun/webpack writing into `app/assets/builds`"
+      - "importmap-rails requires Node.js at deploy time to resolve the pinned packages"
+      - "With Sprockets removed in Rails 8, `asset_path` helpers no longer fingerprint files"
+    answer: 1
+    explanation: |
+      Sprockets was a build system (concatenation, Sass, CoffeeScript, `//= require`). Propshaft
+      (default from Rails 8) does none of that: it fingerprints (`application-<digest>.css`),
+      rewrites `url()` references in CSS, and serves `app/assets/*` plus whatever a bundler drops
+      in `app/assets/builds`; `assets:precompile` is just copying with digests. JavaScript
+      strategy is separate: **importmap-rails** (default) maps bare specifiers to URLs
+      (`pin "stimulus"` → vendored under `vendor/javascript`), relying on browser ES modules and
+      HTTP/2, no Node, no bundler, but no TypeScript/JSX transpilation; **jsbundling-rails**
+      (`--javascript=esbuild|bun|webpack|rollup`) and **cssbundling-rails** (Tailwind, PostCSS,
+      Sass) run the tool via `yarn build` and need Node/Bun in the build image. Fingerprinting
+      and `asset_path`/`javascript_include_tag` keep working with either.
+    tags: [assets, propshaft, importmap]
+    source: https://guides.rubyonrails.org/asset_pipeline.html
+
+  - slug: ruby-web-current-attributes-pitfalls
+    kind: open
+    difficulty: senior
+    title: "Current attributes and their pitfalls"
+    body: |
+      ```ruby
+      class Current < ActiveSupport::CurrentAttributes
+        attribute :user, :request_id
+        resets { Time.zone = nil }
+
+        def user=(user)
+          super
+          Time.zone = user&.time_zone
+        end
+      end
+      ```
+
+      Explain how `Current` is scoped and reset, what goes wrong when it is used outside a
+      request, and the design arguments against it.
+    answer: |
+      - `CurrentAttributes` is a thread-local (fiber-local since 7.0 `isolation_level`)
+        singleton: `Current.user = ...` in a `before_action`, `Current.user` anywhere below
+        (models, jobs, mailers, views) without threading parameters through.
+      - It is reset **by the executor**: `ActionDispatch::Executor` calls
+        `ActiveSupport::CurrentAttributes.reset_all` before and after each request; Active Job
+        and Action Cable wrap work in the same executor, so jobs start clean. Anything *not*
+        wrapped in `Rails.application.executor.wrap` — rake tasks, custom threads, a console
+        session, `Thread.new` inside a request, Sidekiq's native API without the Rails
+        adapter, Puma's thread reuse — keeps whatever was set last. Classic bugs: a test
+        sets `Current.user` and leaks it into the next test (use `Current.reset` or
+        `ActiveSupport::CurrentAttributes.reset_all` in teardown; Rails does it in `ActiveSupport::TestCase`
+        since 7.0), or a background thread sees `Current.user = nil` and does the wrong thing.
+      - Jobs don't inherit the request's `Current` automatically; pass `Current.user` as an
+        argument or serialise what you need; there is no automatic propagation. Mailers
+        rendered via `deliver_later` run in a worker with an empty `Current`.
+      - `resets { }` / `before_reset` hooks let you undo global side effects (`Time.zone`,
+        `I18n.locale`) — necessary because those are **process- or thread-global** state too.
+      - Design trade-offs: implicit global state hides dependencies, makes models depend on the
+        web layer, complicates unit tests and concurrency (fibers, `load_async`), and encourages
+        "ambient authority" (a model that silently scopes by `Current.account`). DHH's advice:
+        use it for a few per-request facts (user, account, request id) and **never** for
+        business logic inputs; pass explicit arguments to services and jobs. 7.2's `Current.set(user: u) { ... }`
+        blocks make temporary overrides safe.
+    explanation: |
+      Follow-up: "Is `Current` safe with Puma threads?" yes, it's per-thread, provided every
+      unit of work is executor-wrapped. "Why not `Thread.current[:user]`?" `CurrentAttributes`
+      gives reset hooks, executor integration and fiber isolation; raw thread locals leak.
+    tags: [current-attributes, concurrency, design]
+    source: https://api.rubyonrails.org/classes/ActiveSupport/CurrentAttributes.html
+
+  - slug: ruby-web-time-current-vs-time-now
+    kind: mcq
+    difficulty: junior
+    title: "Time.current vs Time.now"
+    body: |
+      `config.time_zone = "Europe/Kyiv"`, the server runs in UTC, and a user in Kyiv asks
+      for "today's" orders. Which expression is correct?
+    choices:
+      - "`Order.where(created_at: Time.now.beginning_of_day..Time.now.end_of_day)`"
+      - "`Order.where(created_at: Date.today.all_day)`"
+      - "`Order.where(created_at: Time.current.all_day)` (equivalently `Time.zone.now` / `Date.current`)"
+      - "`Order.where(\"DATE(created_at) = ?\", Date.today)`"
+    answer: 2
+    explanation: |
+      `Time.now` and `Date.today` use the **system** zone (UTC here) and ignore `config.time_zone`;
+      at 01:00 Kyiv time they still think it's yesterday. `Time.current` is `Time.zone.now`
+      (an `ActiveSupport::TimeWithZone` in the app zone) and `Date.current` is `Time.zone.today`;
+      `all_day` gives the correct range in that zone, which AR converts to UTC for the query.
+      AR stores timestamps in UTC (`config.active_record.default_timezone = :utc`) and converts
+      on read, so string SQL like `DATE(created_at)` compares in UTC and is wrong for anyone not
+      in UTC. For per-user zones use `Time.use_zone(user.time_zone) { ... }` or `around_action`,
+      and `Time.zone.parse(str)` instead of `Time.parse`. Rubocop's `Rails/TimeZone` cop exists
+      for exactly this. Related: `1.day.from_now` vs `24.hours.from_now` differ across DST.
+    tags: [time-zones, activesupport]
+    source: https://guides.rubyonrails.org/active_support_core_extensions.html

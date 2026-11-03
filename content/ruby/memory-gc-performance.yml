@@ -1,0 +1,1484 @@
+language: ruby
+topic: memory-gc-performance
+items:
+  - slug: ruby-mem-mark-sweep-generational-theory
+    kind: theory
+    difficulty: middle
+    title: "Mark-and-sweep, generations and incremental marking"
+    body: |
+      CRuby's garbage collector is a **mark-and-sweep** collector over a heap of fixed-size
+      slots. Nothing is reference-counted. A GC cycle has two phases:
+
+      1. **Mark**: starting from the roots (the VM stack, globals, constants, `Thread`s, C-level
+         "marked" objects) follow every reference and set the mark bit on each reachable object.
+      2. **Sweep**: walk every slot; unmarked slots are freed (and their finalizers scheduled),
+         marked ones are unmarked for next time. Sweeping is *lazy*: pages are swept on demand
+         as the allocator needs free slots.
+
+      Since Ruby 2.1 the GC is **generational** (RGenGC). Observation: most objects die young
+      (temporary strings, arrays, blocks). So objects are tagged **young** or **old**; an object
+      that survives three GCs is promoted to old. A **minor GC** marks only young objects plus the
+      *remembered set* (old objects that were written to since the last GC, tracked by **write
+      barriers**), which is fast because it skips the big stable graph of old objects. A
+      **major GC** marks everything and runs only when old-object or malloc growth crosses a limit.
+
+      Since Ruby 2.2 major marking is **incremental**: the mark phase is chopped into slices
+      interleaved with your Ruby code, trading a little throughput for much shorter pauses.
+      Ruby 2.2 also made **Symbols collectable** (dynamic ones), closing a classic DoS vector.
+
+      ```ruby
+      GC.stat(:minor_gc_count)   # cheap, frequent
+      GC.stat(:major_gc_count)   # expensive, rare
+      GC.stat(:old_objects)      # the generational "long-lived" set
+      GC.latest_gc_info(:major_by) # :nofree, :oldgen, :shady, :force ... why the last major ran
+      ```
+    answer: |
+      **Q:** Why can a minor GC skip scanning old objects without missing live young objects they point to?
+      **A:** Write barriers. Every store of a reference into an old object records that object in the remembered set, so the minor GC marks from the roots *and* from remembered old objects. Objects without a write barrier ("shady"/WB-unprotected, mostly from C extensions) are always treated as remembered.
+    explanation: |
+      The senior-level expectations: know the two phases, that generations rely on write
+      barriers, why minor is cheap, what triggers a major (`old_objects_limit`,
+      `oldmalloc_increase_bytes_limit`, `remembered_wb_unprotected_objects_limit`), and that
+      incremental marking shortens pauses rather than reducing total work. Ruby 3.3 tuned
+      promotion so young objects referenced from old ones are not promoted immediately, which
+      cut major GC frequency.
+    tags: [gc, mark-sweep, generational, rgengc]
+    source: https://docs.ruby-lang.org/en/3.3/GC.html
+
+  - slug: ruby-mem-gc-stat-major-minor-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Reading GC.stat in production"
+    body: |
+      A Rails app's APM graphs show request latency spikes every few minutes. You print
+      `GC.stat` before and after a slow request and see `major_gc_count` went from 118 to 119
+      while `minor_gc_count` barely moved, and `GC.latest_gc_info(:major_by)` returns
+      `:oldmalloc`. What is the most likely story?
+    choices:
+      - "The heap ran out of free slots; raise `RUBY_GC_HEAP_INIT_SLOTS` so fewer GCs run."
+      - "Memory allocated with `malloc` by old objects (large strings/arrays, C-extension data) grew past `oldmalloc_increase_bytes_limit`, triggering a full mark of the whole heap; the spike is that major GC."
+      - "Symbols are being created from user input and the symbol table is being collected."
+      - "`GC.compact` ran automatically because `read_barrier_faults` crossed a threshold."
+    answer: 1
+    explanation: |
+      `major_by` tells you *why* the last major GC fired: `:oldmalloc` means malloc'd memory
+      attributed to old objects crossed `oldmalloc_increase_bytes_limit`; `:oldgen` means the
+      count of old objects crossed `old_objects_limit`; `:shady` means too many write-barrier
+      unprotected objects; `:nofree` means no free slots; `:force` means `GC.start`. A major GC
+      marks everything, so it is the pause you feel. Slot exhaustion (A) would show `:nofree`.
+      Compaction (D) never runs automatically unless `GC.auto_compact = true`. Tuning knobs:
+      `RUBY_GC_OLDMALLOC_LIMIT`, `RUBY_GC_MALLOC_LIMIT`, or fix the allocation pattern.
+    tags: [gc-stat, major-gc, tuning]
+    source: https://docs.ruby-lang.org/en/3.3/GC.html
+
+  - slug: ruby-mem-heap-slots-vwa-theory
+    kind: theory
+    difficulty: senior
+    title: "Heap pages, 40-byte slots and Variable Width Allocation"
+    body: |
+      Every Ruby object that is not an immediate lives in a **slot** on a **heap page**.
+      Historically every slot was a 40-byte `RVALUE` (on 64-bit): flags + class pointer + 3
+      words of payload. A `String` of up to 23 bytes fit *inside* those 3 words (**embedded**);
+      anything longer got a separate `malloc` buffer the slot pointed to. Same for `Array`
+      (up to 3 elements embedded) and objects (up to 3 instance variables embedded). Pages
+      were 16KB, so ~400 slots each.
+
+      Ruby 3.2 shipped **Variable Width Allocation (VWA)**: instead of one slot size there are
+      size pools of 40, 80, 160, 320 and 640 bytes, pages grew to 64KB, and the allocator picks
+      the smallest pool that holds the object inline. Effects:
+
+      - Strings up to ~600 bytes and arrays up to 78 elements are embedded: one allocation instead
+        of slot + malloc, better cache locality, less malloc fragmentation.
+      - Objects with many instance variables stay embedded; classes no longer need an extra
+        malloc for their extension data. 3.3 extended VWA to `Hash`, `Time`, `Method` and more.
+      - `ObjectSpace.memsize_of(obj)` (from `objspace`) reports slot size plus any malloc'd
+        extension, so you can see whether a string is embedded:
+
+      ```ruby
+      require "objspace"
+      ObjectSpace.memsize_of("a" * 10)    # => 40   (embedded in a 40-byte slot)
+      ObjectSpace.memsize_of("a" * 100)   # => 160  (embedded in a larger pool since 3.2)
+      ObjectSpace.memsize_of("a" * 10_000) # => 40 + ~10KB malloc'd buffer
+      ```
+
+      Why it matters: Ruby's *own* heap (`GC.stat(:heap_live_slots)` x slot size) is often a
+      small part of RSS; the rest is malloc'd buffers (big strings, arrays, hashes, C-extension
+      data) which the GC frees but the system allocator may not return to the OS.
+    answer: |
+      **Q:** Where does the content of a 5KB `String` live, and who frees it?
+      **A:** The object header lives in a GC slot; the 5KB of characters live in a separate `malloc` buffer the slot points to. When the GC sweeps the slot it calls `free` on the buffer, but whether that memory goes back to the OS is up to the C allocator (glibc/jemalloc), not Ruby.
+    explanation: |
+      Know the words: slot, page, embedded vs heap-allocated (malloc'd), size pools, `RVALUE`.
+      Interviewers may ask "why did Ruby 3.2 memory usage drop for string-heavy apps": fewer
+      mallocs, fewer `malloc_increase_bytes` triggered GCs, less fragmentation.
+    tags: [heap, slots, vwa, embedded]
+    source: https://shopify.engineering/ruby-variable-width-allocation
+
+  - slug: ruby-mem-string-plus-vs-shovel-mcq
+    kind: mcq
+    difficulty: junior
+    title: "How many String objects does this allocate?"
+    body: |
+      ```ruby
+      # no frozen_string_literal comment
+      s = ""
+      3.times { s += "ab" }
+      ```
+
+      Counting only `String` objects created by the loop body (ignore the initial `""`), how many are allocated?
+    choices:
+      - "3: one new `\"ab\"` literal per iteration; `+=` appends in place."
+      - "1: Ruby reuses the `\"ab\"` literal and `+=` mutates `s`."
+      - "4: three `\"ab\"` literals plus one final result string."
+      - "6: each iteration allocates the `\"ab\"` literal and a brand-new result string for `s + \"ab\"`, which `s` is then rebound to."
+    answer: 3
+    explanation: |
+      `s += x` is sugar for `s = s + x`. `String#+` always returns a **new** string, so each
+      iteration allocates the `"ab"` literal (a fresh object every time without
+      `frozen_string_literal: true`) and a new concatenation result; the old `s` becomes garbage.
+      In a loop over 100k items that is 200k short-lived strings, each copying the growing
+      prefix (quadratic). `s << "ab"` mutates in place (amortised O(1), one buffer growth now and
+      then) and with the magic comment the literal is allocated once, so the loop drops to zero
+      allocations. This is the single most common allocation fix `memory_profiler` points at.
+    tags: [string, allocation, shovel]
+    source: https://docs.ruby-lang.org/en/3.3/String.html
+
+  - slug: ruby-mem-frozen-string-literals-theory
+    kind: theory
+    difficulty: junior
+    title: "Frozen string literals and deduplication"
+    body: |
+      Each evaluation of a string literal normally creates a new `String` object:
+
+      ```ruby
+      def greeting = "hello"
+      greeting.equal?(greeting)   # => false: two objects
+      ```
+
+      Adding `# frozen_string_literal: true` at the top of a file makes every literal in that file
+      a frozen, **deduplicated** string: the same literal is the same object every time, so a hot
+      method called a million times allocates nothing for its literals.
+
+      ```ruby
+      # frozen_string_literal: true
+      def greeting = "hello"
+      greeting.equal?(greeting)   # => true
+      greeting << "!"             # FrozenError
+      ```
+
+      Related tools:
+
+      - `"str".freeze` on a literal is optimised by the compiler into the same deduplicated
+        frozen string (no allocation) even without the magic comment.
+      - `String#-@` (`-str`) returns a frozen, deduplicated copy from the global fstring table:
+        use it for strings built at runtime that you will keep around, e.g. keys parsed from JSON
+        or CSV headers, so 10,000 rows share one `"customer_id"` instead of each owning a copy.
+      - `String#+@` (`+str`) gives you a mutable copy of a frozen string (`+"" << x` idiom).
+      - `String.new(capacity: n)` preallocates a buffer when you will append a lot.
+      - Ruby 3.4 starts warning on mutation of literals as a step toward frozen-by-default.
+
+      Memory arithmetic: every extra `String` costs a 40-byte slot plus, above ~23 bytes
+      (pre-3.2) or a few hundred bytes (3.2+), a separate malloc. A Rails response that builds
+      strings in a template loop can allocate hundreds of thousands of them per request.
+    answer: |
+      **Q:** You parse a 1M-row CSV and store each row as a Hash keyed by the header names. How do you keep the keys from costing 1M x N strings?
+      **A:** Dedup them once: `headers = row.headers.map { |h| -h }` (or `h.to_sym` if symbols fit), then build every row's Hash with those shared frozen keys. Each row then holds references to the same N key objects instead of its own copies.
+    explanation: |
+      Expect follow-ups: "Does the magic comment freeze strings created with `String.new`, `dup`,
+      interpolation `"a#{b}"`, or `<<`?" No, only plain literals. "Is `-str` free?" It hashes the
+      content and looks it up in a table, so it costs CPU; it pays off for strings you retain.
+    tags: [frozen-string-literal, dedup, string]
+    source: https://docs.ruby-lang.org/en/3.3/String.html
+
+  - slug: ruby-mem-dedup-minus-at-mcq
+    kind: mcq
+    difficulty: middle
+    title: "What does this print?"
+    body: |
+      ```ruby
+      # frozen_string_literal: false
+      a = "config"
+      b = -a
+      c = -("con" + "fig")
+      p [a.frozen?, b.frozen?, a.equal?(b), b.equal?(c)]
+      ```
+    choices:
+      - "`[false, true, false, true]`"
+      - "`[true, true, true, true]`"
+      - "`[false, true, true, false]`"
+      - "`[false, false, false, false]`"
+    answer: 0
+    explanation: |
+      `-a` does not freeze `a` in place; because `a` is unfrozen it makes a frozen copy and
+      interns it in the fstring table, returning that (so `a.frozen?` is `false`, `b.frozen?` is
+      `true`, `a.equal?(b)` is `false`). `-("con" + "fig")` builds a new `"config"` and interns
+      it; the table already has an entry with equal content, so it returns the **same object**
+      as `b`: `b.equal?(c)` is `true`. That is deduplication: equal content, one object. If `a`
+      had already been frozen (and had no instance variables, and was a plain String), `-a` would
+      intern `a` itself and return it.
+    tags: [string, dedup, frozen]
+    source: https://docs.ruby-lang.org/en/3.3/String.html
+
+  - slug: ruby-mem-symbol-vs-string-memory
+    kind: open
+    difficulty: junior
+    title: "Symbols vs Strings: memory and identity"
+    body: |
+      Why are Symbols used for Hash keys and method names, what do they cost compared with
+      Strings, and is `params[:name].to_sym` on user input still dangerous?
+    answer: |
+      - A Symbol is interned: one object per name, process-wide. `:name.equal?(:name)` is always
+        true, comparison and hashing are pointer-based, and the symbol itself is an immediate
+        value (no heap slot) for static symbols.
+      - A String literal allocates a new object every evaluation (unless frozen/deduped), costs a
+        40-byte slot and possibly a malloc buffer, and hashing it means walking its bytes. Hash
+        lookups with string keys also `dup`+freeze the key on insertion (`h["k"] = v`).
+      - Since Ruby 2.2 **dynamic** symbols (created at runtime via `to_sym`/`intern`/
+        `send("name")`) are garbage collected when unreferenced. Before 2.2 they lived forever,
+        so symbolising user input let an attacker grow memory without bound (a real Rails CVE).
+      - Symbols created from literals in code or used as method names are *static* (pinned),
+        which is fine because the set is bounded by your source.
+      - So `to_sym` on user input is no longer a leak, but it is still a smell: use
+        `Hash#fetch` with a known allowlist, or string keys, or `ActionController::Parameters`.
+    explanation: |
+      Follow-ups: "How would you check how many symbols exist?" `Symbol.all_symbols.size`. "Why
+      do Rails keep string keys in `params`?" Because of exactly this history plus
+      indifferent access. "Does `freeze` make a string as cheap as a symbol?" Comparison is still
+      content-based unless both are deduplicated, but allocation goes away.
+    tags: [symbol, string, symbol-gc]
+    source: https://www.ruby-lang.org/en/news/2014/12/25/ruby-2-2-0-released/
+
+  - slug: ruby-mem-symbol-gc-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Which symbol can be garbage collected?"
+    body: |
+      Ruby 3.3:
+
+      ```ruby
+      def shout(x) = x.upcase
+      a = :static_sym
+      b = "dyn_#{rand(1000)}".to_sym
+      c = "shout".to_sym
+      ```
+
+      Which of `a`, `b`, `c` can be collected once nothing references it?
+    choices:
+      - "None: Symbols are never garbage collected in CRuby."
+      - "`b` and `c`: anything created with `to_sym` is dynamic."
+      - "`b` only: it was created dynamically from a string, while `a` is a literal and `c` names an existing method, so both are pinned as static symbols."
+      - "All three: since Ruby 2.2 every symbol is collectable."
+    answer: 2
+    explanation: |
+      Symbol GC (Ruby 2.2) distinguishes **static** symbols, which are pinned forever: anything
+      that appears in source as a literal (`:static_sym`) or an identifier/method name (`shout`),
+      plus symbols the VM used for method tables, from **dynamic** symbols created at runtime
+      from strings that do not match an existing static symbol. `"shout".to_sym` returns the
+      already-existing static `:shout`, so it is not collectable; `"dyn_123".to_sym` is brand new
+      and can be freed once unreferenced. That design is why `to_sym` on arbitrary input stopped
+      being an unbounded leak while method dispatch stays fast.
+    tags: [symbol-gc, static-symbol, dynamic-symbol]
+    source: https://www.ruby-lang.org/en/news/2014/12/25/ruby-2-2-0-released/
+
+  - slug: ruby-mem-object-shapes-theory
+    kind: theory
+    difficulty: senior
+    title: "Object shapes (3.2) and why instance variable order matters"
+    body: |
+      Before 3.2 every class kept an "ivar index table" and an inline cache at each `@x` access
+      site keyed by *class*. Objects of one class that set ivars in different orders or
+      different subsets defeated the cache, and the table had to be looked up per access.
+
+      Ruby 3.2 introduced **object shapes** (borrowed from TruffleRuby/V8's hidden classes).
+      A shape is a node in a global tree: the root is "no ivars", and each edge adds one ivar
+      name. An object stores a shape id; the shape tells the VM at which slot each ivar lives.
+
+      ```ruby
+      class Point
+        def initialize(x, y)
+          @x = x   # shape: root -> @x
+          @y = y   # shape: root -> @x -> @y
+        end
+      end
+      ```
+
+      Every `Point` ends with the same shape, so `@x` at a given call site is a single
+      compare-shape-id-then-load, and YJIT compiles it to a few machine instructions. Shapes
+      are shared **across classes**: any object that sets `@x` then `@y` has the same shape.
+
+      What breaks it: objects of one class taking different paths.
+
+      ```ruby
+      def area  = @area  ||= compute      # sets @area only when called
+      def label = @label ||= build_label  # order now depends on call order
+      ```
+
+      Instances that called `area` first and those that called `label` first have different
+      shapes, the inline cache at each site flips between them (polymorphic), and with many
+      lazily-set ivars the combinations explode until the class falls back to `SHAPE_TOO_COMPLEX`
+      (a hash per object, the slow path). Ruby 3.3 warns about this with
+      `ruby -W:performance`. Fix: assign all ivars (to `nil` or a sentinel) in `initialize` so
+      every instance walks the same edges in the same order. Also avoid `instance_variable_set`
+      with dynamic names and `remove_instance_variable` in hot code; `defined?(@x)` is cheap
+      since 3.3 because it is a shape check.
+    answer: |
+      **Q:** Two classes `A` and `B` both set `@id` then `@name` in `initialize`. How many shapes do their instances use, and why is that good?
+      **A:** One shape (root -> @id -> @name), shared by both classes, because shapes are keyed by the sequence of ivar names, not by class. A method that reads `@name` from either kind of object sees a single shape at that site, so its inline cache stays monomorphic and fast.
+    explanation: |
+      This is a favourite senior question since 3.2. Mention: shapes replaced the per-class ivar
+      index table; they made `Object#instance_variables` order equal to assignment order
+      observable as a performance matter; they are what lets YJIT inline ivar access; and
+      Shopify's "memoization pattern and object shapes" post is the canonical write-up.
+    tags: [object-shapes, inline-cache, yjit]
+    source: https://railsatscale.com/2023-10-24-memoization-pattern-and-object-shapes/
+
+  - slug: ruby-mem-object-shapes-order-mcq
+    kind: mcq
+    difficulty: senior
+    title: "Which class keeps all its instances on one shape?"
+    body: |
+      Ruby 3.3. Which implementation of a memoized `total` guarantees that every `Order`
+      instance has the same object shape regardless of which methods were called and in what order?
+    choices:
+      - |
+        ```ruby
+        class Order
+          def initialize(items) = @items = items
+          def total = @total ||= @items.sum
+          def count = @count ||= @items.size
+        end
+        ```
+      - |
+        ```ruby
+        class Order
+          def initialize(items)
+            @items = items
+            @total = nil
+            @count = nil
+          end
+          def total = @total ||= @items.sum
+          def count = @count ||= @items.size
+        end
+        ```
+      - |
+        ```ruby
+        class Order
+          def initialize(items) = @items = items
+          def total = (@total ||= @items.sum).freeze
+          def count = (@count ||= @items.size).freeze
+        end
+        ```
+      - |
+        ```ruby
+        class Order
+          def initialize(items) = @items = items
+          def total = instance_variable_get(:@total) || instance_variable_set(:@total, @items.sum)
+          def count = instance_variable_get(:@count) || instance_variable_set(:@count, @items.size)
+        end
+        ```
+    answer: 1
+    explanation: |
+      Shapes are determined by the *order in which ivars are first assigned*. In A, C and D an
+      instance on which `total` was called first gets shape `@items -> @total -> @count`, while
+      one where `count` came first gets `@items -> @count -> @total`; two shapes, polymorphic
+      caches, and with more memoized methods a factorial blow-up toward `SHAPE_TOO_COMPLEX`.
+      B assigns every ivar in `initialize`, so all instances share one shape forever; a later
+      `@total = 42` only changes the value in an existing slot, not the shape. The cost is that
+      `||=` cannot memoize a legitimately `nil`/`false` result; use a sentinel or
+      `defined?`-free flag ivar (also initialised in the constructor) for those.
+    tags: [object-shapes, memoization]
+    source: https://railsatscale.com/2023-10-24-memoization-pattern-and-object-shapes/
+
+  - slug: ruby-mem-immediates-flonum-theory
+    kind: theory
+    difficulty: middle
+    title: "Immediates: why small Integers, Symbols and most Floats are free"
+    body: |
+      Not every Ruby value is a heap object. CRuby stores some values **directly in the VALUE
+      word** (a tagged pointer), so they need no slot, no allocation and no GC work:
+
+      - **Fixnums**: Integers that fit in 63 bits (on 64-bit) are encoded as `(n << 1) | 1`.
+        `2**62` and up become heap-allocated **Bignums** (still class `Integer`, the fixnum/
+        bignum split is invisible since 2.4 except in performance).
+      - **Symbols** (static ones), `nil`, `true`, `false`.
+      - **Flonums** (Ruby 2.0+, 64-bit only): Floats whose exponent is in a "normal" range
+        (roughly 1e-77 to 1e77, plus 0.0) are packed into the word with a rotated bit layout.
+        Very large/small floats like `1e300` or `5e-324` are heap objects.
+
+      ```ruby
+      1.frozen?            # => true   (immediates are always frozen)
+      3.14.object_id == 3.14.object_id   # => true  (flonum: same value, same "object")
+      1e300.object_id == 1e300.object_id # => false (heap Float, allocated each time)
+      (2**62).class        # => Integer, but now a heap-allocated bignum
+      ```
+
+      Consequences:
+
+      - Arithmetic on fixnums/flonums allocates nothing; a tight numeric loop generates no
+        garbage. Crossing into bignums or non-flonum floats suddenly allocates per operation.
+      - `ObjectSpace.each_object` and `count_objects` never see immediates.
+      - You cannot define singleton methods on them, and `equal?` is value equality for them.
+      - Since 2.0 `Integer#+` etc. have specialised VM instructions (`opt_plus`) that check
+        for fixnums first and skip method dispatch unless `Integer#+` was redefined.
+    answer: |
+      **Q:** `sum = 0.0; 1_000_000.times { sum += 0.1 }` allocates almost nothing, but the same loop with `sum = BigDecimal("0")` allocates a million objects. Why?
+      **A:** `Float` values in the normal range are flonums, immediates packed into the VALUE word, so `+` produces a new immediate with no heap allocation. `BigDecimal` is a heap object with malloc'd digits; every `+` allocates a new one, and the old ones become garbage for the GC.
+    explanation: |
+      Interviewers use this to probe whether you understand that "everything is an object" is a
+      language-level statement, not an implementation one. Bonus: mention that `Comparable`
+      operators on your own classes dispatch to a Ruby-level `<=>` for every `<`/`==`, while
+      Integer/Float comparisons are specialised instructions, which is why sorting Structs by a
+      Comparable `<=>` is markedly slower than `sort_by { |s| s.value }`.
+    tags: [immediates, fixnum, flonum]
+    source: https://docs.ruby-lang.org/en/3.3/ObjectSpace.html
+
+  - slug: ruby-mem-yjit-theory
+    kind: theory
+    difficulty: middle
+    title: "YJIT: what it is and how to turn it on"
+    body: |
+      CRuby compiles your source to **YARV bytecode** (`RubyVM::InstructionSequence.compile(src)
+      .disasm` shows instructions like `putobject`, `opt_plus`, `opt_send_without_block`) and
+      interprets it. **YJIT** (Shopify, merged in 3.1, production-ready since 3.2) is a JIT
+      inside the VM that compiles hot bytecode to machine code using **lazy basic block
+      versioning**: it compiles one basic block at a time, when it is first executed, specialised
+      to the types it actually sees (e.g. "receiver is an Integer, so `opt_plus` is an add
+      instruction"), with a guard that side-exits to the interpreter if the assumption fails.
+      Object shapes (3.2) are what let it inline instance variable access.
+
+      Turning it on (3.3):
+
+      ```sh
+      ruby --yjit app.rb                 # flag
+      RUBY_YJIT_ENABLE=1 bundle exec puma # env var, handy for Docker/Procfiles
+      ```
+
+      ```ruby
+      RubyVM::YJIT.enable          # at runtime, e.g. in an initializer after boot
+      RubyVM::YJIT.enabled?        # => true
+      RubyVM::YJIT.runtime_stats   # :ratio_in_yjit, :side_exit_count, code size ...
+      ```
+
+      Rails 7.2+ calls `RubyVM::YJIT.enable` by default when YJIT is available. Enabling after
+      boot avoids compiling one-shot initialisation code.
+
+      Costs and knobs: JIT code and metadata use memory, bounded by `--yjit-exec-mem-size`
+      (48MiB default in 3.3; total overhead per worker is a few times that), so it is a
+      per-process cost in Puma cluster mode. `--yjit-call-threshold` (30, auto-raised for big
+      apps) sets how many calls make a method hot; `--yjit-code-gc` (off by default in 3.3)
+      frees compiled code when the limit is hit. Ruby 3.3's YJIT is much faster than 3.2's,
+      with better register allocation, splat/rest support and smaller metadata; Shopify
+      reports ~15-25% speedups on real Rails apps. YJIT cannot speed up time spent in C
+      extensions, IO or GC, so its gain depends on how much pure Ruby your hot path runs.
+    answer: |
+      **Q:** Your Rails app is 70% database wait and 30% Ruby. Roughly what end-to-end improvement can YJIT give and why?
+      **A:** It only accelerates the Ruby 30%, and typically by 15-30% of that, so a few percent of total latency. YJIT does nothing for IO, DB time, GC or C extensions. Profile first; YJIT pays most on view rendering, serialisation and pure-Ruby business logic.
+    explanation: |
+      Points that distinguish candidates: "lazy basic block versioning" (not method JIT like
+      MJIT), side exits as the fallback, memory is the trade-off (per worker), enabling at
+      runtime, and knowing `ratio_in_yjit` as the health metric (aim for ~99%). Mentioning
+      that MJIT was removed in 3.3 and RJIT is only a research JIT is a nice extra.
+    tags: [yjit, jit, bytecode]
+    source: https://docs.ruby-lang.org/en/3.3/yjit/yjit_md.html
+
+  - slug: ruby-mem-yjit-enable-mcq
+    kind: mcq
+    difficulty: junior
+    title: "Enabling YJIT after boot"
+    body: |
+      You want YJIT on in production but do not control the `ruby` command line (a PaaS
+      buildpack starts Puma). Which option enables it with the least fuss on Ruby 3.3?
+    choices:
+      - "Add `require \"yjit\"` to `config/boot.rb`."
+      - "Set `RUBYOPT=--jit` in the environment."
+      - "YJIT cannot be enabled without recompiling Ruby with `--enable-yjit`."
+      - "Call `RubyVM::YJIT.enable` in an initializer, or set `RUBY_YJIT_ENABLE=1` in the environment."
+    answer: 3
+    explanation: |
+      Since Ruby 3.3 `RubyVM::YJIT.enable` switches the JIT on at runtime (Rails 7.2 does this
+      for you), and the `RUBY_YJIT_ENABLE=1` environment variable works for any process. YJIT is
+      built into official Ruby binaries on x86-64/arm64 when Rust was available at build time
+      (`ruby -v --yjit` shows `+YJIT`), so no recompilation. `--jit` was MJIT's flag, which was
+      removed in 3.3, and there is no `yjit` library to require.
+    tags: [yjit, configuration]
+    source: https://docs.ruby-lang.org/en/3.3/yjit/yjit_md.html
+
+  - slug: ruby-mem-gc-disable-mcq
+    kind: mcq
+    difficulty: junior
+    title: "GC.disable around a hot loop"
+    body: |
+      A teammate wraps a request handler in `GC.disable ... GC.enable` "to make it faster".
+      What is the most important risk?
+    choices:
+      - "Memory grows without bound while GC is off: every allocation in the handler stays live, and if the code raises before `GC.enable` (or a thread switch runs other requests meanwhile) the process keeps allocating with no collection until it is killed by the OOM killer."
+      - "`GC.enable` immediately triggers a full major GC, so the request is slower overall."
+      - "`GC.disable` only affects the current thread, so it does nothing in Puma."
+      - "It is safe: Ruby re-enables GC automatically when free slots run out."
+    answer: 0
+    explanation: |
+      `GC.disable` is process-global and stays in effect until `GC.enable`; Ruby does **not**
+      override it when the heap is exhausted, it just grows the heap (and malloc). In a threaded
+      server the other threads are affected too. The only sane uses are short, bounded sections
+      (a benchmark, a big `Marshal.load`, process boot before `fork`) with an `ensure` to turn it
+      back on. The modern alternative for "no GC during the request" is out-of-band GC: let the
+      request allocate, and run `GC.start` between requests when the worker is idle.
+    tags: [gc-disable, oom]
+    source: https://docs.ruby-lang.org/en/3.3/GC.html
+
+  - slug: ruby-mem-bloat-vs-leak-theory
+    kind: theory
+    difficulty: senior
+    title: "Memory bloat vs memory leak, and why RSS never shrinks"
+    body: |
+      Ops reports a Sidekiq process at 2GB RSS. Three different things can be going on:
+
+      **Leak**: Ruby objects that are still *reachable* and keep growing: a class-level
+      `@@cache = {}` that never evicts, `ObjectSpace` listeners, subscribers appended on every
+      request, `Thread.current[:x]` on reused threads, unbounded `Set` of seen ids. The GC is
+      working fine; you simply keep references. `GC.stat(:heap_live_slots)` and
+      `ObjectSpace.count_objects` grow linearly with requests.
+
+      **Bloat**: no leak, but the process holds far more memory than its live objects need.
+      Causes: a huge transient (loading 500k records with `.all.each` grows the heap once and
+      Ruby rarely gives pages back), and **malloc fragmentation**. glibc's allocator creates
+      per-thread arenas (up to 8 x cores) to avoid lock contention; Ruby threads scatter
+      allocations across them and freed chunks cannot be coalesced or returned, so RSS creeps
+      up for days with `heap_live_slots` flat.
+
+      **Why RSS does not drop after a GC**: the GC frees slots and `free()`s buffers, but the
+      heap pages stay allocated to the process (Ruby frees empty pages conservatively) and the
+      C allocator keeps freed chunks in its arenas rather than `munmap`-ing them. RSS measures
+      what the OS has mapped, not what Ruby is using.
+
+      Fixes, in order of cost:
+
+      - `MALLOC_ARENA_MAX=2` in the environment (Heroku's and Mike Perham's advice): fewer arenas,
+        far less fragmentation, slight lock contention. Often halves Sidekiq/Puma RSS.
+      - **jemalloc** (`LD_PRELOAD=libjemalloc.so` or `--with-jemalloc`): a different allocator
+        designed to limit fragmentation; typical 10-40% RSS reduction on top of arena capping.
+      - Stop the transient: `find_each`, streaming, `SizedQueue`, not `.pluck` of a million ids.
+      - Periodic worker restarts (puma-worker-killer, Sidekiq's memory guard) as the last resort.
+
+      Diagnosing: if `GC.stat(:heap_live_slots)` grows forever it is a leak (use
+      `memory_profiler`'s *retained* report or `ObjectSpace.count_objects` deltas); if live slots
+      are flat but RSS grows, it is fragmentation.
+    answer: |
+      **Q:** A process's RSS grows 20% a day but `GC.stat(:heap_live_slots)` and `ObjectSpace.count_objects[:TOTAL]` are flat. Leak or bloat, and what is the first thing you try?
+      **A:** Bloat from allocator fragmentation: Ruby's live object count is not growing, so nothing is leaking at the Ruby level. First step is `MALLOC_ARENA_MAX=2` (or jemalloc), then check for large transients that expand the heap.
+    explanation: |
+      Senior interviewers want the three-way distinction and the diagnostic signal (live slots
+      vs RSS). Mention that `GC.compact` addresses Ruby-heap fragmentation (pages with few live
+      objects), not malloc fragmentation, and that `Process.warmup` (3.3) compacts and trims
+      before forking workers.
+    tags: [memory-bloat, memory-leak, malloc, jemalloc]
+    source: https://www.speedshop.co/2017/12/04/malloc-doubles-ruby-memory.html
+
+  - slug: ruby-mem-rss-not-shrink-mcq
+    kind: mcq
+    difficulty: senior
+    title: "After GC.start, RSS is unchanged"
+    body: |
+      ```ruby
+      big = Array.new(5_000_000) { |i| "item-#{i}" }
+      big = nil
+      GC.start
+      # RSS as reported by the OS: still ~700MB
+      ```
+
+      Why does the process still hold the memory, even though the objects were collected?
+    choices:
+      - "`GC.start` only runs a minor GC; the strings were promoted to old and need a major GC."
+      - "The strings are still referenced by the `Array.new` block closure until the method returns."
+      - "Ruby freed the slots and `free`d the string buffers, but Ruby keeps emptied heap pages in its tomb list and the C allocator keeps freed chunks in its arenas instead of returning them to the OS; RSS reflects mapped pages, not live objects."
+      - "RSS can only shrink after `GC.compact` moves the surviving objects together."
+    answer: 2
+    explanation: |
+      `GC.start` runs a full major GC, so A is wrong, and the block is long gone, so B is wrong.
+      What remains is the gap between "freed" and "returned to the OS": Ruby's heap pages become
+      tomb pages that are released slowly (and only if entirely empty), and glibc's `free()`
+      typically keeps chunks in per-thread arenas (it only trims the top of the main heap).
+      `GC.compact` can help the *Ruby* heap by emptying pages so they can be freed, but it does
+      nothing for malloc'd buffers; `MALLOC_ARENA_MAX`, jemalloc, or `malloc_trim` via
+      `Process.warmup` (3.3) are the levers there. This is why "memory never goes down" is
+      normal for Ruby and why you size for peak.
+    tags: [rss, malloc, gc-start]
+    source: https://mikeperham.com/2018/04/25/taming-rails-memory-bloat
+
+  - slug: ruby-mem-malloc-arena-jemalloc
+    kind: open
+    difficulty: senior
+    title: "MALLOC_ARENA_MAX and jemalloc: what do they change?"
+    body: |
+      Your platform team proposes setting `MALLOC_ARENA_MAX=2` and switching to jemalloc for
+      all Ruby services. Explain what each does, why they help a multithreaded Ruby process
+      specifically, and the trade-offs you would mention in the review.
+    answer: |
+      - glibc malloc gives each thread its own **arena** (up to 8 x cores) to avoid lock
+        contention. Puma/Sidekiq threads allocate Ruby object buffers across many arenas; freed
+        chunks sit in whichever arena they came from and cannot be reused by others or returned
+        to the OS, so the process **fragments** and RSS grows for days without any leak.
+      - `MALLOC_ARENA_MAX=2` caps arenas at two. Measured effects: Sidekiq 1GB -> ~500MB in
+        Perham's report, 10-30% elsewhere. Trade-off: more lock contention in malloc, usually a
+        negligible slowdown for Ruby; `1` saves little more and costs more.
+      - **jemalloc** replaces glibc malloc: size-class bins, better reuse, returns memory more
+        eagerly, no arena explosion. Typical 10-40% lower RSS and often slightly faster. Enable via
+        `LD_PRELOAD` (no rebuild) or `--with-jemalloc`; verify with `ruby -r rbconfig -e
+        'p RbConfig::CONFIG["MAINLIBS"]'` or `/proc/<pid>/maps`.
+      - Trade-offs: another dependency in the image (Alpine/musl needs care), occasional
+        library incompatibilities, and it is not a fix for real leaks or giant transients.
+      - Also mention Ruby-side levers: `GC.compact`, `Process.warmup` before fork (3.3),
+        `RUBY_GC_HEAP_*` tuning, and measuring with `GC.stat` vs RSS to prove it is fragmentation.
+    explanation: |
+      Follow-up: "How would you prove the win?" Run the same workload with and without for 24h,
+      compare RSS/PSS curves and p99 latency; fragmentation shows as RSS growth with flat
+      `heap_live_slots`. Candidates sometimes claim jemalloc "fixes memory leaks"; it does not.
+    tags: [malloc-arena-max, jemalloc, fragmentation]
+    source: https://www.speedshop.co/2017/12/04/malloc-doubles-ruby-memory.html
+
+  - slug: ruby-mem-find-leak-tools
+    kind: open
+    difficulty: middle
+    title: "Finding a memory leak in a Ruby process"
+    body: |
+      A Puma worker's memory climbs steadily until it is restarted. Walk through how you would
+      confirm it is a Ruby-level leak and find the code responsible, naming the tools you would
+      use and what each one tells you.
+    answer: |
+      - Confirm it is a leak, not bloat: sample `GC.stat(:heap_live_slots)`,
+        `GC.stat(:old_objects)` and `ObjectSpace.count_objects` (per-type counts, `:T_STRING`,
+        `:T_ARRAY`, `:T_HASH`, `:T_OBJECT`) every N requests. Linear growth in live/old objects
+        means something retains them; flat counts with rising RSS means allocator bloat.
+      - Narrow the type: `ObjectSpace.each_object(SomeClass).count` deltas, or
+        `ObjectSpace.count_objects_size` (`objspace`) for bytes per type.
+      - Find who allocates and keeps them: `memory_profiler` (`MemoryProfiler.report { ... }`),
+        reading the **retained** sections (objects still alive after the block, grouped by gem,
+        file and line) rather than *allocated*. Requires `objspace` tracing, so run it in staging.
+      - Trace lazily in production: `ObjectSpace.trace_object_allocations_start` then
+        `ObjectSpace.allocation_sourcefile(obj)` / `allocation_sourceline(obj)` for suspects, or
+        `rbtrace`/`heap-profiler` to dump `ObjectSpace.dump_all` and diff heaps over time.
+      - Usual suspects: class-level caches without eviction, `ActiveSupport::Notifications`
+        subscribers added per request, `Thread.current[]` on pooled threads, growing
+        `prepend`/`define_method` on each request (also invalidates method caches), unbounded
+        `Set`/`Hash` of seen ids, large memoized ivars on long-lived singletons.
+    explanation: |
+      Follow-ups: "memory_profiler says allocated 500MB but retained 2MB; is there a leak?" No:
+      allocated is churn (GC pressure, a speed problem), retained is what survives, which is the
+      leak signal. "Why is `ObjectSpace.each_object` risky in prod?" It walks the whole heap under
+      the GVL and pins nothing, but it is slow and sees only non-immediates.
+    tags: [memory-leak, memory-profiler, objectspace]
+    source: https://github.com/SamSaffron/memory_profiler
+
+  - slug: ruby-mem-gc-compact-when
+    kind: open
+    difficulty: senior
+    title: "GC.compact: what problem does it solve?"
+    body: |
+      Explain what `GC.compact` (Ruby 2.7+) does, what "pinned" objects are, why Ruby could
+      not move objects for its first 25 years, and when you would actually call it.
+    answer: |
+      - After many GCs the Ruby heap is sparse: pages with a few live objects scattered among
+        free slots. Those pages cannot be released and the live objects have poor cache locality.
+        `GC.compact` runs a major GC and then **moves** live objects into the lowest-addressed
+        free slots, updating every reference, so pages at the end become empty and can be freed.
+        It returns stats (`:considered`, `:moved` per type; `GC.latest_compact_info`).
+      - Moving was impossible because C extensions hold raw `VALUE` pointers; a moved object
+        would leave a dangling pointer. Compaction therefore **pins** objects referenced from C
+        in the old way (`rb_gc_mark`) and only moves objects whose references are all known
+        (`rb_gc_mark_movable` + an `update` callback). Objects on the machine stack and some
+        internals are pinned too.
+      - A **read barrier** on the moved page protects against stale references during
+        compaction; `GC.stat(:read_barrier_faults)` counts how often it fired.
+      - Use it before `fork` in preforking servers (Puma's `before_fork`, or just
+        `Process.warmup` in 3.3): a tight parent heap means children share more pages via
+        copy-on-write. `GC.auto_compact = true` makes it happen on every major GC, at a cost.
+      - It helps Ruby-heap fragmentation only; malloc'd buffers (big strings, arrays) are not
+        moved, so it is not the fix for glibc arena bloat.
+    explanation: |
+      Variable Width Allocation (3.2) also interacts with compaction: objects can be moved to a
+      better-fitting size pool, which is how a String that outgrew its slot can become embedded
+      again. "Why isn't auto-compaction on by default?" Extra time per major GC and historical
+      crashes in extensions that did not update their marking.
+    tags: [gc-compact, pinning, copy-on-write]
+    source: https://docs.ruby-lang.org/en/3.3/GC.html
+
+  - slug: ruby-mem-code-intern-strings
+    kind: code
+    difficulty: junior
+    title: "Deduplicate strings with String#-@"
+    body: |
+      Implement `intern_all(strings)` which returns a new array where every element is a
+      **frozen, deduplicated** copy of the input: two inputs with equal content must map to the
+      very same object (`equal?`). The input strings must not be mutated or frozen.
+
+      ```ruby
+      out = intern_all(["foo", "fo" + "o", "bar"])
+      out[0].equal?(out[1])   # => true
+      out.all?(&:frozen?)     # => true
+      ```
+
+      Hint: `String#-@` returns a frozen, possibly pre-existing copy of the string.
+    starter_code: |
+      def intern_all(strings)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class InternAllTest < Minitest::Test
+        def test_equal_content_same_object
+          a = "foo"
+          b = "fo" + "o"
+          refute a.equal?(b)
+          out = intern_all([a, b, "bar"])
+          assert_equal ["foo", "foo", "bar"], out
+          assert out[0].equal?(out[1])
+          refute out[0].equal?(out[2])
+        end
+
+        def test_results_frozen_inputs_untouched
+          input = ["x" * 50, "y" * 50]
+          out = intern_all(input)
+          assert out.all?(&:frozen?)
+          refute input.any?(&:frozen?)
+          assert_equal ["x" * 50, "y" * 50], input
+        end
+
+        def test_matches_global_dedup_table
+          out = intern_all(["customer_id"])
+          assert out[0].equal?(-"customer_id")
+        end
+
+        def test_empty
+          assert_equal [], intern_all([])
+        end
+      end
+    solution: |
+      def intern_all(strings)
+        strings.map { |s| -s }
+      end
+    explanation: |
+      `-s` on an unfrozen string makes a frozen copy and looks it up in the VM's global fstring
+      table: if an equal string is already interned, that existing object is returned and the copy
+      is dropped. That is why `out[0].equal?(out[1])` holds and why the result is also `equal?`
+      to `-"customer_id"` written anywhere else in the process. The original strings are left
+      unfrozen because the method dups rather than freezing in place. This is the trick for CSV
+      headers, JSON keys, enum-like values from the database: thousands of rows then share one
+      String per distinct value instead of each owning a 40-byte slot (plus buffer).
+    tags: [string, dedup, frozen]
+    source: https://docs.ruby-lang.org/en/3.3/String.html
+
+  - slug: ruby-mem-code-shape-friendly-memo
+    kind: code
+    difficulty: middle
+    title: "Shape-friendly memoization"
+    body: |
+      Implement `Circle`:
+
+      - `Circle.new(radius)`
+      - `area` — returns `Math::PI * radius**2`, computed once and memoized in `@area`
+      - `circumference` — returns `2 * Math::PI * radius`, memoized in `@circumference`
+
+      Object-shape rule: **every** instance must have exactly the instance variables
+      `[:@radius, :@area, :@circumference]` in that order immediately after `new`, before any
+      method is called, so that all `Circle` objects share one shape no matter which memoized
+      method is called first.
+
+      ```ruby
+      c = Circle.new(1)
+      c.instance_variables   # => [:@radius, :@area, :@circumference]
+      c.area                 # => 3.14159...
+      ```
+    starter_code: |
+      class Circle
+        def initialize(radius)
+          @radius = radius
+          # your code here: pre-declare the memoized ivars
+        end
+
+        def area
+          # your code here
+        end
+
+        def circumference
+          # your code here
+        end
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class CircleTest < Minitest::Test
+        def test_ivars_declared_up_front
+          assert_equal [:@radius, :@area, :@circumference], Circle.new(2).instance_variables
+        end
+
+        def test_values
+          c = Circle.new(2)
+          assert_in_delta 12.566, c.area, 0.001
+          assert_in_delta 12.566, c.circumference, 0.001
+        end
+
+        def test_memoized
+          c = Circle.new(3)
+          assert_nil c.instance_variable_get(:@area)
+          first = c.area
+          assert_equal first, c.instance_variable_get(:@area)
+          c.instance_variable_set(:@area, :cached)
+          assert_equal :cached, c.area
+        end
+
+        def test_same_shape_regardless_of_call_order
+          a = Circle.new(1)
+          b = Circle.new(1)
+          a.area; a.circumference
+          b.circumference; b.area
+          assert_equal a.instance_variables, b.instance_variables
+          assert_equal Circle.new(1).instance_variables, a.instance_variables
+        end
+      end
+    solution: |
+      class Circle
+        def initialize(radius)
+          @radius = radius
+          @area = nil
+          @circumference = nil
+        end
+
+        def area
+          @area ||= Math::PI * @radius**2
+        end
+
+        def circumference
+          @circumference ||= 2 * Math::PI * @radius
+        end
+      end
+    explanation: |
+      Without the two `= nil` lines, an instance that calls `circumference` first gets the ivar
+      order `@radius, @circumference, @area` while another gets `@radius, @area, @circumference`:
+      two object shapes for one class, so the inline cache at every `@area` read site becomes
+      polymorphic and YJIT emits slower guarded code. Declaring the ivars in `initialize` makes
+      every instance take the same path through the shape tree; later assignments only change
+      values in existing slots. `instance_variables` exposes the assignment order, which is what
+      the tests check. For results that can legitimately be `nil`, use a sentinel constant
+      instead of `||=`.
+    tags: [object-shapes, memoization]
+    source: https://railsatscale.com/2023-10-24-memoization-pattern-and-object-shapes/
+
+  - slug: ruby-mem-array-include-vs-set-mcq
+    kind: mcq
+    difficulty: junior
+    title: "Membership checks in a loop"
+    body: |
+      ```ruby
+      blocked = load_blocked_ids   # 50_000 Integers in an Array
+      users.each do |u|            # 200_000 users
+        next if blocked.include?(u.id)
+        notify(u)
+      end
+      ```
+
+      This takes minutes. What is the complexity, and what is the idiomatic fix?
+    choices:
+      - "O(n): `Array#include?` is a hash lookup since Ruby 3.0; the slowness must be in `notify`."
+      - "O(n * m): `Array#include?` scans linearly (50k comparisons per user, 10 billion total). Convert once with `blocked = Set.new(ids)` (or a Hash) for O(1) average lookups, making the loop O(n + m)."
+      - "O(n log m): `Array#include?` uses binary search; sort the array first to enable it."
+      - "O(n * m), and the fix is `blocked.sort!` followed by `bsearch`, which is faster than a Set."
+    answer: 1
+    explanation: |
+      `Array#include?` compares element by element with `==`, so it is O(m) per call. `Set` is
+      backed by a `Hash`, so `include?` hashes the value and does a bucket lookup: O(1) on
+      average. Building the Set once is O(m), then the loop is O(n). `bsearch` on a sorted array
+      is O(log m) and a fine answer when memory is tight, but it still loses to a Set and needs the
+      sort. Interviewers also like `uniq`, `&`, `-` and `group_by` as places where people
+      accidentally write quadratic code; `Array#-` and `&` already use a Hash internally, so
+      they are linear.
+    tags: [big-o, set, array]
+    source: https://docs.ruby-lang.org/en/3.3/Set.html
+
+  - slug: ruby-mem-memsize-of-mcq
+    kind: mcq
+    difficulty: middle
+    title: "What does ObjectSpace.memsize_of report?"
+    body: |
+      ```ruby
+      require "objspace"
+      p ObjectSpace.memsize_of("a" * 10)
+      p ObjectSpace.memsize_of("a" * 10_000)
+      p ObjectSpace.memsize_of([1, 2, 3])
+      ```
+
+      On Ruby 3.3, 64-bit, which output is right and why?
+    choices:
+      - "`10`, `10000`, `24`: it reports the payload size in bytes."
+      - "`40`, `40`, `40`: every object is one 40-byte RVALUE slot, no matter its contents."
+      - "`40`, about `10040`, `40`: the slot size plus any separately malloc'd buffer; short strings and small arrays are embedded in the slot, the 10KB string has an external buffer."
+      - "`0`, `10000`, `0`: embedded data is not counted, only heap-allocated buffers are."
+    answer: 2
+    explanation: |
+      `memsize_of` returns the object's slot size plus the memory it owns outside the slot.
+      `"a" * 10` and `[1, 2, 3]` fit inside a 40-byte slot (embedded), so just 40. The 10,000
+      byte string does not fit in any size pool, so it has a `malloc`'d buffer of ~10KB and
+      reports 40 + that. The docs call the result a hint: it ignores memory shared with other
+      objects and can be wrong for `T_DATA` C objects. It is still the quickest way to answer "is
+      this string embedded?" and to size caches. `ObjectSpace.memsize_of_all(String)` sums a
+      class; `count_objects_size` groups bytes by type.
+    tags: [objectspace, memsize, embedded]
+    source: https://docs.ruby-lang.org/en/3.3/ObjectSpace.html
+
+  - slug: ruby-mem-regexp-redos-mcq
+    kind: mcq
+    difficulty: senior
+    title: "ReDoS after Ruby 3.2"
+    body: |
+      ```ruby
+      EMAIL = /\A([a-z]+)*@example\.com\z/
+      EMAIL.match?("a" * 40 + "!")
+      ```
+
+      On Ruby 3.1 this hangs for a very long time. What changed in Ruby 3.2, and what should you still do?
+    choices:
+      - "3.2 rewrote Onigmo as a DFA engine, so every regexp now runs in linear time and no further protection is needed."
+      - "Nothing changed in the engine; 3.2 only added `Regexp.timeout`, so you must set a timeout to be safe."
+      - "3.2 made all regexp literals compile at parse time, which eliminates catastrophic backtracking."
+      - "3.2 added memoization to the backtracking matcher so most patterns (those without backreferences, lookarounds, atomic groups or nested counted quantifiers) match in linear time; you should still set `Regexp.timeout = 1.0` as a safety net because the optimisation does not cover every pattern and can use memory proportional to input length."
+    answer: 3
+    explanation: |
+      Ruby 3.2 added a memoisation cache to Onigmo's backtracking matcher: it remembers
+      (position, state) pairs it has already failed from, which turns exponential blow-ups like
+      `(a+)*` into linear work for roughly 90% of real patterns. `Regexp.linear_time?(re)` tells
+      you whether a pattern qualifies; backreferences, lookbehind/lookahead, atomic groups and
+      nested `{n,m}` quantifiers disable it. The global `Regexp.timeout=` (or `Regexp.new(src,
+      timeout: 2)`) raises `Regexp::TimeoutError` as the fallback. Separately: regexp literals
+      without interpolation are compiled once at parse time; `Regexp.new` in a loop recompiles
+      every call, so hoist it to a constant, and `/#{x}/o` interpolates only once.
+    tags: [regexp, redos, timeout]
+    source: https://www.ruby-lang.org/en/news/2022/12/25/ruby-3-2-0-released/
+
+  - slug: ruby-mem-benchmark-bmbm-mcq
+    kind: mcq
+    difficulty: junior
+    title: "Why does Benchmark#bmbm exist?"
+    body: |
+      ```ruby
+      require "benchmark"
+      Benchmark.bmbm do |x|
+        x.report("map")  { data.map { |d| d * 2 } }
+        x.report("each") { out = []; data.each { |d| out << d * 2 }; out }
+      end
+      ```
+
+      What does `bmbm` do that `bm` does not?
+    choices:
+      - "It runs each block twice, a rehearsal then the real run, and calls `GC.start` before each timed job, so the first job is not penalised for warming up the heap and the ordering of jobs affects results less."
+      - "It runs the blocks in parallel threads so they experience the same system load."
+      - "It reports iterations per second instead of wall time."
+      - "It disables the GC for the duration of the benchmark."
+    answer: 0
+    explanation: |
+      `bm` times each block once, in order, so whichever runs first pays for growing the heap and
+      for cold caches, and GC pauses land on whoever is unlucky. `bmbm` does a *rehearsal* pass,
+      then runs `GC.start` before each real measurement, which removes most of that skew. It still
+      reports CPU/system/real seconds for one run; for micro-benchmarks you want the
+      `benchmark-ips` gem, which warms up, runs for a fixed time, reports iterations/second with
+      a standard deviation, and `compare!`s the entries. Neither disables GC, and disabling it
+      would hide the allocation cost you usually want to measure.
+    tags: [benchmark, bmbm]
+    source: https://docs.ruby-lang.org/en/3.3/Benchmark.html
+
+  - slug: ruby-mem-clock-gettime-mcq
+    kind: mcq
+    difficulty: middle
+    title: "Measuring elapsed time correctly"
+    body: |
+      Two ways to time a block:
+
+      ```ruby
+      t0 = Time.now
+      work
+      elapsed = Time.now - t0
+
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      work
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+      ```
+
+      Why do Rails, `Benchmark.realtime` and every APM use the second form?
+    choices:
+      - "`Time.now` allocates a `Time` object on each call, and allocation makes the measurement inaccurate."
+      - "`CLOCK_MONOTONIC` never goes backwards or jumps: wall-clock time can be adjusted by NTP, leap seconds or a manual change mid-measurement, giving negative or wildly wrong durations. The monotonic clock is only meaningful as a difference, which is exactly what timing needs."
+      - "`Process.clock_gettime` has nanosecond resolution while `Time.now` is limited to milliseconds."
+      - "`Time.now` is affected by the `TZ` environment variable, so durations differ between servers."
+    answer: 1
+    explanation: |
+      The wall clock answers "what time is it" and can be stepped backwards or forwards at any
+      moment; a duration computed from it can be negative or off by whatever NTP corrected.
+      `CLOCK_MONOTONIC` counts steadily from an arbitrary origin (boot) and is unaffected by
+      clock changes, so differences are trustworthy. Resolution is not the issue (both are
+      nanosecond-capable on Linux), nor is the `Time` allocation, though avoiding it is a small
+      bonus; pass a unit like `:millisecond` or `:float_millisecond` to skip float math.
+      `CLOCK_PROCESS_CPUTIME_ID` measures CPU time instead of wall time when you want to exclude
+      waiting.
+    tags: [clock-gettime, monotonic, timing]
+    source: https://docs.ruby-lang.org/en/3.3/Process.html
+
+  - slug: ruby-mem-map-vs-each-push
+    kind: open
+    difficulty: junior
+    title: "map vs each + push, and when lazy pays off"
+    body: |
+      A reviewer asks you to replace
+
+      ```ruby
+      result = []
+      records.each { |r| result << transform(r) }
+      ```
+
+      with `records.map { |r| transform(r) }`. Is there a real performance difference? When would
+      you reach for `each_with_object`, `lazy`, or `each_slice` instead?
+    answer: |
+      - `map` and `each`+`<<` are both O(n) and allocate one result array; `map` presizes the
+        array to `records.size` while `<<` grows the buffer by doubling, so `map` saves a few
+        reallocations and is slightly faster and clearer. The difference is small; the win is
+        intent, not speed.
+      - Chaining `select.map.first(10)` on a large array builds two full intermediate arrays.
+        `records.lazy.select { }.map { }.first(10)` processes one element at a time and stops
+        after 10, allocating almost nothing; `lazy` pays off for infinite sources (`(1..)`),
+        early termination, or huge inputs; it is slower per element otherwise.
+      - `each_with_object({})` / `each_with_object([])` when you build a Hash or need the
+        accumulator; `inject` for scalar reductions (`sum` is faster for numbers).
+      - `each_slice(1000)` / `find_each` to bound memory when records come from a DB or file
+        instead of loading everything into one array (the memory bloat classic).
+      - `map!`/`select!` mutate in place and save the second array when the original is no
+        longer needed; `flat_map` avoids `map { }.flatten`'s intermediate.
+    explanation: |
+      Follow-ups: "Does `each` + `<<` allocate a block object?" No, literal blocks are not
+      allocated as `Proc`s unless captured with `&blk`. "What is the cost of `&:sym`?" A `Proc`
+      is created from the Symbol once per call site and cached, so it is cheap. The honest
+      senior answer: benchmark with `benchmark-ips` before caring, and profile allocations with
+      `memory_profiler` to find the loops that actually matter.
+    tags: [map, each, lazy, allocation]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html
+
+  - slug: ruby-mem-memoization-caching-tradeoffs
+    kind: open
+    difficulty: middle
+    title: "Memoization and caching: where does the memory go?"
+    body: |
+      A developer speeds up a slow endpoint by memoizing results at the class level:
+
+      ```ruby
+      class PriceCalculator
+        def self.price_for(sku) = (@cache ||= {})[sku] ||= expensive(sku)
+      end
+      ```
+
+      Discuss the performance and memory consequences in a long-running Puma process and what
+      you would do instead.
+    answer: |
+      - Instance-level `@x ||=` is scoped to one object and dies with it; **class-level** state
+        lives for the whole process. An unbounded Hash keyed by `sku` grows with every distinct
+        input: a slow leak that looks like "memory climbs all day".
+      - It is also shared across threads: `||=` is not atomic, concurrent misses compute twice
+        (harmless here) and concurrent writes to a Hash are unsafe on non-GVL rubies.
+      - The cached values keep whatever graph they reference alive (an AR record holds its
+        association caches, connection-related objects, etc.), so a few thousand entries can be
+        hundreds of MB.
+      - Alternatives: bound it (`LRU` cache with a max size, or `ActiveSupport::Cache::MemoryStore`
+        with `size:`), put it in `Rails.cache` (shared across processes, evictable, with TTL),
+        memoize per request/instance instead (`memo_wise`/`Memoist` on instances), or precompute.
+      - If the slow part is N+1 queries, no cache beats fixing the query: `includes`/`preload`,
+        `select` only needed columns, `pluck`, `find_each`; use `bullet` or query logs to find them.
+      - Measure before and after: `memory_profiler` retained report, `GC.stat(:old_objects)`.
+    explanation: |
+      Follow-ups: "How does `||=` behave for a `nil`/`false` result?" It recomputes every time,
+      so an expensive method that returns `nil` for most inputs gets no benefit; use
+      `Hash#fetch`/`key?` or a sentinel. "What about object shapes?" Lazily added memo ivars on
+      instances create extra shapes; initialise them in the constructor (Ruby 3.2+).
+    tags: [memoization, caching, leak, n-plus-one]
+    source: https://www.speedshop.co/2019/01/10/three-activerecord-mistakes.html
+
+  - slug: ruby-mem-stackprof-vs-ruby-prof
+    kind: open
+    difficulty: middle
+    title: "Choosing a profiler: stackprof vs ruby-prof vs memory_profiler"
+    body: |
+      A request is slow and you do not know why. Which profiler do you reach for, how does
+      each work, and what does `mode: :cpu` vs `mode: :wall` vs `mode: :object` tell you?
+    answer: |
+      - **stackprof** is a *sampling* profiler: every N microseconds (default 1ms) a signal
+        handler records the current Ruby stack. Low overhead, safe in production, gives you
+        flamegraphs (`raw: true`) and "which frames were on the stack most often".
+        - `:wall` samples by elapsed time: shows where the *time* goes including waiting on IO
+          or the DB (`ITIMER_REAL`).
+        - `:cpu` samples only while the process is on the CPU: pure Ruby/C computation, hiding IO.
+          A request that is slow in `:wall` but cheap in `:cpu` is waiting on something.
+        - `:object` samples every N allocations: an allocation hotspot profile.
+      - **ruby-prof** is a *tracing* profiler: it hooks every method call and return, so it gives
+        exact call counts, self vs total time, call graphs and allocation/memory measures per
+        method. Far more overhead (several-x slowdown), distorts timings of tiny methods; use in
+        development on a focused snippet, not in production.
+      - **memory_profiler** traces allocations for a block and reports allocated vs *retained*
+        objects and bytes by gem/file/line, plus strings worth freezing. For memory, not time.
+      - Workflow: APM to find the slow endpoint -> `stackprof` wall mode to see IO vs Ruby ->
+        if Ruby, `:cpu` mode and `ruby-prof` on the hot method -> `memory_profiler` if the
+        time is GC/allocation (check `GC.stat(:count)` deltas and `GC::Profiler.total_time`).
+      - Also: `rbspy` (sampling from outside the process, no code change), `vernier` (3.2+
+        sampler that also shows GC and GVL waits), `rack-mini-profiler` for request pages.
+    explanation: |
+      The distinction interviewers listen for: sampling (cheap, statistical, production-safe)
+      vs tracing (exact, heavy). Bonus: "why does the sampling profile say 30% in `GC`?" Because
+      samples landing during GC are attributed to the allocation site that triggered it; fix by
+      allocating less, not by optimising that line.
+    tags: [stackprof, ruby-prof, profiling]
+    source: https://github.com/tmm1/stackprof
+
+  - slug: ruby-mem-method-cache-invalidation
+    kind: open
+    difficulty: senior
+    title: "Method caches and what invalidates them"
+    body: |
+      Explain how CRuby makes `obj.foo` fast on repeated calls, what invalidates that cache,
+      and why defining methods or including modules at runtime in a hot path is a performance
+      bug. What changed in Ruby 3.0?
+    answer: |
+      - Method lookup walks the ancestor chain (`singleton -> class -> prepended/included
+        modules -> superclass ...`). Doing that on every call would be slow, so each call site
+        has an **inline cache**: "last time the receiver's class was X, the method was M". If the
+        class matches (and the cache is still valid) dispatch skips the lookup entirely.
+      - Validity used to be a **global method state** counter: *any* `def`, `include`,
+        `extend`, `define_method`, `remove_method`, `alias`, singleton-class creation anywhere
+        bumped it and invalidated every inline cache in the process. One `extend` per request
+        (a common pattern in old gems and in `Object#extend` DSLs) wiped all caches each time.
+      - **Ruby 3.0** (Feature #16614, for Ractors) rewrote this: the method cache is
+        **per class** and invalidation is targeted; defining a method on `Foo` invalidates
+        caches for `Foo` and its subclasses, not for `String`. `RubyVM.stat` lost
+        `global_method_state` accordingly; `constant_cache_invalidations` remains for constants,
+        which got per-constant invalidation in 3.2.
+      - Still bad in a hot path: `extend`/`singleton_class` on many objects (creates singleton
+        classes, which are new "classes" for cache purposes and defeat shapes and YJIT),
+        `define_method` per request, `Struct.new` or `Class.new` per call, reopening core classes
+        (invalidates heavily used caches like `Integer#+` specialisations), and
+        `method_missing`-based APIs (no cache hit at all; use `respond_to_missing?` plus a
+        `define_method` once).
+      - YJIT compiles against the cached method and installs invalidation hooks, so
+        redefinition also discards generated machine code.
+    explanation: |
+      Follow-up: "Is `send(:dynamic_name)` cached?" The call site caches on the Symbol too, so
+      a `send` with a stable name is fine; a different name each call misses every time.
+      Mention `Object#extend` on AR records (e.g. decorators) as the practical example of per-
+      object singleton classes hurting both caches and object shapes.
+    tags: [method-cache, inline-cache, invalidation]
+    source: https://github.com/ruby/ruby/blob/v3_0_0/NEWS.md
+
+  - slug: ruby-mem-weakmap-use-case
+    kind: open
+    difficulty: senior
+    title: "Weak references: ObjectSpace::WeakMap and WeakKeyMap"
+    body: |
+      What is a weak reference in Ruby, how do `ObjectSpace::WeakMap` and
+      `ObjectSpace::WeakKeyMap` (3.3) differ, and when would you use one instead of a plain
+      `Hash` for a cache?
+    answer: |
+      - A weak reference does not keep its target alive: if nothing else references the
+        object, the GC may collect it and the weak slot reads as `nil`/missing. A plain `Hash`
+        holds strong references, so a cache keyed by objects pins them (and their graphs) forever.
+      - `ObjectSpace::WeakMap`: both keys **and** values are weak; keys are compared by
+        **identity** (`equal?`), not `eql?`, so two equal strings are different keys. Used by
+        Rails' `ActiveSupport::DescendantsTracker`, `Marshal`/`Psych` for object identity, and
+        in the VM for `object_id` tables. Not safe to iterate without a block; entries vanish
+        during GC.
+      - `ObjectSpace::WeakKeyMap` (Ruby 3.3): keys are weak and compared by **value** (`hash`/
+        `eql?`), values are strong. Designed for "attach metadata to an object while it lives"
+        caches: `map[obj] = computed` without leaking `obj` after its request ends.
+      - Use them for per-object side tables (memoised derived data about AR records, parsed
+        ASTs keyed by source object, identity maps), where the cache must not extend the key's
+        lifetime. Do **not** use them as a general LRU: eviction is at the GC's whim, there is
+        no TTL and no size bound; and immediates (Integers, Symbols) are never collected.
+      - The GC got native weak-reference support in 3.3, making these cheap; before that
+        `WeakRef` (stdlib, `weakref.rb`) used finalizers and was slow.
+    explanation: |
+      Follow-up: "Why would a `WeakMap` cache with String keys built from user input be
+      useless?" Each `"x"` you look up is a new object and identity comparison never matches;
+      you need `WeakKeyMap` or interned keys. "Does `GC.start` reliably clear a WeakMap?" Only
+      if nothing else, including a conservative stack scan, still sees the key.
+    tags: [weakmap, weak-reference, cache]
+    source: https://docs.ruby-lang.org/en/3.3/ObjectSpace/WeakMap.html
+
+  - slug: ruby-mem-oob-gc-profiler
+    kind: open
+    difficulty: senior
+    title: "Measuring GC cost and running GC out of band"
+    body: |
+      How do you determine how much of a request's time is garbage collection, and what is
+      "out-of-band GC"? When is it worth it and what are the pitfalls?
+    answer: |
+      - Measure: `GC.stat(:count)`, `:minor_gc_count`, `:major_gc_count` and `GC.stat(:time)`
+        (3.1+, cumulative ms) before and after a request; `GC::Profiler.enable` then
+        `GC::Profiler.total_time` / `.report` for per-GC pauses (heap size, objects, GC time
+        per run); `GC.latest_gc_info` for the trigger. APMs plot "GC time per request" from
+        these. If GC is >10% of request time, reduce allocations first (profiler `:object` mode,
+        `memory_profiler`).
+      - **Out-of-band GC**: a preforking/threaded server runs `GC.start` *between* requests,
+        when the worker is idle, instead of letting GC strike mid-request. Unicorn had
+        `unicorn-worker-killer`/`OobGC`, Puma has the `puma-plugin-oob` approach, and the
+        `gctools` gem's `GC::OOB` used `GC.latest_gc_info` to run a major only when one was
+        imminent (`:need_major_by`).
+      - Mechanics: temporarily remove the worker from the accept loop (or raise the thread's GC
+        pressure thresholds), run a (major) GC, return. Trades throughput for p99 latency.
+      - Pitfalls: with many threads per process there is no idle moment, so OOB GC blocks other
+        requests in that worker (it suits process-per-request servers); forcing majors too often
+        costs CPU and can *increase* total GC time; incremental marking and generational tuning in
+        modern Ruby already keep pauses short, so measure before adopting it.
+      - Related: `GC.disable` during a request is the dangerous cousin; `GC.start(full_mark:
+        false, immediate_sweep: false)` for a cheap minor; `Process.warmup` (3.3) before fork.
+    explanation: |
+      A strong candidate frames OOB GC as a latency-vs-throughput trade and knows it has become
+      less necessary. Follow-up: "What GC env vars would you tune first?"
+      `RUBY_GC_HEAP_INIT_SLOTS`/`RUBY_GC_HEAP_GROWTH_FACTOR` (fewer heap-growth GCs at boot),
+      `RUBY_GC_MALLOC_LIMIT`/`RUBY_GC_OLDMALLOC_LIMIT` (fewer malloc-triggered majors), always
+      validated with `GC.stat` deltas under real traffic.
+    tags: [gc-profiler, out-of-band-gc, latency]
+    source: https://docs.ruby-lang.org/en/3.3/GC/Profiler.html
+
+  - slug: ruby-mem-struct-vs-hash-memory
+    kind: open
+    difficulty: middle
+    title: "Struct, Data, Hash or a class for a million small records?"
+    body: |
+      You load a million rows of `{id:, name:, price:}` into memory for a batch computation.
+      Compare representing each row as a `Hash`, a `Struct`, a `Data` (3.2+) and a plain class
+      with attr_readers, in terms of memory per row and access speed.
+    answer: |
+      - **Hash**: most flexible, most expensive: a slot plus a table (keys, values, hashes);
+        small hashes (<= 8 entries) use a compact array representation but still carry the
+        key for every row. Access `h[:price]` is a hash lookup (fast for symbols but not free).
+        ~160+ bytes per row for three keys on 3.3.
+      - **Struct**: members are stored positionally in the object (embedded in the slot under
+        VWA for a few members), names live once on the class. ~40-80 bytes per row. Accessors
+        are C-implemented positional reads, faster than Hash lookup. `keyword_init: true`
+        gives named construction. Supports `==`, `to_a`, pattern matching.
+      - **Data** (3.2): like Struct but immutable (no setters, frozen), keyword or positional
+        construction, `with(...)` for updates. Same memory profile as Struct; the right default
+        for value objects.
+      - **Plain class with ivars**: ivars are embedded in the slot (object shapes make
+        `@price` reads a single load; YJIT inlines them). Memory similar to Struct; fastest
+        access; most code to write, but you can add behaviour.
+      - Also consider not materialising objects at all: parallel typed arrays, `pluck` into
+        arrays of Integers/Floats (immediates, no allocation), or streaming with `each_slice`.
+      - Watch `Comparable`: if rows are sorted via a Ruby-level `<=>`, `sort` calls it O(n log n)
+        times; `sort_by { |r| r.price }` compares immediates in C and is much faster.
+    explanation: |
+      Verify claims with `ObjectSpace.memsize_of` and `memory_profiler` rather than asserting
+      numbers; sizes shift between versions (VWA in 3.2, Hash VWA in 3.3). Follow-up: "why is
+      `OpenStruct` the worst option?" It defines singleton methods per instance, so it is slow,
+      allocates a Hash *and* a singleton class, and defeats method caches.
+    tags: [struct, data, hash, memory]
+    source: https://docs.ruby-lang.org/en/3.3/Struct.html
+
+  - slug: ruby-mem-benchmark-ips-methodology
+    kind: open
+    difficulty: middle
+    title: "How do you benchmark a Ruby change credibly?"
+    body: |
+      A PR claims "this refactor makes serialization 2x faster" with a `Benchmark.measure`
+      number from one run. What would you ask for instead, and how would you set up the
+      measurement with `benchmark-ips`?
+    answer: |
+      - One wall-clock run is noise: GC timing, YJIT warm-up, CPU frequency, other processes.
+        Ask for iterations per second with a variance, from a warmed-up, repeated measurement.
+      - `benchmark-ips`: `Benchmark.ips do |x| x.config(warmup: 2, time: 5); x.report("old") { }
+        ; x.report("new") { }; x.compare! end`. It warms each block, then runs it for a fixed time,
+        reporting i/s with a standard deviation and a comparison ("1.9x faster", or "same-ish"
+        when within error).
+      - Make the inputs realistic (production-shaped payloads, not `[1,2,3]`), run both variants
+        in the same process and the same Ruby (`--yjit` on if production uses it), and pin the
+        machine state (no laptop on battery).
+      - Benchmark allocations too: `memory_profiler` or `GC.stat(:total_allocated_objects)`
+        deltas; fewer allocations often matter more in production than i/s in isolation because
+        they reduce GC pressure across all requests.
+      - Beware micro-benchmark traps: the optimiser eliminating unused work, benchmarking the
+        block call overhead itself (use `x.report("name") { |times| ... }` for tiny bodies),
+        measuring a cold method cache, or comparing a method that returns early for your input.
+      - Finally, confirm in production: APM p50/p99 and GC time per request before/after.
+    explanation: |
+      Interviewers want: warm-up, repeated runs, error bars, realistic data, allocations as a
+      second metric, and verification in prod. Mentioning `Benchmark.bmbm` as the stdlib-only
+      fallback and `Process.clock_gettime(Process::CLOCK_MONOTONIC)` for ad-hoc timing is good.
+    tags: [benchmark-ips, methodology]
+    source: https://github.com/evanphx/benchmark-ips
+
+  - slug: ruby-mem-code-lru-cache
+    kind: code
+    difficulty: middle
+    title: "Bounded LRU cache"
+    body: |
+      Implement `LRUCache` so a cache cannot grow without bound:
+
+      - `LRUCache.new(capacity)`
+      - `put(key, value)` — stores the value and returns it; if the cache is over capacity
+        afterwards, evicts the **least recently used** entry
+      - `get(key)` — returns the value (and marks the key as most recently used) or `nil`
+      - `size` — number of entries
+      - `keys` — keys from least to most recently used
+
+      Use the fact that Ruby's `Hash` preserves insertion order: deleting and re-inserting a key
+      moves it to the end, and `Hash#shift` removes the oldest entry.
+
+      ```ruby
+      c = LRUCache.new(2)
+      c.put(:a, 1); c.put(:b, 2)
+      c.get(:a)        # => 1  (a is now most recent)
+      c.put(:c, 3)     # evicts :b
+      c.get(:b)        # => nil
+      c.keys           # => [:a, :c]
+      ```
+    starter_code: |
+      class LRUCache
+        def initialize(capacity)
+          @capacity = capacity
+          @store = {}
+        end
+
+        def put(key, value)
+          # your code here
+        end
+
+        def get(key)
+          # your code here
+        end
+
+        def size = @store.size
+
+        def keys = @store.keys
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class LRUCacheTest < Minitest::Test
+        def test_evicts_least_recently_used
+          c = LRUCache.new(2)
+          c.put(:a, 1)
+          c.put(:b, 2)
+          assert_equal 1, c.get(:a)
+          c.put(:c, 3)
+          assert_nil c.get(:b)
+          assert_equal 1, c.get(:a)
+          assert_equal 3, c.get(:c)
+          assert_equal 2, c.size
+        end
+
+        def test_keys_in_recency_order
+          c = LRUCache.new(3)
+          c.put(:a, 1); c.put(:b, 2); c.put(:c, 3)
+          c.get(:a)
+          assert_equal [:b, :c, :a], c.keys
+        end
+
+        def test_put_existing_key_updates_and_refreshes
+          c = LRUCache.new(2)
+          c.put(:a, 1); c.put(:b, 2)
+          assert_equal 10, c.put(:a, 10)
+          c.put(:c, 3)
+          assert_nil c.get(:b)
+          assert_equal 10, c.get(:a)
+        end
+
+        def test_nil_values_and_missing_keys
+          c = LRUCache.new(1)
+          assert_nil c.get(:nope)
+          c.put(:x, nil)
+          assert_equal 1, c.size
+          assert_equal [:x], c.keys
+        end
+      end
+    solution: |
+      class LRUCache
+        def initialize(capacity)
+          @capacity = capacity
+          @store = {}
+        end
+
+        def put(key, value)
+          @store.delete(key)
+          @store[key] = value
+          @store.shift if @store.size > @capacity
+          value
+        end
+
+        def get(key)
+          return nil unless @store.key?(key)
+          value = @store.delete(key)
+          @store[key] = value
+        end
+
+        def size = @store.size
+
+        def keys = @store.keys
+      end
+    explanation: |
+      Ruby's `Hash` is an ordered hash table, which is why this is ten lines instead of a doubly
+      linked list plus a hash as in other languages: `delete` + reinsert moves a key to the
+      "most recent" end in O(1) amortised, and `shift` pops the oldest entry in O(1). The
+      `key?` check in `get` is what makes stored `nil` values work. This is the shape of
+      `ActiveSupport::Cache::MemoryStore`'s eviction and of most "memoize but bounded" needs;
+      in a threaded server wrap the two methods in a `Mutex`, since `delete`/`[]=` pairs are not
+      atomic.
+    tags: [lru, cache, hash-order]
+    source: https://docs.ruby-lang.org/en/3.3/Hash.html
+
+  - slug: ruby-mem-code-lazy-first-even-squares
+    kind: code
+    difficulty: middle
+    title: "Lazy pipeline over an infinite source"
+    body: |
+      Implement `first_even_squares(source, n)`: square each element of `source`, keep the
+      even squares, and return the first `n` of them as an Array.
+
+      `source` may be **infinite** (for example `(1..)`), so the pipeline must not materialise
+      intermediate arrays; use `Enumerable#lazy`. The tests will hang (and fail on timeout) if
+      you call `map`/`select` eagerly on the infinite range.
+
+      ```ruby
+      first_even_squares((1..), 3)        # => [4, 16, 36]
+      first_even_squares([1, 2, 3, 4], 5) # => [4, 16]
+      ```
+    starter_code: |
+      def first_even_squares(source, n)
+        # your code here
+      end
+    tests: |
+      require "minitest/autorun"
+
+      class FirstEvenSquaresTest < Minitest::Test
+        def test_infinite_source
+          assert_equal [4, 16, 36], first_even_squares((1..), 3)
+        end
+
+        def test_finite_source_shorter_than_n
+          assert_equal [4, 16], first_even_squares([1, 2, 3, 4], 5)
+        end
+
+        def test_zero
+          assert_equal [], first_even_squares((1..), 0)
+        end
+
+        def test_does_not_consume_more_than_needed
+          seen = []
+          source = Enumerator.new { |y| i = 0; loop { i += 1; seen << i; y << i } }
+          assert_equal [4, 16], first_even_squares(source, 2)
+          assert_operator seen.size, :<=, 5
+        end
+      end
+    solution: |
+      def first_even_squares(source, n)
+        source.lazy.map { |x| x * x }.select(&:even?).first(n)
+      end
+    explanation: |
+      `(1..).map { }` would try to build an infinite array; `lazy` turns each `map`/`select`
+      into a wrapper that pulls one element at a time, and `first(n)` stops the pipeline as soon
+      as it has enough. The last test proves the pull semantics: with the eager version the
+      enumerator would run forever, and even a "finite but huge" eager version would allocate an
+      intermediate array per stage. Lazy enumerators cost more per element than eager ones, so
+      use them for infinite or very large inputs and for early termination, not for every loop.
+    tags: [lazy, enumerator, allocation]
+    source: https://docs.ruby-lang.org/en/3.3/Enumerator.html

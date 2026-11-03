@@ -1,0 +1,88 @@
+<p class="crumbs">
+  <a href="/items?<%= qs(filter) %>">Browse</a> › <%= @item.language %> › <a href="/items?language=<%= @item.language %>&topic=<%= @item.topic %>"><%= @item.topic %></a>
+  <span class="badge"><%= @item.kind %></span><span class="badge <%= @item.difficulty %>"><%= @item.difficulty %></span>
+  <% if interview? %> · Interview question <%= params[:i].to_i + 1 %> of <%= params[:ids].split("-").size %><% end %>
+</p>
+<h1><%= h @item.title %></h1>
+<div class="md"><%= md(@item.body) %></div>
+
+<% case @item.kind %>
+<% when "mcq" %>
+  <% if @result %>
+    <ol class="choices">
+      <% @item.choices.each_with_index do |c, i| %>
+        <li class="<%= i == @item.correct_choice ? 'right' : (i == @result[:choice] ? 'wrong' : '') %>"><%= md_inline(c) %></li>
+      <% end %>
+    </ol>
+    <p class="verdict <%= @result[:correct] ? 'ok' : 'bad' %>"><%= @result[:correct] ? "Correct" : "Wrong" %></p>
+  <% else %>
+    <form method="post" action="/items/<%= @item.id %>/attempt"><%= hidden_fields %>
+      <ol class="choices">
+        <% @item.choices.each_with_index do |c, i| %>
+          <li><label><input type="radio" name="choice" value="<%= i %>" required> <%= md_inline(c) %></label></li>
+        <% end %>
+      </ol>
+      <button class="primary">Answer</button>
+    </form>
+  <% end %>
+
+<% when "open", "theory" %>
+  <% if @result %>
+    <div class="answer md"><%= md(@item.answer) %></div>
+    <p class="verdict <%= @result[:correct] ? 'ok' : 'bad' %>">Graded: <%= @result[:grade] %></p>
+  <% elsif reveal? %>
+    <div class="answer md"><%= md(@item.answer) %></div>
+    <form class="grades" method="post" action="/items/<%= @item.id %>/attempt"><%= hidden_fields %>
+      <span class="muted">How well did you know it?</span>
+      <% SM2::GRADES.each_key do |g| %><button name="grade" value="<%= g %>"><%= g %></button><% end %>
+    </form>
+  <% else %>
+    <p class="muted"><%= @item.kind == "theory" ? "Read the card, then check the recap." : "Answer out loud as in an interview, then compare." %></p>
+    <p><a class="btn primary" href="<%= item_url(@item, reveal: 1) %>">Reveal answer</a></p>
+  <% end %>
+
+<% when "code" %>
+  <% last_code = @item.attempts_dataset.first&.response %>
+  <form method="post" action="/items/<%= @item.id %>/attempt"><%= hidden_fields %>
+    <textarea class="code" name="code" rows="16" spellcheck="false"><%= h(@result ? @result[:code] : (last_code || @item.starter_code)) %></textarea>
+    <p class="actions">
+      <button class="primary">Run tests</button>
+      <span class="muted">⌘/Ctrl+Enter runs · Tab indents</span>
+      <% unless reveal? %><a href="<%= item_url(@item, reveal: 1) %>">Show solution</a><% end %>
+    </p>
+  </form>
+  <% if @result %>
+    <p class="verdict <%= @result[:correct] ? 'ok' : 'bad' %>"><%= @result[:correct] ? "All tests passed" : "Tests failed" %></p>
+    <pre class="output <%= @result[:correct] ? 'pass' : 'fail' %>"><%= h @result[:output] %></pre>
+  <% end %>
+  <% if reveal? %>
+    <h3>Reference solution</h3>
+    <div class="md"><%= md("```#{@item.language}\n#{@item.solution}\n```") %></div>
+    <h3>Tests</h3>
+    <div class="md"><%= md("```#{@item.language}\n#{@item.tests}\n```") %></div>
+  <% end %>
+<% end %>
+
+<% if @result || reveal? %>
+  <section class="card">
+    <h3>Explanation</h3>
+    <div class="md"><%= md(@item.explanation) %></div>
+    <% unless @item.source.to_s.empty? %><p class="muted">Source: <%= source_link(@item.source) %></p><% end %>
+    <% unless Array(@item.tags).empty? %><p class="muted">Tags: <%= h Array(@item.tags).join(", ") %></p><% end %>
+  </section>
+<% end %>
+
+<p class="actions">
+  <a class="btn primary" href="<%= next_url(result_char) %>"><%= @result ? "Next →" : (interview? ? "Skip →" : "Skip →") %></a>
+  <% unless interview? %><a class="btn" href="/items?<%= qs(filter) %>">Back to list</a><% end %>
+</p>
+
+<% history = @item.attempts_dataset.limit(10).all %>
+<% unless history.empty? %>
+  <h3>Your attempts</h3>
+  <ul class="history">
+    <% history.each do |a| %>
+      <li><%= a.correct ? "✅" : "❌" %> <%= a.created_at.strftime("%Y-%m-%d %H:%M") %><%= @item.self_graded? ? " · #{a.response}" : "" %></li>
+    <% end %>
+  </ul>
+<% end %>

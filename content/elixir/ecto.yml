@@ -1,0 +1,1387 @@
+language: elixir
+topic: ecto
+items:
+  - slug: elixir-ecto-architecture-overview
+    kind: theory
+    difficulty: junior
+    title: "Ecto's four pieces: Repo, Schema, Changeset, Query (plus Migration and Multi)"
+    body: |
+      Ecto is not an ORM in the ActiveRecord sense; it is a set of composable, explicit modules:
+
+      - **`Ecto.Repo`** — the only thing that talks to the database. `MyApp.Repo` wraps an adapter (`Ecto.Adapters.Postgres`) and a `DBConnection` pool. All I/O goes through `Repo.all/one/get/insert/update/delete/transaction/...`. Structs never save themselves.
+      - **`Ecto.Schema`** — maps a table (or nothing, for `embedded_schema`) to a struct: field names, types, associations, timestamps. It does no validation and no I/O.
+      - **`Ecto.Changeset`** — a data structure that tracks *changes* to a struct or map, casts external params, runs validations, and carries errors and constraints. The unit of "what will be written".
+      - **`Ecto.Query`** — a DSL for building queries as data; nothing runs until a `Repo` function receives the query.
+      - **`Ecto.Migration`** (in `ecto_sql`) — schema DDL versioned in `priv/repo/migrations`, run by `Ecto.Migrator`.
+      - **`Ecto.Multi`** — a declarative list of named operations run in one transaction.
+
+      ```elixir
+      # the typical flow
+      %User{}                                  # Schema
+      |> User.changeset(params)                # Changeset: cast + validate + constraints
+      |> Repo.insert()                         # Repo: {:ok, user} | {:error, changeset}
+
+      from(u in User, where: u.active, select: u.email)   # Query (pure data)
+      |> Repo.all()                                       # executed here
+      ```
+
+      The separation is the point: schemas are reusable with different changeset functions (`registration_changeset`, `admin_changeset`), queries compose as plain functions, and the Repo is a single mockable/replaceable boundary.
+    answer: |
+      **Q:** Why is `Repo.insert(changeset)` returning `{:error, changeset}` instead of raising considered a feature?
+      **A:** The changeset carries structured errors (per field, with constraint violations mapped in), so the caller can render them or pattern-match on them; `insert!` exists for the cases where failure really is exceptional.
+    explanation: |
+      Interviewers open with this to see whether you can explain *why* Ecto splits responsibilities. The strongest signal is understanding that schemas carry no behaviour, changesets are plain data describing a pending write, and queries are values you can pass around and test without a database.
+    tags: [architecture, repo, schema, changeset, query]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-timestamps-default-type
+    kind: mcq
+    difficulty: junior
+    title: "What type do `timestamps()` fields have by default, and how do you get UTC `DateTime` structs?"
+    body: |
+      ```elixir
+      schema "posts" do
+        field :title, :string
+        timestamps()
+      end
+      ```
+    choices:
+      - "`:utc_datetime`; `inserted_at` is a `DateTime` in UTC"
+      - "`:utc_datetime_usec`; microsecond precision is the default since Ecto 3"
+      - "`:naive_datetime` (second precision, `NaiveDateTime` with no zone); set `@timestamps_opts [type: :utc_datetime_usec]` or `timestamps(type: :utc_datetime)` to get `DateTime` values"
+      - "`:integer` Unix seconds, for portability across adapters"
+    answer: 2
+    explanation: |
+      `timestamps/1` generates `inserted_at` and `updated_at` with `@timestamps_opts`, whose default is `[type: :naive_datetime]`. Values are written in UTC either way, but you get a `NaiveDateTime` back, which cannot be compared with timezone-aware values safely. Phoenix generators since 1.7 set `@timestamps_opts [type: :utc_datetime]` in `config :my_app, :generators, timestamp_type: :utc_datetime`. The `_usec` variants keep microseconds; casting a usec value into a non-usec field truncates. The migration default (`timestamps()` in `Ecto.Migration`) is also `:naive_datetime`, mapping to `timestamp(0)` in Postgres.
+    tags: [schema, timestamps, datetime]
+    source: https://ecto.hexdocs.pm/Ecto.Schema.html
+
+  - slug: elixir-ecto-primary-key-binary-id
+    kind: mcq
+    difficulty: junior
+    title: "How do you make a schema use UUID primary keys, and what must the migration do?"
+    body: |
+      ```elixir
+      defmodule MyApp.Orders.Order do
+        use Ecto.Schema
+        @primary_key {:id, :binary_id, autogenerate: true}
+        @foreign_key_type :binary_id
+
+        schema "orders" do
+          belongs_to :user, MyApp.Accounts.User
+        end
+      end
+      ```
+    choices:
+      - "`@primary_key {:id, :binary_id, autogenerate: true}` makes Ecto generate a UUID on insert; `@foreign_key_type :binary_id` makes `belongs_to` columns `:binary_id` too; the migration needs `create table(:orders, primary_key: false) do add :id, :binary_id, primary_key: true; add :user_id, references(:users, type: :binary_id)`"
+      - "Only the migration matters: `add :id, :uuid, primary_key: true` and Ecto infers the type at compile time by reading the database"
+      - "Use `field :id, Ecto.UUID, primary_key: true` and keep the default `@primary_key`; the database generates the value with `gen_random_uuid()`"
+      - "`@primary_key false` plus `has_many :ids` is required because UUIDs are not comparable in Ecto"
+    answer: 0
+    explanation: |
+      The default is `@primary_key {:id, :id, autogenerate: true}` (a bigserial). With `:binary_id` Ecto generates the UUID in Elixir (`Ecto.UUID.generate/0`) before the insert, so `insert_all` does *not* fill it and you must supply it or use a DB default. `@foreign_key_type` sets the default type of every `belongs_to` in that module; `references/2` in the migration must receive `type: :binary_id` because migrations know nothing about schemas. Setting it in `config :my_app, :generators, binary_id: true` makes generators emit all of this. Choice 3 works for DB-generated keys only if you add `read_after_writes: true` and set the column default.
+    tags: [schema, primary_key, binary_id, uuid]
+    source: https://ecto.hexdocs.pm/Ecto.Schema.html
+
+  - slug: elixir-ecto-changeset-pipeline
+    kind: theory
+    difficulty: junior
+    title: "The changeset pipeline: cast, validate, constrain, then Repo"
+    body: |
+      A changeset function is a pipeline that turns untrusted params into a validated description of a change:
+
+      ```elixir
+      def changeset(user, attrs) do
+        user
+        |> cast(attrs, [:email, :name, :age])             # 1. filter + type-cast external params
+        |> validate_required([:email, :name])              # 2. in-memory validations
+        |> validate_format(:email, ~r/@/)
+        |> validate_length(:name, min: 2, max: 60)
+        |> validate_number(:age, greater_than_or_equal_to: 18)
+        |> validate_inclusion(:role, ["admin", "member"])
+        |> unique_constraint(:email)                       # 3. map DB constraint errors
+        |> foreign_key_constraint(:org_id)
+      end
+      ```
+
+      - **cast/4** only accepts keys in the allowed list; strings like `"42"` become integers per the schema type; a failed cast adds an `"is invalid"` error. `""` is treated as empty (`empty_values`) and becomes `nil`.
+      - **validate_\*** run immediately, in Elixir, and append to `changeset.errors`; `valid?` becomes `false`. They only check fields *present* in `changes` (except `validate_required`, which also looks at the data).
+      - **\*_constraint** do nothing now; they register how to translate a database constraint violation (`users_email_index`) into a field error when the Repo call fails, instead of raising `Ecto.ConstraintError`.
+      - `Repo.insert/update` sets `changeset.action` (`:insert`), skips the DB if `valid?` is false, and returns `{:ok, struct}` or `{:error, changeset}`.
+
+      The resulting struct:
+
+      ```elixir
+      %Ecto.Changeset{data: %User{}, changes: %{email: "a@b"}, errors: [name: {"can't be blank", [validation: :required]}],
+                      valid?: false, action: nil, constraints: [...], types: %{...}}
+      ```
+
+      `get_field/3` reads changes-then-data; `get_change/3`/`fetch_change/2` read only changes; `traverse_errors/2` turns the error keyword list into a nested map for APIs; `apply_action/2` validates without a Repo (useful for forms over maps).
+    answer: |
+      **Q:** `validate_length(:bio, max: 10)` passes even though the stored bio is 500 chars. Why?
+      **A:** Validations only examine fields in `changes`. `bio` was not in `attrs`, so nothing was cast and there is nothing to validate; existing data is assumed valid. Use `validate_change`/`get_field` logic if you must check persisted values.
+    explanation: |
+      The three-phase model (cast → validate → constraints) is the single most asked Ecto topic. Be precise about *when* each phase runs: cast and validations are pure and synchronous; constraints are reactive and depend on an index existing in the migration.
+    tags: [changeset, cast, validate, constraint]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-cast-vs-change
+    kind: mcq
+    difficulty: junior
+    title: "`cast/4` vs `change/2`: which statement is correct?"
+    body: |
+      ```elixir
+      cast(%User{}, %{"age" => "42", "admin" => true}, [:age])
+      change(%User{}, age: 42, admin: true)
+      ```
+    choices:
+      - "They are equivalent; `change/2` is a shorthand when the params map has atom keys"
+      - "`change/2` casts values using the schema types; `cast/4` stores them raw"
+      - "`cast/4` raises on unknown keys such as `admin`; `change/2` ignores them"
+      - "`cast/4` filters to the permitted keys and type-casts external (string) params, adding errors on failure; `change/2` takes trusted, already-typed internal values, keeps every key given (`admin` included) and performs no validation"
+    answer: 3
+    explanation: |
+      `cast/4` is the boundary for untrusted input: it whitelists keys (`admin` is silently dropped, which is the mass-assignment protection), casts `"42"` to `42` using the schema type, and records `"is invalid"` errors. `change/2` and `put_change/3` are for values your own code produced (a computed `hashed_password`, a `status: :archived` set by a context): no whitelist, no cast, "the value is directly stored in the changeset with no validation whatsoever", though the type is still checked against the schema. `cast` never raises on unknown keys (choice 3) — that silence is a frequent source of "my field is not saved" bugs when you forget to add it to the permitted list.
+    tags: [changeset, cast, change]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-unique-constraint-vs-validate
+    kind: mcq
+    difficulty: middle
+    title: "A candidate writes `validate_unique(:email)`. What is wrong, and what is the right way to enforce unique emails?"
+    body: |
+      ```elixir
+      def changeset(user, attrs) do
+        user
+        |> cast(attrs, [:email])
+        |> validate_required([:email])
+        |> validate_unique(:email)
+      end
+      ```
+    choices:
+      - "There is no `validate_unique`. Uniqueness can only be guaranteed by a database unique index; `unique_constraint(:email)` maps the index violation to a changeset error on insert/update. `unsafe_validate_unique/4` can add an early, friendlier check but is racy and not a substitute"
+      - "`validate_unique/2` exists and queries the table; it is enough as long as you call it after `cast`"
+      - "Use `unique_constraint(:email)`; it runs a `SELECT` before the insert so no index is needed"
+      - "Use `validate_change(:email, &check_in_db/2)`; constraints are only for foreign keys"
+    answer: 0
+    explanation: |
+      Two processes can both run a `SELECT COUNT(*)` check, both see zero rows, and both insert; only the database's unique index is atomic. `unique_constraint/3` does no query — it registers that a violation of `users_email_index` (default name `<table>_<field>_index`, override with `name:`) should become `{"has already been taken", [constraint: :unique, ...]}` instead of raising `Ecto.ConstraintError`. The index must exist (`create unique_index(:users, [:email])`), and for composite or lowercase indexes you pass `name:` and sometimes `match: :prefix`. `unsafe_validate_unique` is explicitly named unsafe to remind you it only improves UX. Deferred constraints are not supported: they raise at commit instead of returning an error changeset.
+    tags: [changeset, unique_constraint, constraints]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-put-assoc-cast-assoc-build-assoc
+    kind: open
+    difficulty: middle
+    title: "Compare `put_assoc`, `cast_assoc` and `build_assoc`. When do you use each?"
+    body: |
+      Give an example for each with a `Post has_many :comments` / `Comment belongs_to :post` pair, and name the trap with `put_assoc` on an existing list.
+    answer: |
+      - **`Ecto.build_assoc(post, :comments, %{body: "hi"})`** — not a changeset function. Returns a *struct* `%Comment{post_id: post.id, body: "hi"}` with the foreign key filled in from the parent. Works only for `has_one`/`has_many` (raises for `belongs_to`). Use it when you create a child of an already-persisted parent and then run the child's own changeset + `Repo.insert`.
+      - **`cast_assoc(changeset, :comments)`** — for **external params** (`%{"comments" => [%{"id" => 1, "body" => "x"}, %{"body" => "new"}]}`). Calls `Comment.changeset/2` (or `with:`) on each entry, matches existing children by primary key to update them, inserts new ones, and treats missing ones according to `on_replace`. Used for nested forms (`inputs_for`). Requires the association to be **preloaded** on the parent when updating.
+      - **`put_assoc(changeset, :comments, comments)`** — for **internal data**: structs, changesets or maps you already hold (`Repo.all(from t in Tag, where: t.id in ^ids)`). Sets the association as a whole: the list you pass is the *complete* new set, so passing one comment to a post that had three means the other two are "replaced" and `on_replace` decides (`:raise` by default). Typical for `many_to_many` tags and for setting `belongs_to` with a known struct.
+      - Both `cast_assoc` and `put_assoc` make Ecto insert/update/delete the children in the same transaction as the parent on `Repo.insert/update`.
+      - Rule of thumb from the forum thread: `put_assoc` for data in hand, `cast_assoc` for untrusted params, `build_assoc` to create a new child under an existing parent.
+      - For `belongs_to` with just an id, prefer casting the foreign key (`cast(attrs, [:post_id])` + `assoc_constraint(:post)`) over loading the parent.
+    explanation: |
+      Follow-ups: "Why does `put_assoc` raise `cannot replace related ... got :raise`?" — the association was not preloaded or `on_replace` is the default; preload and set `on_replace: :delete` (has_many) or `:nilify`. "What does `cast_assoc` do with `required: true`?" — errors if the list is empty. "How do you add a tag without reloading all tags?" — insert into the join table directly (`Repo.insert_all("posts_tags", ...)`) or `put_assoc` with the full list; Ecto has no `add_to_assoc`.
+    tags: [changeset, associations, put_assoc, cast_assoc, build_assoc]
+    source: https://elixirforum.com/t/confussed-with-build-assoc-vs-put-assoc-vs-cast-assoc/29116
+
+  - slug: elixir-ecto-on-replace-options
+    kind: mcq
+    difficulty: middle
+    title: "What does `on_replace` control, and why is `:delete` on a `has_many` a security consideration?"
+    body: |
+      ```elixir
+      has_many :comments, Comment, on_replace: :delete
+      ```
+    choices:
+      - "`on_replace` decides what Ecto does with children that are *not* in the list given to `put_assoc`/`cast_assoc`: `:raise` (default), `:mark_as_invalid`, `:nilify`, `:update` (has_one/belongs_to), `:delete`, `:delete_if_exists`. With `:delete`, a client posting `comments: []` through `cast_assoc` deletes every comment, so the params must be trusted or the association excluded from cast"
+      - "`on_replace` is the Ecto equivalent of the database `ON DELETE` clause and is enforced by a foreign key"
+      - "`on_replace: :delete` deletes the *parent* when a child changes"
+      - "`on_replace` only applies to embeds; associations ignore it"
+    answer: 0
+    explanation: |
+      Replacing means the association is being set to a new collection and some existing children are absent from it. The default `:raise` forces you to decide explicitly. `:nilify` sets the child's FK to `nil` (needs a nullable column), `:delete` issues deletes in the same transaction, `:mark_as_invalid` adds an error, `:update` (single associations) updates the existing child in place instead of swapping it. The docs explicitly warn that `:delete` lets users remove data by sending `nil`/`[]`. Database-level `references(..., on_delete: :delete_all)` is a separate mechanism for when the *parent row* is deleted.
+    tags: [associations, on_replace, cast_assoc]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-validations-vs-constraints
+    kind: open
+    difficulty: middle
+    title: "Why does Ecto have both validations and constraints, and what happens to constraint errors that you did not declare?"
+    body: |
+      Cover `foreign_key_constraint`, `assoc_constraint`, `no_assoc_constraint`, `check_constraint`, `exclusion_constraint`, and what `Ecto.ConstraintError` tells you.
+    answer: |
+      - **Validations** run in Elixir before any query: they are cheap, give all errors at once, and cover rules the DB cannot express or that you want to show immediately. But they cannot guarantee anything that depends on *other rows* (uniqueness, referential integrity) because of races.
+      - **Constraints** are enforced by the database and are therefore the only reliable source of truth for cross-row invariants. Ecto's `*_constraint` functions do no work up front; they attach `%{type:, constraint:, field:, error_message:}` entries so that when the adapter reports a violation, `Repo.insert/update/delete` returns `{:error, changeset}` with the error on the right field.
+      - If validations fail, constraints are never tested, because the Repo is not called.
+      - `unique_constraint(:email)` ↔ unique index; `foreign_key_constraint(:org_id)` ↔ FK on insert/update of the child; `assoc_constraint(:org)` same but phrased by association name ("does not exist"); `no_assoc_constraint(:posts)` ↔ FK violation when *deleting* a parent that still has children ("are still associated with this entry"); `check_constraint(:price, name: :price_must_be_positive)` ↔ `CHECK`; `exclusion_constraint` ↔ Postgres `EXCLUDE` (overlapping ranges).
+      - An undeclared violation raises **`Ecto.ConstraintError`**, whose message lists the constraint name and tells you to add the matching `*_constraint` call — raising is deliberate so missing declarations are loud.
+      - Constraint names must match the migration (`unique_index(:users, [:email], name: :users_email_lower_index)` → `unique_constraint(:email, name: :users_email_lower_index)`); partial/composite indexes often need `match: :prefix` or an explicit name.
+      - Deferred constraints (checked at commit) are not supported by this mechanism: the error surfaces at `COMMIT` as an exception, not an error changeset.
+    explanation: |
+      Follow-ups: "Should every validation also be a constraint?" — mirror the invariants that matter (uniqueness, FKs, non-null, checks) in the DB; UX validations (format, length messages) can stay in Elixir. "What about `validate_required` vs `NOT NULL`?" — both; `NOT NULL` catches `update_all`/`insert_all` paths that bypass changesets. Weak answers claim `unique_constraint` performs a query.
+    tags: [changeset, constraints, validations]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-put-change-vs-force-change
+    kind: mcq
+    difficulty: middle
+    title: "`put_change/3` vs `force_change/3`: when does the difference matter?"
+    body: |
+      ```elixir
+      user = %User{status: "active"}
+      cs1 = user |> change() |> put_change(:status, "active")
+      cs2 = user |> change() |> force_change(:status, "active")
+      {cs1.changes, cs2.changes}
+      ```
+    choices:
+      - "`{%{status: \"active\"}, %{status: \"active\"}}`; both record the change"
+      - "`{%{}, %{status: \"active\"}}`; `put_change` drops a value equal to the current data so no `UPDATE` is issued, `force_change` records it anyway (useful to trigger `updated_at`, `prepare_changes` or `optimistic_lock`)"
+      - "`{%{status: \"active\"}, %{}}`; `force_change` only works on virtual fields"
+      - "Both raise because `change/1` requires at least one change"
+    answer: 1
+    explanation: |
+      `put_change` compares with the data using the type's `equal?/2` and skips no-op changes, so `Repo.update` on an empty changeset returns `{:ok, struct}` without touching the DB (and without bumping `updated_at`). `force_change` always stores it. The same equality rule applies to `cast/4`, which is why "touching" a record requires `force_change` or an explicit `updated_at` change. Note `put_change` still type-checks the value against the schema (it raises on a wrong type), while neither function runs validations.
+    tags: [changeset, put_change, force_change]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-code-mini-changeset
+    kind: code
+    difficulty: middle
+    title: "Implement a tiny changeset: `cast/2` and `validate_required/2`"
+    body: |
+      Model `Ecto.Changeset` for plain maps. Define `MiniChangeset` with:
+
+      - `cast(params, permitted)` — `params` is a map with **string** keys, `permitted` a list of atoms. Returns `%{changes: %{}, errors: [], valid?: true}` where `changes` holds only permitted keys, as atoms. Values equal to `""` are converted to `nil` (Ecto's empty-value rule).
+      - `validate_required(changeset, fields)` — for each field whose change is missing or `nil`, append `{field, "can't be blank"}` to `errors` (in the order of `fields`) and set `valid?: false`.
+      - `validate_length(changeset, field, min: n)` — if the change for `field` is a string shorter than `n`, append `{field, "should be at least #{n} character(s)"}` and set `valid?: false`. Skip when the field is absent or `nil`.
+
+      ```elixir
+      %{"name" => "Bo", "email" => "", "admin" => true}
+      |> MiniChangeset.cast([:name, :email])
+      |> MiniChangeset.validate_required([:name, :email])
+      |> MiniChangeset.validate_length(:name, min: 3)
+      # => %{changes: %{name: "Bo", email: nil}, valid?: false,
+      #      errors: [email: "can't be blank", name: "should be at least 3 character(s)"]}
+      ```
+    starter_code: |
+      defmodule MiniChangeset do
+        def cast(params, permitted) do
+          # TODO
+          %{changes: %{}, errors: [], valid?: true}
+        end
+
+        def validate_required(changeset, fields) do
+          # TODO
+          changeset
+        end
+
+        def validate_length(changeset, field, min: min) do
+          # TODO
+          changeset
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniChangesetTest do
+        use ExUnit.Case
+
+        test "cast whitelists keys, atomizes them and treats empty string as nil" do
+          cs = MiniChangeset.cast(%{"name" => "Bo", "email" => "", "admin" => true}, [:name, :email])
+          assert cs == %{changes: %{name: "Bo", email: nil}, errors: [], valid?: true}
+        end
+
+        test "validate_required adds errors in field order" do
+          cs =
+            %{"name" => "Bo"}
+            |> MiniChangeset.cast([:name, :email, :age])
+            |> MiniChangeset.validate_required([:email, :name, :age])
+
+          assert cs.errors == [email: "can't be blank", age: "can't be blank"]
+          refute cs.valid?
+        end
+
+        test "validate_length min" do
+          cs = MiniChangeset.cast(%{"name" => "Bo"}, [:name]) |> MiniChangeset.validate_length(:name, min: 3)
+          assert cs.errors == [name: "should be at least 3 character(s)"]
+          refute cs.valid?
+
+          ok = MiniChangeset.cast(%{"name" => "Bob"}, [:name]) |> MiniChangeset.validate_length(:name, min: 3)
+          assert ok.valid?
+          assert ok.errors == []
+        end
+
+        test "validate_length skips missing or nil fields" do
+          cs = MiniChangeset.cast(%{"name" => ""}, [:name]) |> MiniChangeset.validate_length(:name, min: 3)
+          assert cs.valid?
+        end
+
+        test "errors accumulate across validations" do
+          cs =
+            %{"name" => "B", "email" => ""}
+            |> MiniChangeset.cast([:name, :email])
+            |> MiniChangeset.validate_required([:name, :email])
+            |> MiniChangeset.validate_length(:name, min: 3)
+
+          assert cs.errors == [email: "can't be blank", name: "should be at least 3 character(s)"]
+          refute cs.valid?
+        end
+      end
+    solution: |
+      defmodule MiniChangeset do
+        def cast(params, permitted) do
+          changes =
+            for field <- permitted, {:ok, value} <- [Map.fetch(params, Atom.to_string(field))], into: %{} do
+              {field, if(value == "", do: nil, else: value)}
+            end
+
+          %{changes: changes, errors: [], valid?: true}
+        end
+
+        def validate_required(changeset, fields) do
+          Enum.reduce(fields, changeset, fn field, cs ->
+            case Map.get(cs.changes, field) do
+              nil -> add_error(cs, field, "can't be blank")
+              _ -> cs
+            end
+          end)
+        end
+
+        def validate_length(changeset, field, min: min) do
+          case Map.get(changeset.changes, field) do
+            value when is_binary(value) and byte_size(value) < min ->
+              add_error(changeset, field, "should be at least #{min} character(s)")
+
+            _ ->
+              changeset
+          end
+        end
+
+        defp add_error(cs, field, msg), do: %{cs | errors: cs.errors ++ [{field, msg}], valid?: false}
+      end
+    explanation: |
+      The shape is the real one: `cast` is the only place that touches untrusted keys (whitelisting is what prevents mass assignment), validations are pure functions `changeset -> changeset` that only append errors and flip `valid?`, and nothing here knows about a database. Real Ecto adds type casting per field, `data` vs `changes`, and error metadata tuples (`{"can't be blank", [validation: :required]}`), but the reduction pattern is identical. `String.length/1` would be the Unicode-correct choice over `byte_size/1` for user-facing lengths; Ecto uses graphemes by default (`count: :graphemes`).
+    tags: [changeset, cast, validate_required, coding]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-query-syntax-bindings
+    kind: theory
+    difficulty: junior
+    title: "Ecto.Query: keyword vs pipe syntax, bindings and `^` interpolation"
+    body: |
+      Queries are data built by macros; nothing runs until a `Repo` function gets them. Two equivalent syntaxes:
+
+      ```elixir
+      # keyword syntax
+      from u in User,
+        join: p in assoc(u, :posts),
+        where: u.active and p.published_at > ^since,
+        order_by: [desc: p.published_at],
+        select: {u.email, p.title}
+
+      # pipe (macro) syntax
+      User
+      |> join(:inner, [u], p in assoc(u, :posts))
+      |> where([u, p], u.active and p.published_at > ^since)
+      |> order_by([u, p], desc: p.published_at)
+      |> select([u, p], {u.email, p.title})
+      ```
+
+      - **Bindings** (`[u, p]`) are positional and follow the order of `from` and each `join`. `[u, ..., last]` skips the middle. **Named bindings** (`join: p in Post, as: :post`, then `where: as(:post).title == ^t`) survive composition and are the recommended way in reusable query functions (`has_named_binding?/2`).
+      - **`^value`** interpolates an Elixir value as a *query parameter* (`$1`), never as SQL text. That is why Ecto queries are safe from SQL injection by construction; the only way to inject text is `fragment/1` with a literal format string whose `?` placeholders are, again, parameters.
+      - `field(u, ^column)` interpolates a column name (an atom) when it is dynamic; `^` alone cannot interpolate identifiers.
+      - Comparing with `nil` must use `is_nil(u.deleted_at)`; `u.deleted_at == nil` raises because SQL `= NULL` is never true.
+      - `type(^value, :integer)` casts a parameter when there is no schema to infer from; schemaless queries (`from "users"`) need explicit `select`.
+      - Useful operators: `in ^list`, `like`/`ilike`, `is_nil`, `not`, `exists(subquery)`, `coalesce`, `count/avg/sum/min/max`, `fragment("lower(?)", u.email)`.
+    answer: |
+      **Q:** Why does `where: u.name == ^"Al" <> "%"` not cause injection but string-building `"WHERE name = '#{x}'"` does?
+      **A:** `^` sends the value as a bound parameter separately from the SQL text; the database never parses it as SQL. String concatenation puts user data into the statement itself.
+    explanation: |
+      Expect follow-ups on the difference between `assoc(u, :posts)` (uses the schema association and its `where`/FK) versus `join: p in Post, on: p.user_id == u.id`, and on why named bindings beat positional ones in composed queries. Also that `from` with a query as its source (`from q in query, where: ...`) is how composition works.
+    tags: [query, bindings, interpolation]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-fragment-literal-only
+    kind: mcq
+    difficulty: middle
+    title: "Which of these compiles, and why does Ecto insist on it?"
+    body: |
+      ```elixir
+      col = "lower(email)"
+      q1 = from u in User, where: fragment("lower(?) = ?", u.email, ^email)
+      q2 = from u in User, where: fragment("#{col} = ?", ^email)
+      q3 = from u in User, where: fragment(^"lower(email) = ?", ^email)
+      ```
+    choices:
+      - "All three; `fragment` accepts any string"
+      - "Only `q1`: `fragment/1`'s first argument must be a compile-time literal string, so that user data can never become SQL text; `?` placeholders are bound parameters. `q2` and `q3` fail to compile with `fragment(...) expects the first argument to be a string`"
+      - "`q1` and `q3`; `^` makes the interpolated SQL safe"
+      - "`q1` and `q2`; interpolation is fine because `col` is a local variable, not a param"
+    answer: 1
+    explanation: |
+      `fragment/1` is the escape hatch for SQL Ecto does not model (`jsonb` operators, `date_trunc`, `ILIKE` with collation). Ecto refuses non-literal format strings precisely so that the escape hatch cannot turn into string-built SQL; every dynamic value goes through `?` and becomes a `$n` parameter. If you truly need dynamic column names, use `field(u, ^atom)`; if you need dynamic SQL, write a macro that expands to a literal `fragment` per case, or fall back to `Ecto.Adapters.SQL.query/3` with parameters. `unsafe_fragment` exists only in query hints and must never see user input.
+    tags: [query, fragment, sql-injection]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-nil-comparison
+    kind: mcq
+    difficulty: junior
+    title: "What happens with `from u in User, where: u.deleted_at == ^nil`?"
+    body: |
+      ```elixir
+      deleted = nil
+      Repo.all(from u in User, where: u.deleted_at == ^deleted)
+      ```
+    choices:
+      - "Returns users whose `deleted_at` is `NULL`; Ecto translates `== nil` to `IS NULL`"
+      - "Returns no rows silently, because SQL `= NULL` is never true"
+      - "Returns all users, because `nil` parameters are ignored"
+      - "Raises `ArgumentError`: Ecto refuses to compare with `nil` and tells you to use `is_nil/1`"
+    answer: 3
+    explanation: |
+      Ecto deliberately raises ("nil given for :deleted_at. Comparison with nil is forbidden as it is unsafe. Instead write a query with is_nil/1") rather than generate `= NULL`, which would silently match nothing — choice 2 is what raw SQL would do and what many ORMs hide. The literal `where: u.deleted_at == nil` is caught at compile time; the interpolated `^nil` at runtime. The correct forms are `is_nil(u.deleted_at)` / `not is_nil(...)`, and when nil-ness is dynamic, build the clause with `dynamic/2` or a `case`.
+    tags: [query, nil, is_nil]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-preload-strategies
+    kind: open
+    difficulty: middle
+    title: "Compare the ways to preload associations in Ecto and when each is the right choice"
+    body: |
+      `Repo.preload/3` on structs, `preload:` in a query, and join-based preloads (`preload: [comments: c]`). Also: nested preloads, preloading with a custom query, and what happens when you preload an already loaded association.
+    answer: |
+      - **Separate queries (default)**: `from p in Post, preload: [:author, comments: :likes]` or `Repo.preload(posts, [:author, comments: :likes])` runs *one extra query per association level* (`WHERE post_id IN (...)`), then stitches results in memory. Parents are never duplicated; multiple associations are fetched in parallel outside a transaction (`in_parallel: true`). Best default for `has_many`.
+      - **Join preload**: `from p in Post, join: c in assoc(p, :comments), preload: [comments: c]` — one SQL query. Fewer round trips and lets you *filter parents by children* (`where: c.approved`), but has_many joins duplicate the parent columns per child row, so for wide parents with many children it transfers far more data; and the same join cannot serve two different associations of the parent without a cross product. Great for `belongs_to`/`has_one`.
+      - **Custom preload query**: `preload: [comments: ^from(c in Comment, where: c.approved, order_by: c.inserted_at)]` filters/sorts the children; a `limit` in it applies to the *whole* result set, not per parent (per-parent limits need a window function or lateral join).
+      - **Nested**: keyword nesting `[comments: [:author, likes: :user]]`; in join form `preload: [comments: {c, likes: l}]`.
+      - `Repo.preload` on structs is the tool when you already have the parent (after `Repo.get`, in a LiveView). It skips already-loaded associations unless `force: true`.
+      - `Ecto.assoc(post, :comments)` returns a query for the children of one or many structs, handy for paginating children without preloading.
+      - Unloaded associations are `%Ecto.Association.NotLoaded{}`; accessing them in a template raises in `Enum` or renders a surprising value, which is why Ecto never lazy-loads: it forces you to decide the query shape up front.
+    explanation: |
+      Follow-ups: "Why no lazy loading?" — implicit N+1 and queries from view code; Ecto wants data access explicit. "How do you preload inside `Multi`/transaction?" — `in_parallel` is off inside transactions; fine but sequential. "How would you preload the latest 3 comments per post?" — `row_number() over (partition_by p.id order_by ...)` in a subquery, or a lateral join. Forum sources show measured cases where separate queries beat joins on large tables.
+    tags: [preload, associations, joins]
+    source: https://elixirforum.com/t/advantages-of-ecto-preloads-with-without-joins/21751/1
+
+  - slug: elixir-ecto-association-not-loaded
+    kind: theory
+    difficulty: junior
+    title: "`Ecto.Association.NotLoaded` and why Ecto never lazy-loads"
+    body: |
+      Every association field on a freshly fetched struct holds a placeholder, not `nil` and not `[]`:
+
+      ```elixir
+      post = Repo.get!(Post, 1)
+      post.comments
+      # => #Ecto.Association.NotLoaded<association :comments is not loaded>
+
+      Enum.count(post.comments)
+      # ** (Protocol.UndefinedError) protocol Enumerable not implemented for #Ecto.Association.NotLoaded<...>
+      ```
+
+      Why a struct instead of `nil`? Because `nil` would be ambiguous for `belongs_to`/`has_one` ("no author" vs "not fetched") and `[]` would be a silent lie for `has_many`. The placeholder fails loudly when you use it.
+
+      Loading it:
+
+      ```elixir
+      post = Repo.preload(post, [:comments, author: :profile])
+      post = Repo.get!(from(p in Post, preload: :comments), 1)
+      Ecto.assoc_loaded?(post.comments)   # => true
+      ```
+
+      Related behaviours:
+
+      - `Repo.preload` skips associations that are already loaded unless `force: true`.
+      - `Repo.reload/2` refetches a struct by primary key and **discards** loaded associations.
+      - `Jason.Encoder` cannot encode `NotLoaded`; `@derive {Jason.Encoder, only: [:id, :title]}` restricts to fields you want, or you define a JSON view that picks fields explicitly.
+      - `Ecto.build_assoc/3` and `put_assoc` work regardless of loaded state for inserts, but `put_assoc`/`cast_assoc` on **update** require the association to be preloaded so Ecto can diff.
+    answer: |
+      **Q:** You `Repo.preload(post, :comments)`, then `Repo.update` the post with a changed title, and `post.comments` on the returned struct is still loaded. Why?
+      **A:** `Repo.update` returns the struct with changes applied on top of the given data; it does not re-read the row, so preloaded associations are kept. Only `Repo.reload` or a fresh query drops them.
+    explanation: |
+      Interviewers ask this to probe the "explicit over implicit" design. Mention that LiveViews and JSON views are where `NotLoaded` bites most, and that contexts should preload what the caller needs (or accept a `preload:` option) rather than leaking the decision to templates.
+    tags: [associations, preload, not_loaded]
+    source: https://ecto.hexdocs.pm/Ecto.Schema.html
+
+  - slug: elixir-ecto-composable-queries-dynamic
+    kind: open
+    difficulty: middle
+    title: "How do you build a filterable list endpoint (`?status=open&q=foo&sort=-inserted_at`) with composable Ecto queries?"
+    body: |
+      Show the function-per-filter pattern, where `dynamic/2` fits, and how you keep bindings stable.
+    answer: |
+      ```elixir
+      def list_tickets(filters) do
+        Ticket
+        |> join(:inner, [t], u in assoc(t, :owner), as: :owner)
+        |> filter_status(filters[:status])
+        |> search(filters[:q])
+        |> sort(filters[:sort])
+        |> Repo.all()
+      end
+
+      defp filter_status(query, nil), do: query
+      defp filter_status(query, status), do: where(query, [t], t.status == ^status)
+
+      defp search(query, nil), do: query
+      defp search(query, q) do
+        like = "%#{q}%"
+        where(query, [t, owner: u], ilike(t.title, ^like) or ilike(u.name, ^like))
+      end
+
+      defp sort(query, "-inserted_at"), do: order_by(query, [t], desc: t.inserted_at)
+      defp sort(query, _), do: order_by(query, [t], asc: t.inserted_at)
+      ```
+
+      - Each filter is a function `query -> query` with a no-op clause for `nil`; queries are values, so the pipeline reads like the URL. `Enum.reduce(filters, Ticket, &apply_filter/2)` is the generic version.
+      - **Named bindings** (`as: :owner`, `[t, owner: u]`) let later functions refer to the join without counting positions; `has_named_binding?/2` avoids double joins.
+      - `dynamic/2` builds *conditions* separately from the query when you need `and`/`or` composition decided at runtime: `conditions = dynamic([t], t.status == ^s)`, then `dynamic([t], ^conditions and t.priority > 3)`, finally `where(query, ^conditions)`. Also works in `order_by`, `group_by`, `select`, `having`.
+      - `field(t, ^column)` for user-chosen sort columns — validate the column against an allow-list first, since an atom from `String.to_existing_atom` could still be a sensitive field.
+      - `exclude(query, :order_by)` / `:limit` to reuse the same query for a `Repo.aggregate(:count)` of total rows; `subquery/1` when wrapping a limited query.
+      - Keep the functions in the context (or a `Ticket.Query` module) so controllers never see `Ecto.Query`.
+    explanation: |
+      Follow-ups: "Why not one giant `from` with `where: ^conditions`?" — fine with `dynamic`, but functions test better. "How do you paginate?" — `limit`/`offset` (simple) or keyset pagination with `where: {t.inserted_at, t.id} < {^ts, ^id}` for stable large pages. "Bindings after `exclude`?" — joins stay unless excluded, so positional bindings remain valid; this is another reason to name them.
+    tags: [query, composition, dynamic, named-bindings]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-select-merge
+    kind: mcq
+    difficulty: middle
+    title: "Why does this query fail, and what is the fix?"
+    body: |
+      ```elixir
+      query = from u in User, select: %{id: u.id, email: u.email}
+
+      query
+      |> join(:left, [u], p in assoc(u, :posts))
+      |> group_by([u], u.id)
+      |> select([u, p], %{post_count: count(p.id)})
+      ```
+    choices:
+      - "Nothing fails; the second `select` extends the first map"
+      - "It fails because `count/1` cannot appear in a map select"
+      - "`select` may be given only once per query (`only one select expression is allowed`); use `select_merge([u, p], %{post_count: count(p.id)})` to add keys to the existing map select, which also lets the base query stay reusable"
+      - "It fails because `group_by` must list every selected column, including `email`"
+    answer: 2
+    explanation: |
+      `select/3` replaces the projection and Ecto raises if one is already set, to avoid silently discarding fields. `select_merge/3` merges maps (or struct fields: `select_merge([u], %{full_name: ...})` on a struct select) and can be called repeatedly, which is how composable query functions add computed columns. Choice 4 is half right in spirit: Postgres would complain about `email` not being in `GROUP BY` **after** the select problem is fixed, unless `email` is also grouped or wrapped in an aggregate; `group_by([u], [u.id, u.email])` solves it (or grouping by the primary key alone, which Postgres accepts for functionally dependent columns).
+    tags: [query, select, select_merge, group_by]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-subquery-cte-window
+    kind: theory
+    difficulty: senior
+    title: "Advanced query shapes: subqueries, CTEs, window functions and lateral joins"
+    body: |
+      Ecto exposes most of modern SQL without dropping to raw strings.
+
+      **Subquery** — wrap a query to use it as a source, join target or `in`/`exists` operand:
+
+      ```elixir
+      latest = from c in Comment, select: %{post_id: c.post_id, last: max(c.inserted_at)}, group_by: c.post_id
+      from p in Post, join: l in subquery(latest), on: l.post_id == p.id, select: {p.title, l.last}
+      from p in Post, where: exists(from c in Comment, where: c.post_id == parent_as(:post).id and c.flagged), as: :post
+      ```
+
+      **Window functions** — `over` with an inline or named window; the classic "top N per group":
+
+      ```elixir
+      ranked =
+        from c in Comment,
+          select: %{c | rn: row_number() |> over(partition_by: c.post_id, order_by: [desc: c.inserted_at])}
+      from c in subquery(ranked), where: c.rn <= 3     # last 3 comments per post, one query
+      ```
+
+      (`windows: [w: [partition_by: c.post_id]]` + `over(:w)` names it for reuse. Ecto cannot filter on a window result directly, hence the subquery.)
+
+      **CTEs** — `with_cte/3` adds a `WITH` clause; `recursive_ctes(true)` enables recursion for trees:
+
+      ```elixir
+      tree = Category |> where([c], is_nil(c.parent_id)) |> union_all(^from(c in Category, join: t in "tree", on: c.parent_id == t.id))
+      from(t in "tree") |> recursive_ctes(true) |> with_cte("tree", as: ^tree) |> select([t], t.id)
+      ```
+
+      The docs note non-recursive CTEs are usually better expressed as joins/subqueries; use them for recursion or readability of multi-step aggregates.
+
+      **Lateral joins** — `join: x in subquery(...), on: true` with `inner_lateral_join`/`left_lateral_join` and `parent_as/1` to reference the outer row; the alternative to window functions for top-N-per-group.
+
+      Cross-cutting rules: a `limit` in a preload query is global; `subquery` selects must be maps or structs with explicit fields; `fragment` fills any remaining gaps with parameters only.
+    answer: |
+      **Q:** Why can't you write `where: row_number() |> over(...) <= 3` directly?
+      **A:** SQL evaluates window functions after `WHERE`, so the window result is not available for filtering in the same query level; you must compute it in a subquery/CTE and filter in the outer query.
+    explanation: |
+      Senior interviews probe whether you reach for raw SQL too early. Knowing that windows, CTEs, laterals and `exists` are all first-class in Ecto, and the one rule that windows need a subquery to filter, is the signal. Also mention `Ecto.Query.API` as the reference for what is allowed inside query expressions.
+    tags: [query, subquery, cte, window, lateral]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-preload-limit-per-parent
+    kind: open
+    difficulty: senior
+    title: "You need each post with only its 3 most recent comments. Why does `preload: [comments: ^from(c in Comment, limit: 3)]` give the wrong result, and how do you do it properly?"
+    body: |
+      Explain the preload mechanics that cause the bug and give at least two correct solutions with their trade-offs.
+    answer: |
+      - Separate-query preloads run **one** query for all parents: `SELECT ... FROM comments WHERE post_id IN ($1, $2, ...)`. A `limit: 3` in the custom preload query therefore caps the *total* rows to 3 across all posts, so most posts come back with zero comments. `order_by` in a preload query is fine; `limit`/`offset` are not per-parent.
+      - **Window function**: `ranked = from c in Comment, select: %{c | rn: row_number() |> over(partition_by: c.post_id, order_by: [desc: c.inserted_at])}` and `preload: [comments: ^from(c in subquery(ranked), where: c.rn <= 3)]` (the subquery must select the full struct shape; `%{c | rn: ...}` keeps it a struct with an extra virtual field, or select a map and rebuild). One query, scales with Postgres doing the work.
+      - **Lateral join**: `from p in Post, inner_lateral_join: c in subquery(from c in Comment, where: c.post_id == parent_as(:post).id, order_by: [desc: c.inserted_at], limit: 3), on: true, as: :post, preload: [comments: c]` — join-preload form, also one query, often fastest with an index on `(post_id, inserted_at desc)`.
+      - **Application side**: preload all comments and `Enum.take/2` in Elixir — simplest, acceptable only when comment counts are small; otherwise transfers everything.
+      - **Per-parent queries**: `Ecto.assoc(post, :comments) |> limit(3)` in a loop is N+1; acceptable for a single post page, not a list.
+      - Any solution should set the association on the struct the same way (`comments` field), so templates do not care which strategy was used; keep the choice inside the context.
+    explanation: |
+      Follow-ups: "How would you verify the generated SQL?" — `Repo.to_sql(:all, query)` or `log: :debug` in config. "Index?" — composite `(post_id, inserted_at DESC)` serves both window and lateral plans. "What about `preload_order`?" — the `has_many` option sets default ordering for preloads but cannot limit. This question is a reliable discriminator between people who have shipped Ecto in production and people who have only read the guides.
+    tags: [preload, limit, window, lateral]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-n-plus-one
+    kind: open
+    difficulty: middle
+    title: "Show an N+1 query in Ecto code, explain how to spot it in logs, and fix it"
+    body: |
+      The code renders a list of 50 posts with author names:
+
+      ```elixir
+      posts = Repo.all(Post)
+      for post <- posts, do: Repo.get!(User, post.user_id).name
+      ```
+    answer: |
+      - This issues 1 query for posts and then 50 `SELECT ... FROM users WHERE id = $1` — N+1. In Ecto you *cannot* get an N+1 by accident through lazy loading (there is none); it comes from explicit `Repo` calls in a loop or from `Repo.preload` inside `Enum.map`.
+      - Spotting it: the Ecto logger prints every query with timing (`QUERY OK source="users" db=0.3ms`); 50 identical lines with different params are the signature. In tests you can assert on query count with a telemetry handler on `[:my_app, :repo, :query]`; in prod, LiveDashboard/APM group them. `Ecto.Adapters.SQL.explain/3` helps for slow single queries, not for N+1.
+      - Fix 1 (preload): `Repo.all(from p in Post, preload: :author)` → 2 queries total (`WHERE id IN (...)`).
+      - Fix 2 (join): `from p in Post, join: u in assoc(p, :author), select: {p.title, u.name}` → 1 query, no structs if you just need two columns.
+      - Fix 3 (batch by hand): `ids = Enum.map(posts, & &1.user_id) |> Enum.uniq()`; `users = Repo.all(from u in User, where: u.id in ^ids) |> Map.new(&{&1.id, &1})` — what preload does internally; useful across contexts or non-Ecto sources.
+      - Nested case: `preload: [comments: :author]` keeps it at one query per level; `Repo.preload(comment, :author)` inside a template loop reintroduces the problem.
+      - For LiveComponents rendering many rows that each need data, `update_many/1` batches the lookups for all component instances.
+    explanation: |
+      Follow-ups: "Does `preload` in a query vs `Repo.preload` after matter for N+1?" — no, both batch; what matters is not calling it per element. "How do you preload conditionally per request?" — contexts take `preload:` options. "Would a join always be better?" — not for has_many with wide parents (duplication); see the preload strategies question.
+    tags: [n-plus-one, preload, performance]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-code-query-builder
+    kind: code
+    difficulty: middle
+    title: "Compose `{:where, field, op, value}` clauses into parameterised SQL"
+    body: |
+      Model the safe part of `Ecto.Query`: values never enter the SQL text, only `?` placeholders. Define `MiniQuery` with:
+
+      - `MiniQuery.to_sql(table, clauses)` where `clauses` is a list of `{:where, field, op, value}` (`op` ∈ `:eq`, `:neq`, `:gt`, `:lt`, `:in`, `:like`), `{:order_by, field, :asc | :desc}`, `{:limit, n}`.
+      - Returns `{sql, params}`. `sql` is `"SELECT * FROM <table>"` followed by ` WHERE a = ? AND b > ?` (clauses joined with ` AND ` in the given order), then ` ORDER BY f ASC`, then ` LIMIT ?`. `params` is the list of values in placeholder order. `:in` renders `f IN (?, ?, ?)` with one placeholder per element, `:like` renders `f LIKE ?`.
+      - Field names must match `~r/^[a-z_][a-z0-9_]*$/`; otherwise raise `ArgumentError` (an identifier cannot be a parameter, so it must be validated).
+
+      ```elixir
+      MiniQuery.to_sql("users", [{:where, "age", :gt, 18}, {:where, "role", :in, ["a", "b"]}, {:order_by, "name", :asc}, {:limit, 10}])
+      # => {"SELECT * FROM users WHERE age > ? AND role IN (?, ?) ORDER BY name ASC LIMIT ?", [18, "a", "b", 10]}
+      ```
+    starter_code: |
+      defmodule MiniQuery do
+        def to_sql(table, clauses) do
+          # TODO
+          {"SELECT * FROM #{table}", []}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniQueryTest do
+        use ExUnit.Case
+
+        test "no clauses" do
+          assert MiniQuery.to_sql("users", []) == {"SELECT * FROM users", []}
+        end
+
+        test "where clauses with placeholders" do
+          assert MiniQuery.to_sql("users", [{:where, "age", :gt, 18}, {:where, "name", :eq, "Bo"}]) ==
+                   {"SELECT * FROM users WHERE age > ? AND name = ?", [18, "Bo"]}
+        end
+
+        test "in, like, neq, lt" do
+          assert MiniQuery.to_sql("t", [{:where, "role", :in, ["a", "b", "c"]}, {:where, "email", :like, "%x%"}, {:where, "n", :neq, 1}, {:where, "n", :lt, 5}]) ==
+                   {"SELECT * FROM t WHERE role IN (?, ?, ?) AND email LIKE ? AND n <> ? AND n < ?", ["a", "b", "c", "%x%", 1, 5]}
+        end
+
+        test "order_by and limit" do
+          assert MiniQuery.to_sql("users", [{:where, "age", :gt, 18}, {:order_by, "name", :desc}, {:limit, 10}]) ==
+                   {"SELECT * FROM users WHERE age > ? ORDER BY name DESC LIMIT ?", [18, 10]}
+        end
+
+        test "values are never interpolated into the SQL" do
+          {sql, params} = MiniQuery.to_sql("users", [{:where, "name", :eq, "x' OR 1=1 --"}])
+          refute sql =~ "OR 1=1"
+          assert params == ["x' OR 1=1 --"]
+        end
+
+        test "invalid identifiers raise" do
+          assert_raise ArgumentError, fn -> MiniQuery.to_sql("users", [{:where, "name; DROP TABLE users", :eq, 1}]) end
+        end
+      end
+    solution: |
+      defmodule MiniQuery do
+        @ops %{eq: "=", neq: "<>", gt: ">", lt: "<", like: "LIKE"}
+
+        def to_sql(table, clauses) do
+          wheres = for {:where, f, op, v} <- clauses, do: {f, op, v}
+          orders = for {:order_by, f, dir} <- clauses, do: {f, dir}
+          limits = for {:limit, n} <- clauses, do: n
+
+          {where_sql, where_params} = build_where(wheres)
+          order_sql = Enum.map_join(orders, ", ", fn {f, dir} -> "#{ident!(f)} #{String.upcase(to_string(dir))}" end)
+
+          sql =
+            "SELECT * FROM #{ident!(table)}" <>
+              if(where_sql == "", do: "", else: " WHERE " <> where_sql) <>
+              if(order_sql == "", do: "", else: " ORDER BY " <> order_sql) <>
+              if(limits == [], do: "", else: " LIMIT ?")
+
+          {sql, where_params ++ limits}
+        end
+
+        defp build_where(wheres) do
+          {parts, params} =
+            Enum.map_reduce(wheres, [], fn
+              {f, :in, values}, acc ->
+                {"#{ident!(f)} IN (#{Enum.map_join(values, ", ", fn _ -> "?" end)})", acc ++ values}
+
+              {f, op, v}, acc ->
+                {"#{ident!(f)} #{Map.fetch!(@ops, op)} ?", acc ++ [v]}
+            end)
+
+          {Enum.join(parts, " AND "), params}
+        end
+
+        defp ident!(name) do
+          if Regex.match?(~r/^[a-z_][a-z0-9_]*$/, name), do: name, else: raise(ArgumentError, "invalid identifier: #{inspect(name)}")
+        end
+      end
+    explanation: |
+      Two ideas from Ecto are encoded here. Values are **parameters**: they live in a separate list and the SQL text only ever contains `?`, which is exactly why `^value` in Ecto cannot inject. Identifiers (tables, columns) **cannot** be parameters in SQL, so they must be validated or allow-listed — Ecto does this by taking column names from the schema or from `field(u, ^atom)` where the atom must already exist. `Enum.map_reduce/3` keeps the SQL fragments and the params in lockstep, which is the part people get wrong when they build the two lists separately.
+    tags: [query, sql, parameters, coding]
+    source: https://ecto.hexdocs.pm/Ecto.Query.html
+
+  - slug: elixir-ecto-repo-read-functions
+    kind: theory
+    difficulty: junior
+    title: "Repo read functions: `get`, `get_by`, `one`, `all`, `exists?`, `aggregate` and their bang variants"
+    body: |
+      Each read function encodes an expectation about cardinality, and the bang variant turns "not found" into an exception:
+
+      | call | returns | raises |
+      |------|---------|--------|
+      | `Repo.get(User, id)` | struct or `nil` | `get!` → `Ecto.NoResultsError` |
+      | `Repo.get_by(User, email: e)` | struct or `nil`; **raises `Ecto.MultipleResultsError` if >1** | `get_by!` on none |
+      | `Repo.one(query)` | struct/value or `nil`; raises if >1 row | `one!` on none |
+      | `Repo.all(query)` | list (possibly empty) | never |
+      | `Repo.exists?(query)` | boolean, runs `SELECT 1 ... LIMIT 1` | — |
+      | `Repo.aggregate(query, :count)` / `(query, :sum, :amount)` | scalar; ignores `select`/`preload`, fails on `group_by` | — |
+      | `Repo.reload(struct)` | fresh struct by PK or `nil`; drops preloads | `reload!` |
+
+      ```elixir
+      Repo.get!(User, 42)                              # 404 in Phoenix via Plug.Exception
+      Repo.one(from u in User, where: u.email == ^e)   # nil or struct
+      Repo.exists?(from u in User, where: u.admin)     # cheaper than aggregate(:count) > 0
+      Repo.aggregate(Order, :sum, :total)              # Decimal
+      ```
+
+      Conventions interviewers expect:
+
+      - `get`/`get_by` take a schema, `one`/`all` take a query (or schema).
+      - `get!` in controllers is idiomatic because `Ecto.NoResultsError` implements `Plug.Exception` with status 404.
+      - `one` with `limit: 1` is how you fetch "the latest"; without the limit a multi-row result raises, which is a feature (it flags a wrong assumption).
+      - `Repo.all` with `select: u.email` returns a list of values, with `select: {u.id, u.email}` tuples, `select: %{...}` maps — no structs required.
+      - `Repo.stream` for large result sets must run inside `Repo.transaction` (cursor based, `max_rows: 500` default).
+    answer: |
+      **Q:** When would you prefer `Repo.exists?/1` over `Repo.aggregate(query, :count) > 0`?
+      **A:** Always, for a boolean question: `exists?` stops at the first matching row (`LIMIT 1`), while `count` scans every matching row.
+    explanation: |
+      The question behind the table is "do you know which calls can raise and which return `nil`?" Candidates who use `Repo.one` for list queries, or `get_by` on a non-unique column, demonstrate the gap. Mention `all_by/3` (Ecto 3.11+) as the plural of `get_by`.
+    tags: [repo, get, one, aggregate]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-update-all-skips-changesets
+    kind: mcq
+    difficulty: middle
+    title: "What does `Repo.update_all` NOT do compared with `Repo.update`?"
+    body: |
+      ```elixir
+      from(p in Post, where: p.author_id == ^id)
+      |> Repo.update_all(set: [status: "archived"], inc: [version: 1])
+      ```
+    choices:
+      - "It skips the transaction, so partial updates are possible"
+      - "It cannot update more than one column at a time"
+      - "It returns the updated structs by default, like `Repo.update`"
+      - "It runs no changeset: no validations, no constraints mapping, no `updated_at` bump (autogenerated fields are untouched) and no `prepare_changes`; it issues one `UPDATE ... WHERE` and returns `{count, nil}` (or `{count, rows}` with `select`/`returning`)"
+    answer: 3
+    explanation: |
+      `update_all`/`delete_all`/`insert_all` are *bulk* operations that bypass the changeset layer entirely. That is what makes them fast (one statement for N rows) and also what people forget: `updated_at` stays stale unless you add `set: [updated_at: DateTime.utc_now()]`, uniqueness violations raise `Ecto.ConstraintError` instead of returning an error changeset, and custom `Ecto.Type` `cast` is not run (values are still dumped through the type). The update expressions are `set`, `inc`, `push`, `pull`; a `select` in the query (or `returning: true` on Postgres) returns rows. A single statement is atomic in SQL, so choice 1 is wrong.
+    tags: [repo, update_all, bulk]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-insert-all-vs-insert
+    kind: open
+    difficulty: middle
+    title: "You need to import 100k rows. Why is `Repo.insert_all` the tool, and what does it silently skip?"
+    body: |
+      Cover timestamps, primary keys, validation, batching, `returning`, `placeholders`, and how you would still enforce invariants.
+    answer: |
+      - `Repo.insert_all(Post, list_of_maps)` sends one multi-row `INSERT` per call; 100k single `Repo.insert` calls mean 100k round trips plus changeset overhead. Batch with `Enum.chunk_every(rows, 1_000)` to stay under the Postgres parameter limit (65535 parameters per statement).
+      - What it skips: **no changesets** (no `cast`/validations/constraint mapping — violations raise `Ecto.ConstraintError`); **no autogenerated timestamps** (`inserted_at`/`updated_at` must be in every map, with the right precision: `DateTime.utc_now() |> DateTime.truncate(:second)` for `:utc_datetime`); **no autogenerated non-`:id` primary keys** (`binary_id` UUIDs must be supplied, bigserial `:id` is fine); schema `default:` values *are* applied when the key is absent; `Ecto.Type.dump` is applied, `cast` is not.
+      - Returns `{count, nil}`; `returning: true` (or a list of fields) returns the rows on Postgres; `on_conflict: :nothing` / `{:replace, [...]}` + `conflict_target` turns it into a bulk upsert.
+      - `placeholders: %{now: now}` with `{:placeholder, :now}` in each map sends repeated values once instead of per row, which shrinks the statement a lot for timestamps.
+      - You can also pass a *query* as the source (`insert_all(Archive, from(p in Post, where: ...))`) for `INSERT ... SELECT`.
+      - Enforcing invariants without changesets: validate in Elixir before the call (run each map through the changeset and `apply_action` if you want the same rules, but discard the structs), rely on `NOT NULL`/unique/check constraints in the DB, and wrap batches in `Repo.transaction` so a failing chunk rolls back the import.
+      - Use `Repo.stream` or `Stream.chunk_every` on the input to keep memory flat; for CSVs, `File.stream!` → `NimbleCSV` → chunks.
+    explanation: |
+      Follow-ups: "`COPY` instead?" — `Ecto.Adapters.SQL.query` with `COPY ... FROM STDIN` via Postgrex streams is faster still for very large loads. "How do you upsert and know what was inserted?" — `returning` plus `on_conflict`, noting Postgres counts differ from MySQL. The timestamp omission is the trap most candidates hit in practice.
+    tags: [repo, insert_all, bulk, timestamps]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-multi-basics
+    kind: theory
+    difficulty: middle
+    title: "`Ecto.Multi`: declaring a transaction as data"
+    body: |
+      `Ecto.Multi` describes a sequence of named operations; nothing runs until the multi is given to `Repo.transaction/2` (or `Repo.transact/2` in Ecto 3.13+). Every step runs in one transaction; the first failure rolls everything back.
+
+      ```elixir
+      alias Ecto.Multi
+
+      Multi.new()
+      |> Multi.insert(:user, User.registration_changeset(%User{}, attrs))
+      |> Multi.insert(:profile, fn %{user: user} -> Ecto.build_assoc(user, :profile) |> Profile.changeset(attrs) end)
+      |> Multi.update_all(:counters, fn _ -> from(s in Stats, update: [inc: [users: 1]]) end, [])
+      |> Multi.run(:welcome_email, fn _repo, %{user: user} ->
+        case Mailer.deliver(Emails.welcome(user)) do
+          {:ok, _} -> {:ok, :sent}
+          {:error, reason} -> {:error, reason}
+        end
+      end)
+      |> Repo.transaction()
+      ```
+
+      Results:
+
+      ```elixir
+      {:ok, %{user: %User{}, profile: %Profile{}, counters: {1, nil}, welcome_email: :sent}}
+      {:error, :profile, %Ecto.Changeset{valid?: false}, %{user: %User{}}}   # failed step, its value, changes so far
+      ```
+
+      Rules:
+
+      - Names must be unique; `Multi.append/2`, `prepend/2`, `merge/2` combine multis (merge receives the changes so far and returns a new multi, for dynamic steps).
+      - `insert/update/delete` accept a changeset/struct **or a function of the changes so far**; invalid changesets given directly are detected *before* the transaction opens, so no connection is wasted.
+      - `Multi.run/3` is the escape hatch: `fn repo, changes -> {:ok, v} | {:error, v} end`; any other return raises. Use the `repo` argument, not `Repo`, so the multi can run against a replica or in tests.
+      - `Multi.put/3` injects a precomputed value; `Multi.inspect/2` logs the changes map for debugging; `Multi.to_list/1` lets you unit-test the structure without a DB.
+      - Side effects such as emails belong *after* the transaction commits (the email step above would send even if a later step rolled back), or in a `run` placed last with that risk understood.
+    answer: |
+      **Q:** Why is `Multi` easier to test than a function wrapping `Repo.transaction`?
+      **A:** The multi is a value: `Ecto.Multi.to_list/1` exposes the named operations and their changesets, so you can assert on the plan without touching the database, and each step function can be tested in isolation.
+    explanation: |
+      Interviewers follow with "when would you *not* use Multi?" (see the Multi vs `with` question) and "what does the four-element error tuple give you?" (the failed step's name to branch on, the error value to render, and the partial results for logging). Mention that `Repo.transaction` with a multi always returns tuples and never raises for `{:error, ...}` steps.
+    tags: [multi, transaction]
+    source: https://ecto.hexdocs.pm/Ecto.Multi.html
+
+  - slug: elixir-ecto-multi-vs-transaction-with
+    kind: open
+    difficulty: senior
+    title: "`Ecto.Multi` versus `Repo.transaction(fn -> with ... end)`: when do you pick which, and what are the failure modes of each?"
+    body: |
+      Include the `Repo.transact/2` pattern (theScore blog, now in Ecto 3.13), `Repo.rollback/1`, and how errors propagate.
+    answer: |
+      - **`Repo.transaction(fn -> ... end)`** returns `{:ok, fun_result}` or `{:error, value}` only when you call `Repo.rollback(value)` (which throws out of the function) or an exception propagates. Returning `{:error, x}` from the function **commits** and yields `{:ok, {:error, x}}` — the classic bug. Hence the `Repo.transact/2` helper (theScore blog, 2023): it treats `{:ok, _}` as commit and `{:error, _}` as rollback, so `with` chains read naturally. Ecto 3.13 ships it as `Repo.transact/2` and soft-deprecates `transaction/2`.
+      - **`Multi`** forces every step to be named and return `{:ok, _}/{:error, _}`; the result tuple `{:error, step, value, changes_so_far}` tells you *which* step failed, which is what you want when a controller must map failures to responses or when steps come from different contexts. It is composable (`append`/`merge`) and inspectable without a DB.
+      - Choose `Multi` when: steps are heterogeneous and reusable, you need to know which step failed, the plan is built dynamically (`merge`), or several contexts contribute operations. Choose `transaction` + `with`/`transact` when: the flow has conditionals/early returns that fight Multi's linear shape, it is one context's private logic, or the ceremony of naming every step hurts readability (the "Multi noise" complaint in the forum thread).
+      - Failure modes: in a function transaction, a raised exception rolls back and re-raises; after a DB error inside the transaction, further statements raise until rollback (Postgres aborts the transaction) unless you used `mode: :savepoint`. In a multi, forgetting that `run` must return a tagged tuple raises; nesting `Repo.transaction` inside a `Multi.run` is discouraged because an inner rollback may not bubble up as the outer multi's error.
+      - Nesting: `Repo.transaction` calls nest — the inner one joins the outer transaction (no savepoint by default), so an inner `rollback` aborts the whole outer transaction. Savepoints exist only via `mode: :savepoint`/`Repo.checkout` patterns.
+      - Side effects (emails, HTTP) go after commit in both styles; with Multi, use the result map after `transaction` returns; with `with`, place them outside the transaction function.
+    explanation: |
+      Follow-ups: "How do you test a `with` chain's rollback?" — assert the row is absent after the `{:error, _}`; "Would you use Oban for the side effects?" — yes, insert the job in the same transaction (Oban jobs are rows), which gets you transactional enqueueing. Weak answers claim `{:error, _}` from the transaction function rolls back automatically.
+    tags: [multi, transaction, transact, with]
+    source: https://techblog.thescore.com/2023/05/01/repo-transact/
+
+  - slug: elixir-ecto-multi-error-shape
+    kind: mcq
+    difficulty: middle
+    title: "What does `Repo.transaction/1` return when the second step of this Multi fails validation?"
+    body: |
+      ```elixir
+      Multi.new()
+      |> Multi.insert(:user, User.changeset(%User{}, %{email: "a@b.c"}))
+      |> Multi.insert(:profile, fn %{user: u} -> Profile.changeset(%Profile{user_id: u.id}, %{}) end)   # invalid
+      |> Multi.run(:audit, fn _repo, _ -> {:ok, :logged} end)
+      |> Repo.transaction()
+      ```
+    choices:
+      - "`{:error, %Ecto.Changeset{}}` — same shape as `Repo.insert`"
+      - "`{:ok, %{user: %User{}, profile: nil}}` — invalid steps are skipped"
+      - "`{:error, :profile, %Ecto.Changeset{valid?: false}, %{user: %User{}}}` — the failed step name, its error value, and the changes of the steps that succeeded (now rolled back); `:audit` never runs"
+      - "`Ecto.InvalidChangesetError` is raised, because a Multi with an invalid changeset cannot start"
+    answer: 2
+    explanation: |
+      The four-element tuple is the defining feature of Multi: pattern-match on the step name (`{:error, :profile, changeset, _}`) to decide the response. The `user` row *was* inserted but is rolled back with the transaction, so the struct in `changes_so_far` has an id that no longer exists — useful for logging, dangerous if you return it. Choice 4 describes a different case: an invalid changeset passed **directly** (not via a function) to `Multi.insert` is detected before the transaction opens and yields the same error tuple immediately without touching the DB; `Ecto.InvalidChangesetError` is what `insert!` raises, not `transaction`.
+    tags: [multi, error-handling]
+    source: https://ecto.hexdocs.pm/Ecto.Multi.html
+
+  - slug: elixir-ecto-nested-transactions
+    kind: mcq
+    difficulty: senior
+    title: "What happens when `Repo.transaction` is called inside another `Repo.transaction` and the inner one calls `Repo.rollback/1`?"
+    body: |
+      ```elixir
+      Repo.transaction(fn ->
+        Repo.insert!(%Log{msg: "outer"})
+
+        result = Repo.transaction(fn ->
+          Repo.insert!(%Log{msg: "inner"})
+          Repo.rollback(:nope)
+        end)
+
+        Repo.insert!(%Log{msg: "after"})
+        result
+      end)
+      ```
+    choices:
+      - "The inner transaction is a `SAVEPOINT`; `:nope` rolls back only `inner`, and `outer` and `after` are committed"
+      - "Nested calls are flattened into the outer transaction: the inner `rollback` aborts the *whole* transaction; the outer function keeps running but `after` fails, and the outer `Repo.transaction` returns `{:error, :nope}` — nothing is committed"
+      - "Ecto raises `DBConnection.ConnectionError`: nested transactions are not allowed"
+      - "The inner transaction opens a second connection from the pool and commits independently"
+    answer: 1
+    explanation: |
+      Ecto does **not** create savepoints for nested `transaction` calls; the inner call simply runs inside the outer one (`in_transaction?/0` is already true). `Repo.rollback/1` marks the whole transaction for rollback; the inner call returns `{:error, :nope}`, but because the DB transaction is now aborted (Postgres: "current transaction is aborted, commands ignored"), the next statement raises, and the outer result is `{:error, :nope}` with nothing persisted. If you want partial rollback you must use savepoints explicitly (the per-operation `mode: :savepoint` option, e.g. `Repo.insert(changeset, mode: :savepoint)`, on Ecto 3.13+, or raw `SAVEPOINT` statements via `Ecto.Adapters.SQL.query`). Transactions are per process: a `Task` spawned inside uses its own connection (choice 4 is what happens with a *new process*, not a nested call). This is also why the Multi docs discourage nesting transactions inside `Multi.run`.
+    tags: [transaction, rollback, savepoint]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-upsert-on-conflict
+    kind: open
+    difficulty: senior
+    title: "Implement 'insert or update by email' with Ecto upserts and explain the gotchas"
+    body: |
+      Cover `on_conflict` variants, `conflict_target`, `returning`, what the returned struct contains, and the difference from a `get` + `insert/update` approach.
+    answer: |
+      ```elixir
+      Repo.insert(
+        %User{email: email, name: name},
+        on_conflict: {:replace, [:name, :updated_at]},   # or :nothing | :replace_all | [set: [...]] | a query
+        conflict_target: :email,                        # the unique index/constraint columns (required on Postgres)
+        returning: true                                 # fetch the real row values (id, timestamps) after the upsert
+      )
+      ```
+
+      - `on_conflict: :nothing` → `INSERT ... ON CONFLICT DO NOTHING`; the returned struct has **no id** (Postgres returns no row), so you cannot tell whether it existed. `:replace_all` overwrites every field including `inserted_at` unless you use `{:replace_all_except, [:id, :inserted_at]}`. `{:replace, fields}` is the usual choice; `[set: [...]]`/`[inc: [...]]` or a query gives full control (`ON CONFLICT ... DO UPDATE SET`).
+      - `conflict_target` can be a list of columns, `{:unsafe_fragment, "..."}` for expression indexes, or `{:constraint, :name}`. On MySQL there is no target; it uses any unique key.
+      - Without `returning: true` the struct you get back is just your input merged with the generated id *if* the insert path ran; in the update path Postgres may return the old id only with `returning`. Always set `returning` when you need the row.
+      - `insert_all` + `on_conflict` is the bulk form; counts differ between Postgres (updated rows counted) and MySQL.
+      - Versus `get` + branch: the upsert is one round trip and race-free (the DB resolves the conflict atomically); the two-step version can hit the unique index between the `get` and the `insert` unless you catch the constraint error and retry.
+      - Changesets: `on_conflict` works with `Repo.insert(changeset, ...)` too, but validations only ran against the *insert* data; the update path still bypasses the changeset's constraints mapping for anything other than the conflict itself.
+      - Timestamps: `updated_at` must be listed in `replace` (or set in the update query) — the upsert path does not bump it automatically.
+    explanation: |
+      Follow-ups: "How do you know if it inserted or updated?" — `returning: [:inserted_at, :updated_at]` and compare, or `xmax = 0` via a fragment select on Postgres. "Why does `:nothing` return a struct with `id: nil`?" — DO NOTHING returns no row. "Partial unique index?" — `conflict_target: {:unsafe_fragment, "(email) WHERE deleted_at IS NULL"}`.
+    tags: [repo, upsert, on_conflict]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-code-multi-runner
+    kind: code
+    difficulty: middle
+    title: "Implement a Multi-style step runner that short-circuits on the first error"
+    body: |
+      Model `Ecto.Multi` without a database. Define `MiniMulti` with:
+
+      - `MiniMulti.new()` → an empty multi (any representation you like).
+      - `MiniMulti.run(multi, name, fun)` → appends a step; `fun` is called as `fun.(changes_so_far)` and must return `{:ok, value}` or `{:error, reason}`. Raise `ArgumentError` if `name` was already used.
+      - `MiniMulti.put(multi, name, value)` → a step that always succeeds with `value`.
+      - `MiniMulti.execute(multi)` → runs the steps **in insertion order**. On success returns `{:ok, %{name => value}}`. On the first `{:error, reason}` stops immediately and returns `{:error, failed_name, reason, changes_so_far}`; later steps must not run.
+
+      ```elixir
+      MiniMulti.new()
+      |> MiniMulti.put(:user, %{id: 1})
+      |> MiniMulti.run(:profile, fn %{user: u} -> {:ok, %{user_id: u.id}} end)
+      |> MiniMulti.run(:email, fn _ -> {:error, :smtp_down} end)
+      |> MiniMulti.run(:never, fn _ -> raise "should not run" end)
+      |> MiniMulti.execute()
+      # => {:error, :email, :smtp_down, %{user: %{id: 1}, profile: %{user_id: 1}}}
+      ```
+    starter_code: |
+      defmodule MiniMulti do
+        def new, do: []
+
+        def run(multi, name, fun) do
+          # TODO
+          multi
+        end
+
+        def put(multi, name, value) do
+          # TODO
+          multi
+        end
+
+        def execute(multi) do
+          # TODO
+          {:ok, %{}}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MiniMultiTest do
+        use ExUnit.Case
+
+        test "all steps succeed and see previous changes" do
+          result =
+            MiniMulti.new()
+            |> MiniMulti.put(:user, %{id: 1})
+            |> MiniMulti.run(:profile, fn %{user: u} -> {:ok, %{user_id: u.id}} end)
+            |> MiniMulti.run(:count, fn changes -> {:ok, map_size(changes)} end)
+            |> MiniMulti.execute()
+
+          assert result == {:ok, %{user: %{id: 1}, profile: %{user_id: 1}, count: 2}}
+        end
+
+        test "stops at the first error with changes so far" do
+          result =
+            MiniMulti.new()
+            |> MiniMulti.put(:user, %{id: 1})
+            |> MiniMulti.run(:profile, fn %{user: u} -> {:ok, %{user_id: u.id}} end)
+            |> MiniMulti.run(:email, fn _ -> {:error, :smtp_down} end)
+            |> MiniMulti.run(:never, fn _ -> raise "should not run" end)
+            |> MiniMulti.execute()
+
+          assert result == {:error, :email, :smtp_down, %{user: %{id: 1}, profile: %{user_id: 1}}}
+        end
+
+        test "empty multi" do
+          assert MiniMulti.execute(MiniMulti.new()) == {:ok, %{}}
+        end
+
+        test "duplicate names raise" do
+          assert_raise ArgumentError, fn ->
+            MiniMulti.new() |> MiniMulti.put(:a, 1) |> MiniMulti.run(:a, fn _ -> {:ok, 2} end)
+          end
+        end
+
+        test "steps run in insertion order" do
+          {:ok, _} =
+            MiniMulti.new()
+            |> MiniMulti.run(:first, fn changes -> {:ok, Map.keys(changes)} end)
+            |> MiniMulti.run(:second, fn changes -> {:ok, Map.keys(changes)} end)
+            |> MiniMulti.execute()
+            |> then(fn {:ok, c} = r -> assert c.first == [] and c.second == [:first]; r end)
+        end
+      end
+    solution: |
+      defmodule MiniMulti do
+        def new, do: []
+
+        def run(multi, name, fun) when is_function(fun, 1), do: add(multi, name, fun)
+
+        def put(multi, name, value), do: add(multi, name, fn _ -> {:ok, value} end)
+
+        defp add(multi, name, fun) do
+          if List.keymember?(multi, name, 0), do: raise(ArgumentError, "#{inspect(name)} is already a member of the multi")
+          multi ++ [{name, fun}]
+        end
+
+        def execute(multi) do
+          Enum.reduce_while(multi, {:ok, %{}}, fn {name, fun}, {:ok, changes} ->
+            case fun.(changes) do
+              {:ok, value} -> {:cont, {:ok, Map.put(changes, name, value)}}
+              {:error, reason} -> {:halt, {:error, name, reason, changes}}
+            end
+          end)
+        end
+      end
+    explanation: |
+      `Ecto.Multi` is literally this: a list of `{name, operation}` kept in insertion order (the real one stores a reversed list plus a `MapSet` of names for the uniqueness check), and `Repo.transaction` folds over it with the accumulated changes map, halting on the first error and rolling back. `Enum.reduce_while/3` is the idiomatic short-circuiting fold; the `{:error, name, reason, changes}` tuple is the exact shape Ecto returns, which is why callers can pattern-match on the failed step. The only thing missing is the transaction itself — in Ecto the fold runs inside `Repo.transaction`, so `{:halt, ...}` triggers a rollback.
+    tags: [multi, reduce_while, coding]
+    source: https://ecto.hexdocs.pm/Ecto.Multi.html
+
+  - slug: elixir-ecto-repo-stream-transaction
+    kind: mcq
+    difficulty: middle
+    title: "Why does this raise, and what is the fix?"
+    body: |
+      ```elixir
+      User
+      |> Repo.stream(max_rows: 1_000)
+      |> Stream.map(&export_row/1)
+      |> Enum.to_list()
+      # ** (RuntimeError) cannot reduce stream outside of transaction
+      ```
+    choices:
+      - "`Repo.stream` uses a server-side cursor that only lives for the duration of a transaction, so the enumeration must happen inside `Repo.transaction(fn -> ... |> Enum.to_list() end)`; the stream is lazy, so building it outside is fine, consuming it is not"
+      - "`max_rows` is not a valid option; remove it"
+      - "`Repo.stream` only works with `Repo.all/2` results; call `Repo.all` first"
+      - "The stream must be consumed with `Enum.each`, never `Enum.to_list`"
+    answer: 0
+    explanation: |
+      SQL adapters implement `Repo.stream/2` with `DECLARE CURSOR` + `FETCH` in batches of `max_rows` (default 500), which Postgres ties to a transaction. Inside `Repo.transaction` you can process millions of rows with flat memory: `Repo.transaction(fn -> query |> Repo.stream() |> Stream.map(...) |> Stream.each(&write/1) |> Stream.run() end, timeout: :infinity)` — and note the `timeout:` override, since the default 15s transaction timeout is the next thing that bites. The connection is held for the whole export, so do not do this inside a web request. Preloads are not supported inside a stream of structs; preload per chunk with `Stream.chunk_every` + `Repo.preload`.
+    tags: [repo, stream, transaction, cursor]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-migrations-change-up-down
+    kind: theory
+    difficulty: junior
+    title: "Migrations: `change` vs `up`/`down`, references, indexes and `execute`"
+    body: |
+      `mix ecto.gen.migration add_comments` creates a timestamped module in `priv/repo/migrations`; `mix ecto.migrate` / `mix ecto.rollback` run them through `Ecto.Migrator`, recording versions in `schema_migrations`.
+
+      ```elixir
+      defmodule MyApp.Repo.Migrations.AddComments do
+        use Ecto.Migration
+
+        def change do
+          create table(:comments) do
+            add :body, :text, null: false
+            add :post_id, references(:posts, on_delete: :delete_all), null: false
+            add :author_id, references(:users, type: :binary_id, on_delete: :nilify_all)
+            timestamps(type: :utc_datetime)
+          end
+
+          create index(:comments, [:post_id])
+          create unique_index(:comments, [:post_id, :author_id], name: :one_comment_per_author)
+          create index(:comments, [:body], where: "body <> ''")   # partial index
+        end
+      end
+      ```
+
+      - **`change/0`** is written once; Ecto derives the rollback for reversible commands (`create`, `add`, `create index`, `rename`, `execute/2` with both strings). Irreversible ones (`execute/1`, `remove/1` without type, `modify` without `from:`) raise `Ecto.MigrationError` on rollback. Define **`up/0` and `down/0`** instead when you need hand-written reversal; they take precedence over `change`.
+      - `references(:posts, on_delete: ...)` creates the FK: `:nothing` (default), `:delete_all`, `:nilify_all`, `:restrict`, `{:nilify, [:cols]}`; `on_update` likewise. Prefer DB-level `on_delete` over schema-level `has_many ... on_delete`, which the docs discourage.
+      - `alter table(:comments) do modify :body, :string, from: :text; remove :legacy, :string end` keeps it reversible.
+      - `rename table(:comments), :body, to: :content` and `rename table(:old), to: table(:new)`.
+      - `execute("UPDATE ...", "UPDATE ... (reverse)")` for raw SQL; `flush/0` forces queued DDL to run before an `execute` that depends on it (raises inside `change` during rollback, so prefer anonymous-function `execute/1`).
+      - Timestamps in migrations default to `:naive_datetime`; match the schema's `@timestamps_opts`.
+      - Each migration runs in a transaction on Postgres and takes an advisory lock so two nodes do not run it twice.
+    answer: |
+      **Q:** You added `add :status, :string, default: "draft", null: false` to a table with 50M rows. Why might this be fine on Postgres 11+ but dangerous on older versions, and what is the general rule for big tables?
+      **A:** Modern Postgres stores a non-volatile default in the catalog without rewriting rows; older versions rewrote the table under an exclusive lock. The general rule: add the column nullable, backfill in batches outside the migration, then add the `NOT NULL` constraint (and build indexes `concurrently`).
+    explanation: |
+      Interviewers ask migrations to check production awareness: reversibility, lock behaviour, and separating schema changes from data backfills (which belong in a Mix task or a separate, non-DDL migration). `Ecto.Migrator.run/4` and `Ecto.Migrator.with_repo/2` are what releases call since there is no Mix in a release.
+    tags: [migrations, references, index]
+    source: https://ecto-sql.hexdocs.pm/Ecto.Migration.html
+
+  - slug: elixir-ecto-index-concurrently
+    kind: mcq
+    difficulty: senior
+    title: "Creating an index `concurrently` on Postgres fails with `CREATE INDEX CONCURRENTLY cannot run inside a transaction block`. What is the correct migration?"
+    body: |
+      ```elixir
+      def change do
+        create index(:events, [:account_id, :inserted_at], concurrently: true)
+      end
+      ```
+    choices:
+      - "Remove `concurrently: true`; Ecto cannot create concurrent indexes"
+      - "Wrap the `create index` in `execute(\"COMMIT\")` / `execute(\"BEGIN\")` so the DDL runs outside the transaction"
+      - "Add `@disable_migration_lock true` only; the lock is what starts the transaction"
+      - "Add `@disable_ddl_transaction true` (and, since the default migration lock also uses a transaction, `@disable_migration_lock true` or configure `migration_lock: :pg_advisory_lock`); keep that migration to the single index so a failure leaves nothing half-applied"
+    answer: 3
+    explanation: |
+      Ecto runs every migration inside a transaction by default, which Postgres forbids for `CONCURRENTLY`. `@disable_ddl_transaction true` opts that migration out; because the default migration lock (`FOR UPDATE` on `schema_migrations`) also needs a transaction, you either disable it for this migration (`@disable_migration_lock true`, accepting that two nodes could race) or switch the repo to `migration_lock: :pg_advisory_lock`, which works without a transaction. Without the transaction a failed concurrent build leaves an `INVALID` index behind that you must drop manually, hence the one-index-per-migration advice. Choice 2 is what some Rails folklore suggests and breaks `Ecto.Migrator`'s own bookkeeping.
+    tags: [migrations, index, concurrently, postgres]
+    source: https://ecto-sql.hexdocs.pm/Ecto.Migration.html
+
+  - slug: elixir-ecto-custom-type
+    kind: open
+    difficulty: middle
+    title: "Write a custom `Ecto.Type` and explain when `cast`, `dump` and `load` run"
+    body: |
+      Example: store a `Money` struct (`%Money{amount: Decimal, currency: "EUR"}`) in a `:map` column. Also contrast with `Ecto.ParameterizedType` and `Ecto.Enum`.
+    answer: |
+      ```elixir
+      defmodule MyApp.Types.Money do
+        use Ecto.Type
+        def type, do: :map
+
+        # external input -> runtime value (changeset cast, query ^params)
+        def cast(%Money{} = m), do: {:ok, m}
+        def cast(%{"amount" => a, "currency" => c}), do: with({:ok, d} <- Decimal.cast(a), do: {:ok, %Money{amount: d, currency: c}})
+        def cast(_), do: :error          # or {:error, message: "..."} for a custom message
+
+        # runtime value -> database value (on insert/update, and for ^params in queries)
+        def dump(%Money{amount: a, currency: c}), do: {:ok, %{"amount" => Decimal.to_string(a), "currency" => c}}
+        def dump(_), do: :error
+
+        # database value -> runtime value (on every read)
+        def load(%{"amount" => a, "currency" => c}), do: {:ok, %Money{amount: Decimal.new(a), currency: c}}
+
+        def equal?(a, b), do: a == b     # used by changesets to detect no-op changes; override for Decimal (1.0 vs 1.00)
+        def embed_as(_), do: :dump       # dump before JSON-encoding when used inside embeds
+      end
+
+      field :price, MyApp.Types.Money
+      ```
+
+      - `type/0` names the underlying primitive the adapter understands (`:map`, `:string`, `:binary`, `:integer`...). `cast/1` is the only callback that sees untrusted data and may be lenient; `dump/1` must be strict (reject anything not already a `Money`); `load/1` trusts the DB. `nil` never reaches any callback.
+      - `Ecto.ParameterizedType` adds `init/1` with per-field options (`field :status, MyType, values: [...]`) plus `cast/2`, `dump/3`, `load/3` receiving those params, and extra callbacks like `autogenerate`. `Ecto.Enum` is the built-in parameterized type: `field :status, Ecto.Enum, values: [:draft, :published]` stores strings (or integers with `values: [draft: 1]`), casts both atoms and strings, and `Ecto.Enum.values(Post, :status)` lists them for forms.
+      - Use a custom type when the same encoding rule would otherwise be repeated in many changesets; use `embeds_one` instead when the data is structured and you want nested changesets/validations.
+    explanation: |
+      Follow-ups: "What happens if `dump` returns `:error`?" — `Ecto.ChangeError` raised at insert, since by then the data should be valid. "Why implement `equal?`?" — `put_change` with an equal value would otherwise be seen as a change for types like `Decimal` where `==` is structural. "Where does `cast` run for query params?" — `where: p.price == ^money` casts then dumps via the field's type.
+    tags: [ecto-type, custom-type, parameterized-type]
+    source: https://ecto.hexdocs.pm/Ecto.Type.html
+
+  - slug: elixir-ecto-enum-type
+    kind: mcq
+    difficulty: junior
+    title: "How does `field :status, Ecto.Enum, values: [:draft, :published]` behave?"
+    body: |
+      ```elixir
+      post = Repo.insert!(%Post{status: :draft})
+      Repo.get!(Post, post.id).status
+      cast(%Post{}, %{"status" => "published"}, [:status]).changes
+      cast(%Post{}, %{"status" => "deleted"}, [:status]).errors
+      ```
+    choices:
+      - "Stores an integer index in a `:integer` column; `cast` accepts only atoms"
+      - "Stores `\"draft\"` in a string column, loads it back as the atom `:draft`, `cast` accepts both `\"published\"` and `:published`, and `\"deleted\"` yields a `{\"is invalid\", [type: ..., validation: :cast]}` error — no `validate_inclusion` needed"
+      - "Requires a Postgres `CREATE TYPE ... AS ENUM` in the migration"
+      - "Stores atoms via `term_to_binary`, so the column must be `:binary`"
+    answer: 1
+    explanation: |
+      `Ecto.Enum` is a parameterized type: the column is a plain `:string` (or `:integer` when you give `values: [draft: 1, published: 2]`), the Elixir side is atoms, and the allowed set is enforced at cast time, which replaces `validate_inclusion`. A DB-level `ENUM` type is optional and separate (then the column type in the migration is the enum name and Ecto still sends strings). Pitfalls: renaming an atom requires a data migration, adding a value does not; `Ecto.Enum.values/2` and `mappings/2` feed select inputs; `{:array, Ecto.Enum}` is supported with `values:` too.
+    tags: [ecto-enum, types]
+    source: https://ecto.hexdocs.pm/Ecto.Type.html
+
+  - slug: elixir-ecto-sandbox-async-tests
+    kind: open
+    difficulty: senior
+    title: "How does `Ecto.Adapters.SQL.Sandbox` let database tests run with `async: true`, and when does it break?"
+    body: |
+      Explain ownership, `:manual` vs `:shared` mode, allowances, `start_owner!`, and the errors "cannot find ownership process" / "owner exited".
+    answer: |
+      - The sandbox pool wraps each checked-out connection in a transaction that is **rolled back** when the test ends, so tests never see each other's data and no cleanup is needed.
+      - In `test_helper.exs`: `Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)`. Each test (in `DataCase`/`ConnCase` setup) checks out its own connection: `pid = Sandbox.start_owner!(Repo, shared: not tags[:async]); on_exit(fn -> Sandbox.stop_owner(pid) end)`.
+      - **Ownership**: a connection belongs to the owner process; any other process that queries must be *allowed* (`Sandbox.allow(Repo, owner_pid, other_pid)`), or the caller-tracking mechanism must link them (`Task.async`, `start_supervised!` propagate `$callers` automatically; `spawn`/`GenServer.start` from the app supervisor do not).
+      - **Shared mode** (`shared: true` / `mode(Repo, {:shared, pid})`): every process uses the owner's connection. Simple, but tests must be `async: false`, because two shared owners would conflict.
+      - **Async**: `async: true` works in manual mode because each test has its own connection and transaction; Postgres isolates them. The docs warn MySQL can deadlock under concurrent sandboxed tests.
+      - "cannot find ownership process": a process (Oban worker, GenServer, LiveView) hit the DB without an allowance — allow it, or use shared mode for that test. "owner exited while client still running": the test finished while a spawned process was still querying — use `start_supervised!` so it stops first, or wait for it in `on_exit`. "owner timed out": a long test exceeded `ownership_timeout` (120s default).
+      - `start_owner!` (vs `checkout`) runs the owner in a separate unlinked process, so LiveViewTest's view processes (which can outlive the test process) keep a valid owner until `stop_owner`.
+      - Limits: transactional sandboxing hides behaviour that depends on commits (`NOTIFY`, deferred constraints, `Repo.transaction` in the code under test nests into the sandbox transaction, so `Repo.rollback` semantics differ slightly), and `concurrently` migrations cannot be tested this way.
+    explanation: |
+      Follow-ups: "Why not truncate tables between tests?" — slow and serialises the suite. "How does Oban testing fit?" — `Oban.Testing` with `testing: :manual` so jobs are not executed by other processes. "What about `Repo.stream`?" — fine, same connection. Candidates who say "just use `async: false` everywhere" miss the point of the sandbox.
+    tags: [testing, sandbox, async]
+    source: https://ecto-sql.hexdocs.pm/Ecto.Adapters.SQL.Sandbox.html
+
+  - slug: elixir-ecto-pool-size-queue-timeouts
+    kind: open
+    difficulty: senior
+    title: "Under load you see `DBConnection.ConnectionError: connection not available and request was dropped from queue after 2000ms`. Explain the pool model and how you would tune it"
+    body: |
+      Cover `pool_size`, `queue_target`/`queue_interval`, `timeout`, what a `Task` or LiveView does to pool usage, and `pool_count`.
+    answer: |
+      - Each `Repo` owns a `DBConnection` pool of `pool_size` connections (default 10). A query **checks out** a connection for its duration; a transaction holds one for the whole function. Callers that cannot get one wait in a queue.
+      - `queue_target` (50ms default) and `queue_interval` (1000ms): if, during any `queue_interval` window, requests had to wait longer than `queue_target` to check out, DBConnection starts dropping requests with the error above *early* instead of letting the whole system crawl — a load-shedding mechanism, not a bug. The message therefore means demand > connections for a sustained period.
+      - `timeout` (15s default per query) is different: it is how long a query may run once it has a connection; `Repo.transaction(fun, timeout: :infinity)` for long jobs.
+      - Diagnose first: slow queries holding connections (missing index, `Repo.stream` exports in web requests), long transactions (external HTTP calls inside `Repo.transaction`), N+1 in LiveViews (each `handle_info` hitting the DB), or too many BEAM processes legitimately querying at once. Telemetry `[:my_app, :repo, :query]` carries `queue_time`, `query_time`, `idle_time`; LiveDashboard shows them.
+      - Tune: raise `pool_size` (bounded by Postgres `max_connections`, each connection costs server memory; typical 10–50 per node), use `pool_count` (Ecto 3.10+) to run several pools and reduce contention on the pool process itself, put PgBouncer in front for many nodes, add read replicas for reporting, and move batch work to a separate `Repo` with its own pool so it cannot starve web traffic. Raising `queue_target`/`queue_interval` only hides the problem.
+      - Concurrency amplifiers: `Task.async_stream` over 1,000 rows each doing a query will saturate the pool instantly — cap `max_concurrency` below `pool_size`; a transaction that spawns tasks gives each task its *own* connection.
+      - Sandbox in tests has `ownership_timeout`, a separate knob, and shows the same error family when a process is not allowed.
+    explanation: |
+      Follow-ups: "Why is the default so low?" — Postgres connections are expensive; 10 per node across 20 nodes is already 200. "What would you measure before changing `pool_size`?" — `queue_time` percentiles vs `query_time`; if queries are fast but queue time is high, more connections help; if queries are slow, fix the queries. The best candidates mention that the error is deliberate back-pressure.
+    tags: [db_connection, pool, timeouts, performance]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html
+
+  - slug: elixir-ecto-decimal-for-money
+    kind: mcq
+    difficulty: middle
+    title: "Which schema field is appropriate for a money amount, and why?"
+    body: |
+      ```elixir
+      field :price, :float
+      field :price, :decimal
+      field :price_cents, :integer
+      ```
+    choices:
+      - "`:float`; Ecto rounds floats to 2 places on dump"
+      - "Any of them; the database column type is what matters"
+      - "`:decimal` (backed by the `Decimal` library and a `numeric(precision, scale)` column) or an integer of minor units; `:float` is binary floating point and cannot represent `0.1` exactly, so sums drift and comparisons fail"
+      - "`:decimal` is only for Postgres; MySQL users must use `:float`"
+    answer: 2
+    explanation: |
+      `:decimal` maps to `Decimal` structs in Elixir and `numeric`/`decimal` in SQL, giving exact base-10 arithmetic (`Decimal.add/2`, `Decimal.compare/2` — note `==` on Decimals is structural, `Decimal.eq?/2` is semantic, which also matters for changeset change detection). Minor-unit integers (`price_cents`) are the other sound choice and avoid the dependency, at the cost of currency awareness; libraries such as `ex_money` build a custom type on top of that. Floats fail the classic `0.1 + 0.2 == 0.3` test and `Repo.aggregate(:sum)` over them accumulates error. In migrations use `add :price, :decimal, precision: 12, scale: 2`.
+    tags: [types, decimal, money]
+    source: https://ecto.hexdocs.pm/Ecto.Schema.html
+
+  - slug: elixir-ecto-embedded-and-schemaless
+    kind: open
+    difficulty: middle
+    title: "When do you use an embedded schema or a schemaless changeset instead of a table-backed schema?"
+    body: |
+      Give examples: a search form, a settings JSON column, and an address inside a user. Show how validation works for each.
+    answer: |
+      - **Schemaless changeset** — validate a plain map with explicit types, no module at all:
+
+        ```elixir
+        types = %{q: :string, page: :integer}
+        {%{}, types}
+        |> Ecto.Changeset.cast(params, Map.keys(types))
+        |> Ecto.Changeset.validate_number(:page, greater_than: 0)
+        |> Ecto.Changeset.apply_action(:validate)     # {:ok, %{q: "...", page: 2}} | {:error, changeset}
+        ```
+
+        Good for one-off forms, API filters, and `to_form(changeset, as: :search)` in LiveView.
+      - **`embedded_schema`** — a struct with typed fields but no table (`@primary_key` defaults to `:binary_id`, no `__meta__`), reusable across forms: a `SearchForm` or `Registration` module with its own `changeset/2`. `apply_action/2` gives you the struct; the context then maps it to real schemas. Keeps controller params and persistence models separate.
+      - **`embeds_one`/`embeds_many`** — nested data stored in a JSON/`:map` column of the parent (`embeds_one :address, Address, on_replace: :update`; `embeds_many :line_items, LineItem, on_replace: :delete`). Validated through `cast_embed(changeset, :address, with: &Address.changeset/2)`; saved and loaded with the parent in one row, no joins, no separate ids to manage (embeds_many entries get `binary_id`s for diffing). Use when the children never need to be queried or updated independently; otherwise a real association.
+      - Querying into embeds requires `fragment("?->>'city'", u.address)` or `json_extract_path`; indexes need expression/GIN indexes — a reason to promote hot fields to columns.
+      - Schemaless *queries* (`from u in "users", select: %{id: u.id}`) are the read-side counterpart: raw table, explicit `select`, `type/2` for params.
+    explanation: |
+      Follow-ups: "How do you render errors for a schemaless form?" — `to_form` works the same, set `action` so errors show. "Why `on_replace: :update` for `embeds_one`?" — so re-submitting the address edits in place instead of raising. "Embeds vs separate table for order line items?" — if you need reporting across orders (sum by product), a table; if the snapshot is immutable per order, embeds are fine.
+    tags: [embedded_schema, schemaless, cast_embed]
+    source: https://ecto.hexdocs.pm/Ecto.Schema.html
+
+  - slug: elixir-ecto-optimistic-lock
+    kind: mcq
+    difficulty: senior
+    title: "Two users edit the same document at once. What does `optimistic_lock(:lock_version)` do, and what must you handle?"
+    body: |
+      ```elixir
+      schema "documents" do
+        field :body, :string
+        field :lock_version, :integer, default: 1
+      end
+
+      def changeset(doc, attrs) do
+        doc |> cast(attrs, [:body]) |> optimistic_lock(:lock_version)
+      end
+      ```
+    choices:
+      - "`Repo.update` adds `WHERE lock_version = <loaded value>` and `SET lock_version = <value + 1>`; if zero rows match because someone else saved first, it raises `Ecto.StaleEntryError`, which you must rescue (or let the form reload with the newer version) — the form needs to carry `lock_version` as a hidden field so the check uses the version the user actually saw"
+      - "It takes a row-level `SELECT ... FOR UPDATE` lock for the duration of the edit session"
+      - "It makes the second `Repo.update` wait until the first transaction commits, then applies both changes"
+      - "It only works inside `Repo.transaction` with `isolation: :serializable`"
+    answer: 0
+    explanation: |
+      Optimistic locking assumes conflicts are rare and detects them at write time instead of holding DB locks across user think-time (which pessimistic `FOR UPDATE` cannot do across HTTP requests anyway). The version in the `WHERE` comes from `changeset.data`, so the data must be the version the user loaded — in a stateless controller that means casting `lock_version` from the form (`cast(attrs, [:body, :lock_version])` *before* `optimistic_lock`, or `force_change`), otherwise you re-read the latest row and the check always passes. `Ecto.StaleEntryError` is also raised by `Repo.update`/`delete` on a row that no longer exists, so handle both. Custom incrementers (e.g. a timestamp) are supported.
+    tags: [optimistic_lock, concurrency, stale_entry]
+    source: https://ecto.hexdocs.pm/Ecto.Changeset.html
+
+  - slug: elixir-ecto-read-replicas-dynamic-repos
+    kind: open
+    difficulty: senior
+    title: "How would you route reporting queries to a Postgres read replica with Ecto, and what consistency problems appear?"
+    body: |
+      Describe the `Repo.replica/0` pattern, what `read_only: true` does, how you keep contexts unaware of it, and the replication-lag gotchas.
+    answer: |
+      - Ecto has no built-in replica routing; the documented pattern is one Repo module per replica sharing the primary's schema:
+
+        ```elixir
+        defmodule MyApp.Repo do
+          use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres
+          @replicas [MyApp.Repo.Replica1, MyApp.Repo.Replica2]
+          def replica, do: Enum.random(@replicas)
+          for repo <- @replicas do
+            defmodule repo do
+              use Ecto.Repo, otp_app: :my_app, adapter: Ecto.Adapters.Postgres, read_only: true
+            end
+          end
+        end
+        ```
+
+        Each replica repo is configured with its own URL and `pool_size`, started in the supervision tree, and used as `Repo.replica().all(query)`.
+      - `read_only: true` removes the write functions (`insert/update/delete/*_all`, `transaction` with writes) at compile time, so a reporting path cannot accidentally write to a replica.
+      - Keeping contexts clean: contexts expose `list_*`/`report_*` functions that call `Repo.replica()` internally, or accept a `repo:` option defaulting to the primary; `Multi.run` passes the repo in, which composes with this.
+      - **Dynamic repos** (`Repo.put_dynamic_repo/1`, `Repo.start_link(name: ...)`) are the other mechanism: the same Repo module can be pointed at a different connection per process — useful for multi-tenant per-database setups or ad-hoc replicas — but the choice is process-local and easy to leak.
+      - Lag: a replica may be seconds behind. Read-your-own-writes breaks (user saves, list page on replica does not show it): route the request after a write to the primary (a session flag/timestamp), or read from the primary for anything the user just changed. Transactions that read then write must use the primary entirely. Preloads run on the repo that fetched the parent, so `Repo.replica().preload(post, :comments)` stays consistent with itself but can be inconsistent with a primary read.
+      - Replica pools count against Postgres `max_connections` on the replica, not the primary; PgBouncer per replica is common. Health: wrap `replica/0` to skip replicas that fail a cheap `SELECT 1` or use DNS round-robin at the connection level instead of multiple modules.
+    explanation: |
+      Follow-ups: "Why not a single Repo with a load balancer in front that splits reads and writes?" — SQL-level proxies cannot know a `SELECT` is inside a write transaction; `read_only` at the Elixir level is explicit. "How do you test replica code?" — in tests point the replica modules at the same database (sandbox works per repo), or alias them to the primary. Weak answers suggest Ecto automatically balances reads.
+    tags: [replicas, dynamic-repo, read_only, scaling]
+    source: https://ecto.hexdocs.pm/Ecto.Repo.html

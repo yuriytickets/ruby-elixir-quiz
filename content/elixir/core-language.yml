@@ -1,0 +1,1494 @@
+language: elixir
+topic: core-language
+items:
+  - slug: elixir-core-rebinding-vs-mutation
+    kind: mcq
+    difficulty: junior
+    title: "Is `x = 2` after `x = 1` mutation?"
+    body: |
+      What does this print?
+
+      ```elixir
+      x = 1
+      f = fn -> x end
+      x = 2
+      IO.inspect({f.(), x})
+      ```
+    choices:
+      - "`{2, 2}` — `x` was mutated, the closure sees the new value"
+      - "`{1, 2}` — `x` was rebound; the closure captured the old value"
+      - "It does not compile: variables cannot be reassigned in Elixir"
+      - "`{1, 1}` — the second `x = 2` is a pattern match that fails silently"
+    answer: 1
+    explanation: |
+      Elixir data is immutable, but *variables* can be rebound. `x = 2` makes the name `x` point to a new
+      value `2`; the value `1` is untouched and the closure `f` still holds it, so `f.()` returns `1`.
+      Mutation would mean changing the value in place so every holder sees it, which never happens.
+      "Does not compile" is wrong (rebinding is allowed); "fails silently" is wrong because `x = 2` with a
+      plain variable on the left always succeeds. To match against the *existing* value you need the pin
+      operator: `^x = 2` would raise `MatchError`.
+    tags: [immutability, rebinding, closures]
+    source: https://elixir.hexdocs.pm/anonymous-functions.html
+
+  - slug: elixir-core-equality-strict
+    kind: mcq
+    difficulty: junior
+    title: "`==` vs `===` with integers and floats"
+    body: |
+      What does `{1 == 1.0, 1 === 1.0, 1 != 1.0, 1 !== 1.0}` evaluate to?
+    choices:
+      - "`{true, true, false, false}`"
+      - "`{false, false, true, true}`"
+      - "`{true, false, false, true}`"
+      - "`{true, false, true, false}`"
+    answer: 2
+    explanation: |
+      `==` compares values, so an integer and a float with the same numeric value are equal: `1 == 1.0`.
+      `===` (strict) also requires the same type, so `1 === 1.0` is `false`. `!=` and `!==` are their
+      negations. The *only* difference between `==` and `===` is integer-vs-float; for every other type
+      they behave identically. In pattern matching numbers are always compared strictly: `1 = 1.0`
+      raises `MatchError`.
+    tags: [operators, equality, floats]
+    source: https://elixir.hexdocs.pm/basic-types.html
+
+  - slug: elixir-core-division-float
+    kind: mcq
+    difficulty: junior
+    title: "What does `10 / 2` return?"
+    body: |
+      Which tuple does this expression produce?
+
+      ```elixir
+      {10 / 2, div(10, 3), rem(10, 3)}
+      ```
+    choices:
+      - "`{5, 3, 1}`"
+      - "`{5.0, 3, 1}`"
+      - "`{5.0, 3.33, 1}`"
+      - "`{5, 3.0, 1.0}`"
+    answer: 1
+    explanation: |
+      `/` always returns a float in Elixir, even when both operands are integers and the result is whole:
+      `10 / 2 == 5.0`. Integer division and remainder are separate functions: `div/2` truncates towards
+      zero (`div(10, 3) == 3`) and `rem/2` gives the remainder with the sign of the dividend
+      (`rem(10, 3) == 1`). Candidates who answer `5` are thinking of languages where `/` is overloaded
+      on integers. `Integer.floor_div/2` and `Integer.mod/2` are the floor-based variants.
+    tags: [arithmetic, integers, floats]
+    source: https://elixir.hexdocs.pm/basic-types.html
+
+  - slug: elixir-core-truthiness-zero
+    kind: mcq
+    difficulty: junior
+    title: "Which values are falsy?"
+    body: |
+      What does `{0 || :x, "" || :y, [] || :z, nil || :w}` evaluate to?
+    choices:
+      - "`{:x, :y, :z, :w}`"
+      - "`{0, \"\", [], :w}`"
+      - "`{0, :y, :z, :w}`"
+      - "`{:x, \"\", [], :w}`"
+    answer: 1
+    explanation: |
+      Only `nil` and `false` are falsy in Elixir. `0`, the empty string and the empty list are all truthy,
+      so `||` returns the left-hand side for them and only `nil || :w` falls through to `:w`. This trips up
+      people coming from JavaScript, Ruby (where `0` is truthy but `nil`/`false` falsy, like Elixir) or C.
+      `&&`, `||` and `!` accept any value; `and`, `or`, `not` require a real boolean on the left.
+    tags: [truthiness, operators]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-and-vs-andand
+    kind: mcq
+    difficulty: middle
+    title: "`nil and true` — what happens?"
+    body: |
+      Evaluate each expression separately. Which statement is correct?
+
+      ```elixir
+      a = nil && true
+      b = nil and true
+      ```
+    choices:
+      - "`a` is `nil` and `b` is `nil`"
+      - "`a` is `false` and `b` is `false`"
+      - "`a` is `nil`; `b` raises `BadBooleanError`"
+      - "Both raise because `nil` is not a boolean"
+    answer: 2
+    explanation: |
+      `&&` is a short-circuit operator for any value: if the left side is falsy it is returned as-is, so
+      `nil && true` is `nil`. `and` is *strictly boolean*: the left operand must be `true` or `false`,
+      otherwise it raises `BadBooleanError` ("expected a boolean on left-side of 'and'"). The right-hand
+      side of `and`/`or` can be anything (it is returned as-is), only the left is checked. This is why
+      `and`/`or`/`not` are allowed in guards while `&&`/`||`/`!` are not.
+    tags: [operators, booleans, guards]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-length-vs-byte-size
+    kind: mcq
+    difficulty: junior
+    title: "`String.length` vs `byte_size`"
+    body: |
+      What is `{String.length("héllo"), byte_size("héllo")}`?
+    choices:
+      - "`{5, 5}`"
+      - "`{6, 6}`"
+      - "`{5, 6}`"
+      - "`{6, 5}`"
+    answer: 2
+    explanation: |
+      Elixir strings are UTF-8 binaries. `String.length/1` counts *graphemes* (what a human sees as one
+      character) so `"héllo"` has 5. `byte_size/1` counts raw bytes: `é` is encoded as two bytes in UTF-8,
+      so the string is 6 bytes. `String.length` is O(n) because it must walk the UTF-8 sequence;
+      `byte_size` is O(1). Use `byte_size` for storage limits and `String.length` for user-facing limits.
+    tags: [strings, unicode, binaries]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-core-charlist-display
+    kind: mcq
+    difficulty: middle
+    title: "Why does IEx print `~c\"hi\"` for a list of integers?"
+    body: |
+      In IEx you type `[104, 105]` and the shell prints `~c"hi"`. What is going on?
+    choices:
+      - "IEx converted the list into a string; the value is now a binary"
+      - "The value is still a list of integers; IEx *displays* lists of printable codepoints as charlists"
+      - "`[104, 105]` is a syntax error and IEx auto-corrected it"
+      - "A bug in Elixir ≥ 1.15 — `inspect/1` cannot tell lists and strings apart"
+    answer: 1
+    explanation: |
+      A charlist *is* a list of integer codepoints, so `[104, 105]` and `~c"hi"` are the same term
+      (`[104, 105] == ~c"hi"` is `true`). The `Inspect` implementation for lists prints a list as a `~c`
+      sigil when every element is a printable codepoint — that is only a display heuristic. Pass
+      `charlists: :as_lists` to `inspect/2` (or `IEx.configure(inspect: [charlists: :as_lists])`) to see
+      the raw list. Since Elixir 1.15 the single-quoted `'hi'` literal is deprecated in favour of `~c"hi"`
+      precisely to make the "this is a list" fact obvious.
+    tags: [charlists, inspect, iex]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-core-dot-vs-bracket-access
+    kind: mcq
+    difficulty: middle
+    title: "`map.key` vs `map[:key]` on a missing key"
+    body: |
+      Given `m = %{a: 1}`, what are `m[:b]` and `m.b`?
+    choices:
+      - "Both return `nil`"
+      - "`m[:b]` returns `nil`; `m.b` raises `KeyError`"
+      - "`m[:b]` raises `KeyError`; `m.b` returns `nil`"
+      - "Both raise `KeyError`"
+    answer: 1
+    explanation: |
+      `m[:b]` is the `Access` behaviour (`Access.get/3`): it is lenient and returns `nil` for a missing key
+      (and even for `nil[:b]`). `m.b` is strict field access: it only works with atom keys and raises
+      `KeyError` when the key is absent — and `BadMapError` if `m` is not a map (for example `nil.b`).
+      The idiom is to use `map.key` for keys that *must* exist (structs, known shapes) so bugs surface
+      early, and `map[:key]` for optional data. Structs do not implement `Access`, so `struct[:k]` raises
+      `UndefinedFunctionError` unless you implement the behaviour.
+    tags: [maps, access, nil]
+    source: https://elixir.hexdocs.pm/Access.html
+
+  - slug: elixir-core-term-ordering
+    kind: mcq
+    difficulty: senior
+    title: "Comparing values of different types"
+    body: |
+      Elixir lets you compare any two terms with `<`. What does this return?
+
+      ```elixir
+      Enum.sort([[1], "a", {1}, :a, %{}, 1.5, 1])
+      ```
+    choices:
+      - "`[1, 1.5, :a, {1}, %{}, [1], \"a\"]`"
+      - "It raises `ArgumentError` because the types are not comparable"
+      - "`[\"a\", :a, 1, 1.5, [1], {1}, %{}]` — sorted alphabetically by type name"
+      - "`[1, 1.5, \"a\", :a, [1], {1}, %{}]`"
+    answer: 0
+    explanation: |
+      Elixir (via Erlang) defines a total *term ordering* so any two terms can be compared:
+      `number < atom < reference < function < port < pid < tuple < map < list < bitstring`.
+      Integers and floats are compared by numeric value (`1 < 1.5`), so numbers come first, then the atom,
+      the tuple, the map, the list and finally the binary. Nothing raises. This is what lets `Enum.sort/1`
+      and `Enum.max/1` work on heterogeneous lists — and also why `~D[2024-01-01] < ~D[2023-01-01]` is
+      *not* a date comparison but a structural map comparison (use `Date.compare/2`). Elixir 1.17+ warns
+      when it can tell you are structurally comparing structs.
+    tags: [comparison, term-ordering, sorting]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-sigil-w-atoms
+    kind: mcq
+    difficulty: junior
+    title: "What does `~w(foo bar)a` produce?"
+    body: |
+      Pick the value of `~w(foo bar)a`.
+    choices:
+      - "`[\"foo\", \"bar\"]`"
+      - "`[:foo, :bar]`"
+      - "`[~c\"foo\", ~c\"bar\"]`"
+      - "`\"foo bar\"`"
+    answer: 1
+    explanation: |
+      `~w` splits its contents on whitespace into a list. The trailing modifier picks the element type:
+      `s` (default) for strings, `a` for atoms, `c` for charlists. `~w(foo bar)a` therefore gives
+      `[:foo, :bar]`. It is the usual way to write lists of atoms or strings without quoting each one,
+      e.g. `@allowed ~w(get post put)a`. Lowercase sigils (`~w`, `~s`, `~r`) support interpolation and
+      escapes; the uppercase variants (`~W`, `~S`) do not.
+    tags: [sigils]
+    source: https://elixir.hexdocs.pm/sigils.html
+
+  - slug: elixir-core-binary-truncation
+    kind: mcq
+    difficulty: middle
+    title: "What is `<<256>>`?"
+    body: |
+      What does `{<<256>>, <<256::16>>, byte_size(<<256::16>>)}` evaluate to?
+    choices:
+      - "`{<<256>>, <<256>>, 1}`"
+      - "It raises `ArgumentError`: 256 does not fit in a byte"
+      - "`{<<0>>, <<1, 0>>, 2}`"
+      - "`{<<1>>, <<0, 1>>, 2}`"
+    answer: 2
+    explanation: |
+      Each segment in `<<>>` defaults to an 8-bit integer. A value that does not fit is silently
+      truncated to its low bits: `256` is `0b1_0000_0000`, so `<<256>>` keeps the low byte and is `<<0>>`.
+      Giving an explicit size, `<<256::16>>`, stores two bytes in big-endian order (the default):
+      `<<1, 0>>`. Use `::little` for little-endian. The truncation is a classic source of bugs when
+      building binary protocols, which is why interviewers ask it.
+    tags: [binaries, bit-syntax]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-core-default-args-arities
+    kind: mcq
+    difficulty: middle
+    title: "How many functions does a default argument generate?"
+    body: |
+      ```elixir
+      defmodule M do
+        def join(a, b \\ "", sep \\ " "), do: a <> sep <> b
+      end
+      ```
+
+      Which functions are exported from `M`?
+    choices:
+      - "Only `join/3`; defaults are filled in by the caller at compile time"
+      - "`join/1`, `join/2` and `join/3`"
+      - "`join/2` and `join/3`"
+      - "`join/1` and `join/3`"
+    answer: 1
+    explanation: |
+      `\\` makes the compiler emit one function per possible arity: `join/1`, `join/2` and `join/3`. The
+      lower-arity versions simply call `join/3` with the defaults filled in from left to right, so
+      `M.join("a", "b")` binds `b = "b"` and keeps `sep = " "`. Consequences interviewers probe: the
+      defaults are evaluated at call time, not definition time; a function with defaults *and* multiple
+      clauses needs a bodiless function head to declare the defaults once; and `&M.join/1` is a valid
+      capture even though you never wrote a one-argument clause.
+    tags: [functions, default-arguments, arity]
+    source: https://elixir.hexdocs.pm/modules-and-functions.html
+
+  - slug: elixir-core-map-update-syntax
+    kind: mcq
+    difficulty: middle
+    title: "`%{map | key: value}` with a new key"
+    body: |
+      ```elixir
+      m = %{a: 1}
+      %{m | b: 2}
+      ```
+
+      What happens?
+    choices:
+      - "Returns `%{a: 1, b: 2}`"
+      - "Raises `KeyError` because `:b` is not already in the map"
+      - "Returns `%{b: 2}` — the pipe replaces the whole map"
+      - "Compile error: `|` is only valid for structs"
+    answer: 1
+    explanation: |
+      The update syntax `%{m | k: v}` only *updates existing keys* and raises `KeyError` for any key that is
+      missing. That is the point: it guarantees the map's shape does not change, which is what you want for
+      structs and why the compiler can be strict about it. To add keys use `Map.put/3` or `Map.merge/2`.
+      The same syntax works on structs (`%User{u | age: 3}`) and is the only way, besides `struct/2`, to
+      get a compile-time check that the field exists.
+    tags: [maps, structs, update-syntax]
+    source: https://elixir.hexdocs.pm/keywords-and-maps.html
+
+  - slug: elixir-core-integer-parse-vs-to-integer
+    kind: mcq
+    difficulty: middle
+    title: "`Integer.parse/1` vs `String.to_integer/1` on dirty input"
+    body: |
+      What is `{Integer.parse("12abc"), Integer.parse("abc")}` and what does
+      `String.to_integer("12abc")` do?
+    choices:
+      - "`{{12, \"abc\"}, :error}`; `String.to_integer/1` raises `ArgumentError`"
+      - "`{12, nil}`; `String.to_integer/1` returns `12`"
+      - "`{{:ok, 12}, {:error, :invalid}}`; `String.to_integer/1` returns `nil`"
+      - "`{{12, \"abc\"}, {0, \"abc\"}}`; `String.to_integer/1` returns `12`"
+    answer: 0
+    explanation: |
+      `Integer.parse/1` consumes the longest valid prefix and returns `{integer, rest}` — so you must check
+      that `rest` is `""` if you require the whole string to be a number — and returns the bare atom
+      `:error` when there is no digit at all. `String.to_integer/1` is a thin wrapper over
+      `:erlang.binary_to_integer/1`: it accepts only a complete integer and raises `ArgumentError`
+      otherwise. Use `parse` for user input, `to_integer` for data you already trust.
+    tags: [integers, parsing, strings]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-float-round-surprise
+    kind: mcq
+    difficulty: senior
+    title: "Why does `Float.round(5.5675, 3)` not give `5.568`?"
+    body: |
+      `Float.round(5.5675, 3)` returns `5.567`. Why?
+    choices:
+      - "`Float.round/2` rounds half to even (banker's rounding)"
+      - "The literal `5.5675` is stored as a binary float slightly below `5.5675`, so half-up rounding gives `5.567`"
+      - "It is a known bug in OTP 26+ that `Float.round/2` truncates instead of rounding"
+      - "`Float.round/2` only looks at the first 2 decimal digits for precision > 2"
+    answer: 1
+    explanation: |
+      IEEE-754 doubles cannot represent most decimal fractions exactly. `5.5675` is actually stored as
+      roughly `5.567499999…`, so rounding *that* half-up to 3 places correctly yields `5.567`. `Float.round/2`
+      does round half up and operates on the exact binary value without a decimal detour; the docs call this
+      expected behaviour, not a bug. The same mechanism gives `0.1 + 0.2 == 0.30000000000000004`. For money
+      or anything that needs exact decimal rounding use integers (cents) or a decimal library such as
+      `Decimal`.
+    tags: [floats, rounding, precision]
+    source: https://elixir.hexdocs.pm/Float.html
+
+  - slug: elixir-core-rem-vs-mod
+    kind: mcq
+    difficulty: junior
+    title: "`rem/2` vs `Integer.mod/2` with negatives"
+    body: |
+      What is `{rem(-10, 3), Integer.mod(-10, 3)}`?
+    choices:
+      - "`{-1, 2}`"
+      - "`{2, -1}`"
+      - "`{-1, -1}`"
+      - "`{2, 2}`"
+    answer: 0
+    explanation: |
+      `rem/2` is the remainder of truncated division, so it takes the sign of the dividend:
+      `rem(-10, 3) == -1` (because `div(-10, 3) == -3` and `-3 * 3 + (-1) == -10`). `Integer.mod/2` is
+      the modulo of floored division and takes the sign of the divisor: `Integer.mod(-10, 3) == 2`. For
+      wrapping indexes or clock arithmetic you almost always want `Integer.mod/2`; `rem/2` is what is
+      allowed in guards (`when rem(n, 2) == 0`).
+    tags: [arithmetic, integers]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-string-vs-charlist
+    kind: open
+    difficulty: junior
+    title: "`\"abc\"` vs `~c\"abc\"` vs `'abc'`"
+    body: |
+      An interviewer writes these three literals on the whiteboard and asks what each one is, how they
+      differ in memory, and when you would use each:
+
+      ```elixir
+      "abc"
+      ~c"abc"
+      'abc'
+      ```
+    answer: |
+      - `"abc"` is a **string**: a UTF-8 encoded *binary* (`is_binary/1` is true). Contiguous bytes, O(1)
+        `byte_size`, pattern-matchable with `<<>>` and `<>`.
+      - `~c"abc"` is a **charlist**: a linked *list* of integer codepoints `[97, 98, 99]`
+        (`is_list/1` is true). Each cell is a cons box, so it uses far more memory than a binary.
+      - `'abc'` is the **old charlist literal**: identical value to `~c"abc"`, but single quotes are
+        deprecated since Elixir 1.15 (compiler warning; `mix format --migrate` rewrites them).
+      - Charlists exist for Erlang interop: many older Erlang APIs (`:io`, `:file`, `:httpc`) take and
+        return charlists. Everything else in Elixir uses strings.
+      - Convert with `to_string/1` / `List.to_string/1` and `to_charlist/1` / `String.to_charlist/1`.
+      - IEx prints a list as `~c"..."` only when all elements are printable codepoints — it is still a list.
+      - `"abc" == ~c"abc"` is `false`; they are different types.
+    explanation: |
+      Follow-ups: "Why is `Enum.map(~c"abc", &(&1 + 1))` `~c"bcd"`?" (it maps integers). "What is a
+      bitstring?" (any sequence of bits; a binary is a bitstring whose size is a multiple of 8; a string is
+      a binary that is valid UTF-8). A common mistake is calling `String.length/1` on a charlist
+      (`FunctionClauseError`) or `length/1` on a string (`ArgumentError`).
+    tags: [strings, charlists, binaries]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-core-alias-import-require-use
+    kind: open
+    difficulty: middle
+    title: "Explain `alias`, `import`, `require` and `use`"
+    body: |
+      What is the difference between `alias`, `import`, `require` and `use`? Which one creates a
+      compile-time dependency, and which would you reach for by default?
+    answer: |
+      - `alias Foo.Bar` (optionally `as: Baz`) only shortens a module name in the current lexical scope.
+        No code is loaded; the module does not even need to exist yet. Preferred default.
+      - `require Foo` makes Foo's **macros** available. Macros expand at compile time, so Elixir must
+        compile `Foo` first — this creates a compile-time dependency. `Integer.is_even/1` fails without
+        `require Integer`.
+      - `import Foo, only: [bar: 1]` brings functions/macros into scope so you can call `bar/1` without the
+        prefix. Implies `require`. Use `:only`/`:except` to keep provenance clear; overuse hides where a
+        function comes from.
+      - `use Foo` calls `require Foo` and then the macro `Foo.__using__/1`, which can inject *arbitrary*
+        code into your module (imports, `@behaviour`, default callbacks). It is the extension point that
+        `use GenServer`, `use ExUnit.Case` and `use Phoenix.Controller` rely on. Most magical, so use it
+        only when the library asks you to.
+      - All four are lexically scoped: inside a function they apply only to that function.
+      - `__MODULE__` is the current module's atom; `alias __MODULE__` is a common idiom in structs.
+    explanation: |
+      Follow-ups: "Why can two modules alias each other but not import each other?" (import needs the
+      target compiled; mutual imports would deadlock compilation). "What does `alias Foo.{Bar, Baz}` do?"
+      (multi-alias). "What is in `__using__/1` of `GenServer`?" (`@behaviour GenServer`, default
+      `child_spec/1`, default callback implementations marked `defoverridable`).
+    tags: [modules, alias, import, require, use]
+    source: https://elixir.hexdocs.pm/alias-require-and-import.html
+
+  - slug: elixir-core-anonymous-fn-dot-call
+    kind: open
+    difficulty: middle
+    title: "Why do anonymous functions need `.()` to be called?"
+    body: |
+      ```elixir
+      add = fn a, b -> a + b end
+      add.(1, 2)   # works
+      add(1, 2)    # CompileError: undefined function add/2
+      ```
+
+      Why does Elixir force the dot? Also explain `&` capture syntax and what `&(&1 * 2)` expands to.
+    answer: |
+      - Elixir has two namespaces: *named* functions (`add/2` defined with `def`) and *variables* holding
+        function values. `add(1, 2)` always means the named function; `add.(1, 2)` means "call the
+        function stored in the variable `add`".
+      - The dot makes the distinction explicit at the call site so readers never have to scan upward to
+        learn whether `add` is a local def or a variable — the same reason Erlang separates them.
+      - Anonymous functions are closures: they capture variables in scope at definition time; rebinding
+        inside them does not leak out.
+      - `&Mod.fun/arity` captures a named function as a value (`&String.upcase/1`, `&+/2`);
+        `&(&1 * 2)` is shorthand for `fn x -> x * 2 end`, `&1`..`&n` being positional arguments.
+      - A capture must use at least `&1`, and `&(&1)` is disallowed; nested captures are also disallowed.
+      - `is_function(f, 2)` checks arity; functions compare by identity, not by body.
+    explanation: |
+      Follow-up: "Why can't you call a captured function with `f()`?" Same reason — `f()` is a local named
+      call. Another: "`&foo/1` in a module — what does it refer to?" (local function or imported
+      function `foo/1`). Candidates sometimes claim `.()` exists for performance; it does not — it is
+      purely syntactic disambiguation.
+    tags: [functions, closures, capture]
+    source: https://elixir.hexdocs.pm/anonymous-functions.html
+
+  - slug: elixir-core-map-get-fetch-bang
+    kind: open
+    difficulty: middle
+    title: "`Map.get/3` vs `Map.fetch/2` vs `Map.fetch!/2`"
+    body: |
+      Compare `Map.get/3`, `Map.fetch/2` and `Map.fetch!/2`. When would you choose each, and how do
+      they relate to the `!` naming convention?
+    answer: |
+      - `Map.get(m, k, default \\ nil)` returns the value or the default. Cannot distinguish "key absent"
+        from "key present with value `nil`" unless you pass a sentinel default.
+      - `Map.fetch(m, k)` returns `{:ok, value}` or `:error` — unambiguous, meant to be pattern-matched or
+        used in `with`/`case`.
+      - `Map.fetch!(m, k)` returns the value or raises `KeyError`. Use when a missing key is a programmer
+        error ("let it crash" with a clear message).
+      - Convention: a trailing `!` means "raises on failure instead of returning an error tuple", and the
+        non-bang version returns `{:ok, _} | :error` / `{:error, reason}`. Same pattern in `File.read/1`
+        vs `File.read!/1`, `Integer.parse/1`, `Date.from_iso8601/1`.
+      - `map.key` is equivalent to `fetch!` semantics for atom keys; `map[:key]` to `get`.
+      - Prefer `fetch`/`fetch!` for required keys so typos fail loudly rather than silently producing `nil`.
+    explanation: |
+      Follow-up: "How does `Keyword.fetch/2` differ?" (keyword lists may hold duplicate keys; `fetch`
+      returns the first). "What is `Map.get_lazy/3`?" (computes default only when missing — useful when
+      the default is expensive). A common bug is `Map.get(m, :k) || default`, which also replaces
+      legitimate `false` values.
+    tags: [maps, errors, conventions]
+    source: https://elixir.hexdocs.pm/Access.html
+
+  - slug: elixir-core-string-to-atom-danger
+    kind: open
+    difficulty: senior
+    title: "Why is `String.to_atom/1` on user input dangerous?"
+    body: |
+      A controller does `String.to_atom(params["sort_by"])` to build a query. Why is this a problem and
+      what would you do instead?
+    answer: |
+      - Atoms live in a global VM table and are **never garbage collected**. The table has a fixed limit
+        (default 1,048,576 entries); when it fills, the whole BEAM node crashes.
+      - Converting attacker-controlled strings therefore turns every request into a potential
+        denial-of-service: an attacker just sends unique values until the node dies. This is a recurring
+        CVE class in the Erlang ecosystem.
+      - Also applies to `:"prefix_#{input}"`, `List.to_atom/1`, `Module.concat/2` on input, and JSON
+        decoders with `keys: :atoms`.
+      - Fixes: `String.to_existing_atom/1` (raises if the atom was never created — still handle the
+        error), or better an explicit allow-list: `case input do "name" -> :name; "age" -> :age; _ ->
+        {:error, :bad_sort} end`, or validate with Ecto's `Ecto.Enum`/`:parameterized` types.
+      - Enable Credo's `Credo.Check.Warning.UnsafeToAtom` (off by default) to catch it in review.
+    explanation: |
+      Follow-up: "Why are atoms not GC'd?" Because they are interned — an atom is a small integer index
+      into the table, which makes comparisons O(1) and lets them be used in pattern matching across the
+      whole VM; collecting them would require a global stop-the-world scan. "Is `to_existing_atom`
+      enough?" It prevents growth but can still raise on legitimate-but-not-yet-loaded atoms, so an
+      allow-list is the robust answer.
+    tags: [atoms, security, memory]
+    source: https://erlef.org/blog/eef/atom-exhaustion
+
+  - slug: elixir-core-struct-vs-map
+    kind: open
+    difficulty: middle
+    title: "What is a struct, really?"
+    body: |
+      How does a struct differ from a plain map? Mention `@enforce_keys`, `@derive`, pattern matching and
+      what protocols a struct does *not* get for free.
+    answer: |
+      - A struct is a map with a `__struct__` key holding the module name: `%User{}` is
+        `%{__struct__: User, name: nil, ...}`; `is_map/1` is true, `is_struct/1,2` is more specific.
+      - `defstruct` fixes the set of keys and their defaults; the compiler checks `%User{nmae: 1}`
+        (typo) and the update syntax `%User{u | age: 1}` at compile time. `struct/2` and `struct!/2` build
+        them at runtime from enumerables.
+      - `@enforce_keys [:id]` makes the `%User{}` literal (and `struct!/2`) raise `ArgumentError` when a key
+        is missing — enforced at construction only, not on updates, and it does not validate values.
+      - Pattern matching `%User{age: a}` matches only `User` structs; `%{age: a}` matches any map with
+        that key, including structs.
+      - Structs do **not** implement `Access` (`user[:name]` raises) or `Enumerable` (`Enum.map(user,
+        ...)` raises `Protocol.UndefinedError`). `Inspect` is implemented, and `@derive [Jason.Encoder]`
+        or `@derive {Inspect, except: [:password]}` lets you derive protocol impls automatically.
+      - Because keys never change, updating a struct shares most of its memory with the old version.
+    explanation: |
+      Follow-ups: "Why no `Access` for structs?" (to force explicit `.field` access and keep structs
+      strict). "What does `%User{} = %{__struct__: User}` do?" (matches — the struct check is just the
+      `__struct__` key; a map with that key and missing fields is a 'fake' struct, which is why you should
+      build them with the literal or `struct!/2`).
+    tags: [structs, maps, protocols]
+    source: https://elixir.hexdocs.pm/structs.html
+
+  - slug: elixir-core-pipe-first-arg-convention
+    kind: open
+    difficulty: junior
+    title: "The pipe operator and the first-argument convention"
+    body: |
+      Explain what `|>` does, why Elixir's standard library puts the "subject" as the first argument,
+      and how you would debug a value in the middle of a long pipeline.
+    answer: |
+      - `a |> f(b)` is rewritten at compile time to `f(a, b)`: the left value becomes the **first**
+        argument. Pipelines read top-to-bottom instead of inside-out.
+      - The standard library consistently takes the data structure first (`Enum.map(list, fun)`,
+        `String.replace(str, pat, rep)`, `Map.put(map, k, v)`) precisely so it pipes cleanly. Your own
+        APIs should follow the same rule.
+      - Anonymous functions need the dot: `x |> f.()`; `x |> then(&g(1, &1))` when the value must go in a
+        non-first position.
+      - Debugging: `|> IO.inspect(label: "after filter")` returns its argument unchanged, so it can be
+        dropped anywhere. `|> dbg()` (Elixir 1.14+) prints every step of the pipeline with its result.
+        `|> tap(&Logger.debug(inspect(&1)))` runs a side effect and passes the value through.
+      - Style: do not pipe a single call (`foo |> bar()` → `bar(foo)`), and start pipelines with a bare
+        value, not a function call with arguments.
+    explanation: |
+      Follow-up: "Why does `x |> Enum.map(&String.upcase/1)` work but `x |> IO.puts` warns?" Since 1.x the
+      compiler warns about piping into a function call without parentheses; write `IO.puts()`. Another:
+      "What is `Kernel.then/2` for?" — adapting a function whose subject is not the first argument.
+    tags: [pipe, io-inspect, style]
+    source: https://elixir.hexdocs.pm/enumerable-and-streams.html
+
+  - slug: elixir-core-module-attributes
+    kind: open
+    difficulty: senior
+    title: "Module attributes as constants and accumulators"
+    body: |
+      ```elixir
+      defmodule Config do
+        @timeout 5_000
+        @plugins MyApp.Plugins.list()
+        def timeout, do: @timeout
+        def plugins, do: @plugins
+      end
+      ```
+
+      What is wrong with `@plugins` here? Explain how module attributes work at compile time, how
+      `accumulate: true` changes them, and what `@moduledoc`/`@doc` are.
+    answer: |
+      - A module attribute is evaluated **once, at compile time**, and every `@name` read inside a
+        function body is replaced by a snapshot of that value. `@plugins MyApp.Plugins.list()` therefore
+        freezes whatever the function returned when `Config` was compiled — it will not reflect runtime
+        changes and creates a compile-time dependency on `MyApp.Plugins`.
+      - `@timeout 5_000` is the idiomatic constant: visible in guards and patterns (`when t > @timeout`),
+        which a function call could not be. Large values read many times slow compilation; wrap in a
+        function (`defp timeout, do: 5_000`) if you only read them in bodies.
+      - Setting an attribute again overwrites it; it holds only the last value — unless you call
+        `Module.register_attribute(__MODULE__, :name, accumulate: true)`, after which each `@name v`
+        prepends to a list. ExUnit's `@tag` and Plug's `plug` macro use this to collect declarations.
+      - `@moduledoc`/`@doc` (and `@spec`, `@behaviour`, `@impl`) are reserved attributes consumed by the
+        compiler; docs are stored in the `.beam` chunks and read by `h` in IEx and ExDoc.
+      - `@doc false` hides a function from docs; `@moduledoc false` hides the module.
+      - Attributes referenced in function bodies are read at compile time, but attributes referenced
+        between definitions (`@counter @counter + 1`) are evaluated in order, which lets macros build
+        things incrementally.
+    explanation: |
+      Follow-up: "How would you make `plugins/0` runtime-configurable?" Read from
+      `Application.get_env/3` or a config function inside the function body. Also ask what
+      `Module.get_attribute/2` is for inside macros, and why `@attr` with no value inside a function reads
+      it but at module level with no value emits a warning.
+    tags: [module-attributes, compile-time, metaprogramming]
+    source: https://elixir.hexdocs.pm/module-attributes.html
+
+  - slug: elixir-core-floats-and-decimal
+    kind: open
+    difficulty: senior
+    title: "Why `0.1 + 0.2 != 0.3` and what to do about money"
+    body: |
+      `0.1 + 0.2 == 0.3` is `false` in Elixir. Explain why, what `Float.round/2` can and cannot fix, and
+      how you would represent money.
+    answer: |
+      - Floats are IEEE-754 doubles: `0.1` and `0.2` have no exact binary representation, so their sum is
+        `0.30000000000000004`. This is not an Elixir issue; every language with binary floats does this.
+      - `Float.round/2` rounds the *binary* value half-up to N decimal places and returns another float —
+        fine for display, not for exact arithmetic (`Float.round(5.5675, 3)` is `5.567`).
+      - Comparisons: never test floats for exact equality; compare within an epsilon or compare rounded
+        values.
+      - Money: store integer minor units (cents) and do integer arithmetic, or use the `Decimal` library
+        (arbitrary-precision decimal with explicit rounding modes, used by Ecto's `:decimal` type).
+        Never `:float` in a database column for currency.
+      - `Float.parse/1`, `Float.to_string/1` use the shortest round-trip representation; `:erlang.float_to_binary/2`
+        gives explicit decimals.
+      - Integer division: `div/2` for integers, `/` always yields a float; `round/1`, `trunc/1`,
+        `floor/1`, `ceil/1` convert back to integers.
+    explanation: |
+      Follow-up: "What is `Float.ratio/1`?" (returns the exact numerator/denominator). "Why is
+      `-0.0 === 0.0` false on OTP 27?" (OTP 27 distinguishes signed zeros in strict comparison and in
+      pattern matching while `==` still treats them as equal). Candidates who propose `Float.round` as the
+      fix for money accounting should be challenged with repeated additions.
+    tags: [floats, decimal, money]
+    source: https://elixir.hexdocs.pm/Float.html
+
+  - slug: elixir-core-then-tap-dbg
+    kind: open
+    difficulty: middle
+    title: "`then/2`, `tap/2` and `dbg/1` in pipelines"
+    body: |
+      Explain what `Kernel.then/2`, `Kernel.tap/2` and `dbg/1` are for, with an example of each in a
+      pipeline. What does `dbg` do differently from `IO.inspect`?
+    answer: |
+      - `then(value, fun)` passes the value to `fun` and returns **`fun`'s result**. Use it to call a
+        function whose subject is not the first argument or to run an arbitrary expression mid-pipe:
+        `conn |> then(&Plug.Conn.put_resp_header(&1, "x", "y"))`.
+      - `tap(value, fun)` passes the value to `fun` for its **side effect** and returns the original
+        value unchanged: `|> tap(&Logger.info("got #{inspect(&1)}"))`. `IO.inspect/2` is effectively a
+        specialised `tap`.
+      - `dbg/1` is a macro (Elixir 1.14+): it prints the *source code* of its argument together with the
+        value, file and line. When its argument is a pipeline it prints every intermediate step, so
+        `list |> Enum.map(f) |> Enum.filter(g) |> dbg()` shows the result after each stage. In IEx you can
+        make `dbg` start a pry session.
+      - `IO.inspect(x, label: "...")` only prints the value; `dbg` prints code + value and respects
+        `config :elixir, :dbg_callback`, so it can be turned into a no-op in prod.
+      - Both `tap` and `IO.inspect` return the value, so they can be inserted and removed without changing
+        behaviour; `then` changes the value.
+    explanation: |
+      Follow-up: "Why is `dbg` a macro rather than a function?" It needs access to the AST to print the
+      source expression and decompose the pipeline. "Can you leave `dbg` calls in production?" You can
+      point `config :elixir, :dbg_callback` at a no-op function, but the idiomatic answer is to remove
+      them before merging.
+    tags: [pipe, debugging, kernel]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-datetime-types
+    kind: open
+    difficulty: junior
+    title: "`Date`, `Time`, `NaiveDateTime` and `DateTime`"
+    body: |
+      Which calendar types does Elixir ship with, how do you create them, and why is
+      `~D[2024-01-01] < ~D[2024-02-01]` a bug?
+    answer: |
+      - `Date` (`~D[2024-01-01]`), `Time` (`~T[12:00:00]`), `NaiveDateTime` (`~N[2024-01-01 12:00:00]`,
+        no time zone) and `DateTime` (`~U[2024-01-01 12:00:00Z]`, has a time zone; the sigil is UTC).
+      - Construct with sigils, `Date.new/3`, `DateTime.utc_now/0`, `DateTime.from_naive/2`,
+        `DateTime.new/3` (needs a time zone database such as `tzdata` for non-UTC zones).
+      - They are structs, so `<`, `>`, `==` compare them **structurally** (map ordering, field by field in
+        key order), not chronologically. Always use `Date.compare/2`, `DateTime.compare/2` (`:lt | :eq |
+        :gt`), `Date.before?/2`, `Date.after?/2` (1.15+), `Date.diff/2`, `DateTime.add/3`. Elixir 1.17+
+        emits a warning for structural comparison of structs it can detect at compile time.
+      - `Enum.sort(dates, Date)` / `Enum.max(dates, DateTime)` accept the module as the comparator.
+      - Only `DateTime` carries UTC offset and zone; `NaiveDateTime` is what you get from Ecto's
+        `:naive_datetime` columns and from most databases.
+    explanation: |
+      Follow-up: "What does `DateTime.utc_now/0` default precision look like?" (microseconds; use
+      `DateTime.truncate/2` for `:second`). "Why does `Date.new(2024, 2, 30)` return `{:error,
+      :invalid_date}` rather than raise?" (ok/error convention; `Date.new!/3` raises).
+    tags: [dates, structs, comparison]
+    source: https://elixir.hexdocs.pm/sigils.html
+
+  - slug: elixir-core-list-vs-enum
+    kind: open
+    difficulty: middle
+    title: "When do you use `List` instead of `Enum`?"
+    body: |
+      Both `List` and `Enum` have functions that work on lists. What is the rule for choosing one, and
+      what is the cost model of a linked list you should keep in mind?
+    answer: |
+      - `Enum` works on anything implementing the `Enumerable` protocol — lists, maps, ranges, `MapSet`,
+        streams — and is eager: every call produces a full result (often a new list). Prefer it for
+        generic transformations (`map`, `filter`, `reduce`, `sort`, `group_by`).
+      - `List` contains operations that only make sense for linked lists or need list-specific
+        positions: `List.first/1`, `List.last/1`, `List.insert_at/3`, `List.delete_at/2`, `List.flatten/1`,
+        `List.keyfind/3`, `List.to_tuple/1`, `List.wrap/1`.
+      - Linked-list cost model: prepending `[h | t]` and `hd/1`/`tl/1` are O(1); `length/1`, `Enum.at/2`,
+        `List.last/1`, `++` and `--` are O(n) (`a ++ b` copies `a`). Build lists by prepending in a
+        reduce and `Enum.reverse/1` at the end.
+      - `Kernel` has the guard-safe basics: `hd/1`, `tl/1`, `length/1`, `in`.
+      - `Stream` is the lazy counterpart of `Enum` for large or infinite inputs; a pipeline of
+        `Stream` calls runs in a single pass when finally consumed by an `Enum` function.
+    explanation: |
+      Follow-up: "Why is `Enum.count/1` on a list O(n) but on a `MapSet` O(1)?" (Enumerable's `count/1`
+      callback lets the type answer directly). "What does `[1, 2] -- [2, 2]` give?" (`[1]`: `--` removes
+      each right-hand element once, left to right, and is O(n*m)).
+    tags: [lists, enum, performance]
+    source: https://elixir.hexdocs.pm/enumerable-and-streams.html
+
+  - slug: elixir-core-code-text-stats
+    kind: code
+    difficulty: junior
+    title: "Count graphemes, codepoints and bytes"
+    body: |
+      Implement `TextStats.stats/1` that takes a string and returns a map with three integer counts:
+      `:graphemes` (user-perceived characters), `:codepoints` (Unicode scalar values) and `:bytes`
+      (UTF-8 bytes).
+
+      ```elixir
+      TextStats.stats("héllo")   # => %{graphemes: 5, codepoints: 5, bytes: 6}
+      TextStats.stats("")        # => %{graphemes: 0, codepoints: 0, bytes: 0}
+      ```
+    starter_code: |
+      defmodule TextStats do
+        def stats(string) when is_binary(string) do
+          # TODO: return %{graphemes: ..., codepoints: ..., bytes: ...}
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule TextStatsTest do
+        use ExUnit.Case
+
+        test "ascii" do
+          assert TextStats.stats("abc") == %{graphemes: 3, codepoints: 3, bytes: 3}
+        end
+
+        test "multibyte characters" do
+          assert TextStats.stats("héllo") == %{graphemes: 5, codepoints: 5, bytes: 6}
+        end
+
+        test "combining mark is one grapheme but two codepoints" do
+          assert TextStats.stats("é") == %{graphemes: 1, codepoints: 2, bytes: 3}
+        end
+
+        test "empty string" do
+          assert TextStats.stats("") == %{graphemes: 0, codepoints: 0, bytes: 0}
+        end
+      end
+    solution: |
+      defmodule TextStats do
+        def stats(string) when is_binary(string) do
+          %{
+            graphemes: String.length(string),
+            codepoints: length(String.codepoints(string)),
+            bytes: byte_size(string)
+          }
+        end
+      end
+    explanation: |
+      `String.length/1` counts graphemes, `String.codepoints/1` splits into codepoints (so `"é"`,
+      an `e` plus a combining acute accent, is one grapheme but two codepoints), and `byte_size/1` is the
+      raw UTF-8 length. Interviewers use this to check that you know a string is a binary and that
+      "length" is ambiguous for Unicode text.
+    tags: [strings, unicode]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-core-code-parse-int
+    kind: code
+    difficulty: junior
+    title: "Strict integer parsing with `Integer.parse/1`"
+    body: |
+      Implement `NumberParser.parse_int/1`. It returns `{:ok, integer}` only when the **entire** string
+      is a valid integer (optional leading `-`), and `:error` otherwise. Do not use `String.to_integer/1`
+      with `try/rescue`.
+
+      ```elixir
+      NumberParser.parse_int("42")     # => {:ok, 42}
+      NumberParser.parse_int("12abc")  # => :error
+      ```
+    starter_code: |
+      defmodule NumberParser do
+        def parse_int(string) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule NumberParserTest do
+        use ExUnit.Case
+
+        test "valid integers" do
+          assert NumberParser.parse_int("42") == {:ok, 42}
+          assert NumberParser.parse_int("-7") == {:ok, -7}
+          assert NumberParser.parse_int("0") == {:ok, 0}
+        end
+
+        test "trailing garbage is rejected" do
+          assert NumberParser.parse_int("12abc") == :error
+          assert NumberParser.parse_int("3.5") == :error
+        end
+
+        test "no digits at all" do
+          assert NumberParser.parse_int("abc") == :error
+          assert NumberParser.parse_int("") == :error
+        end
+      end
+    solution: |
+      defmodule NumberParser do
+        def parse_int(string) do
+          case Integer.parse(string) do
+            {n, ""} -> {:ok, n}
+            _ -> :error
+          end
+        end
+      end
+    explanation: |
+      `Integer.parse/1` returns `{int, rest}` for the longest numeric prefix or `:error`. Matching on
+      `{n, ""}` enforces that nothing was left over, which is the detail most people miss (`"12abc"`
+      parses to `{12, "abc"}`). `String.to_integer/1` raises on any invalid input, so it is the wrong tool
+      for untrusted strings.
+    tags: [integers, parsing, pattern-matching]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-code-point-struct
+    kind: code
+    difficulty: middle
+    title: "A struct with enforced keys and an update function"
+    body: |
+      Define a `Point` struct with required keys `:x` and `:y` (use `@enforce_keys`) and an optional
+      `:label` defaulting to `nil`. Add:
+
+      - `Point.new(x, y)` returning `%Point{x: x, y: y}`
+      - `Point.move(point, dx, dy)` returning a new point shifted by `dx`/`dy` (use the `%{p | ...}`
+        update syntax; the label must be preserved)
+
+      ```elixir
+      Point.new(1, 2) |> Point.move(2, 3)   # => %Point{x: 3, y: 5, label: nil}
+      ```
+    starter_code: |
+      defmodule Point do
+        # TODO: @enforce_keys and defstruct
+
+        def new(x, y) do
+          # TODO
+        end
+
+        def move(point, dx, dy) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PointStructTest do
+        use ExUnit.Case
+
+        test "new builds a struct with nil label" do
+          assert Point.new(1, 2) == %Point{x: 1, y: 2, label: nil}
+        end
+
+        test "move returns a new struct and keeps the label" do
+          p = %Point{x: 1, y: 2, label: "home"}
+          moved = Point.move(p, 2, 3)
+          assert moved == %Point{x: 3, y: 5, label: "home"}
+          assert p.x == 1
+        end
+
+        test "missing enforced keys raise at construction" do
+          assert_raise ArgumentError, fn -> struct!(Point, %{x: 1}) end
+        end
+
+        test "it is a struct, not a plain map" do
+          assert is_struct(Point.new(0, 0), Point)
+        end
+      end
+    solution: |
+      defmodule Point do
+        @enforce_keys [:x, :y]
+        defstruct [:x, :y, label: nil]
+
+        def new(x, y), do: %Point{x: x, y: y}
+
+        def move(%Point{x: x, y: y} = point, dx, dy) do
+          %{point | x: x + dx, y: y + dy}
+        end
+      end
+    explanation: |
+      `@enforce_keys` must be set before `defstruct` and is checked when the struct is built with the
+      `%Point{}` literal or `struct!/2` (plain `struct/2` does not check). The update syntax `%{p | ...}`
+      only touches existing keys, so `:label` is carried over and a typo in a key name is rejected at
+      compile time when using `%Point{p | ...}`. Because the key set is fixed, the new struct shares
+      memory with the old one.
+    tags: [structs, enforce-keys, update-syntax]
+    source: https://elixir.hexdocs.pm/structs.html
+
+  - slug: elixir-core-code-update-in-access
+    kind: code
+    difficulty: middle
+    title: "Nested updates with `update_in` and `Access.all/0`"
+    body: |
+      A config looks like `%{servers: [%{name: "a", port: 80}, %{name: "b", port: 81}], env: :prod}`.
+      Implement `ConfigTool.bump_ports(config, n)` returning the same config with **every** server's
+      `:port` increased by `n`, and `ConfigTool.port_of(config, name)` returning the port of the server
+      with that name or `nil`. Use `update_in/3` / `get_in/2` with `Access` paths rather than hand-written
+      recursion.
+    starter_code: |
+      defmodule ConfigTool do
+        def bump_ports(config, n) do
+          # TODO: update_in with an Access path
+        end
+
+        def port_of(config, name) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule ConfigToolTest do
+        use ExUnit.Case
+
+        @config %{servers: [%{name: "a", port: 80}, %{name: "b", port: 81}], env: :prod}
+
+        test "bumps every port and keeps other keys" do
+          assert ConfigTool.bump_ports(@config, 1000) ==
+                   %{servers: [%{name: "a", port: 1080}, %{name: "b", port: 1081}], env: :prod}
+        end
+
+        test "works with no servers" do
+          assert ConfigTool.bump_ports(%{servers: [], env: :dev}, 5) == %{servers: [], env: :dev}
+        end
+
+        test "finds a port by name" do
+          assert ConfigTool.port_of(@config, "b") == 81
+        end
+
+        test "unknown name is nil" do
+          assert ConfigTool.port_of(@config, "zzz") == nil
+        end
+      end
+    solution: |
+      defmodule ConfigTool do
+        def bump_ports(config, n) do
+          update_in(config, [:servers, Access.all(), :port], &(&1 + n))
+        end
+
+        def port_of(config, name) do
+          get_in(config, [:servers, Access.filter(&(&1.name == name)), :port]) |> List.first()
+        end
+      end
+    explanation: |
+      `update_in/3` walks the path with the `Access` behaviour: atoms look up map keys, `Access.all/0`
+      fans out over every list element, `Access.filter/1` selects matching elements. `get_in` with
+      `Access.filter` returns a list (possibly empty), hence `List.first/1` for `nil` on no match. The
+      `put_in`/`update_in`/`get_in` family is the idiomatic way to work with nested immutable data without
+      rebuilding each level by hand.
+    tags: [access, update-in, nested-data]
+    source: https://elixir.hexdocs.pm/Access.html
+
+  - slug: elixir-core-code-pixel-bit-syntax
+    kind: code
+    difficulty: senior
+    title: "Pack and unpack RGB pixels with bit syntax"
+    body: |
+      Implement `Pixel.pack/1`, which turns a list of `{r, g, b}` tuples (each 0..255) into a binary of
+      3 bytes per pixel, and `Pixel.unpack/1`, which does the reverse. Use `<<>>` construction and a
+      bitstring comprehension or recursive binary pattern match — no `Enum.chunk_every/2` on byte lists.
+
+      ```elixir
+      Pixel.pack([{255, 0, 0}, {0, 0, 255}])   # => <<255, 0, 0, 0, 0, 255>>
+      Pixel.unpack(<<255, 0, 0>>)              # => [{255, 0, 0}]
+      ```
+    starter_code: |
+      defmodule Pixel do
+        def pack(pixels) do
+          # TODO: build a binary with <<r, g, b>> per pixel
+        end
+
+        def unpack(binary) do
+          # TODO: for <<r::8, g::8, b::8 <- binary>> ...
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule PixelPackTest do
+        use ExUnit.Case
+
+        test "pack produces 3 bytes per pixel" do
+          assert Pixel.pack([{255, 0, 0}, {0, 0, 255}]) == <<255, 0, 0, 0, 0, 255>>
+          assert byte_size(Pixel.pack([{1, 2, 3}])) == 3
+        end
+
+        test "unpack is the inverse of pack" do
+          pixels = [{1, 2, 3}, {200, 100, 50}, {0, 0, 0}]
+          assert pixels |> Pixel.pack() |> Pixel.unpack() == pixels
+        end
+
+        test "empty input" do
+          assert Pixel.pack([]) == <<>>
+          assert Pixel.unpack(<<>>) == []
+        end
+
+        test "unpack ignores trailing incomplete pixel bytes" do
+          assert Pixel.unpack(<<9, 9, 9, 1>>) == [{9, 9, 9}]
+        end
+      end
+    solution: |
+      defmodule Pixel do
+        def pack(pixels) do
+          for {r, g, b} <- pixels, into: <<>>, do: <<r, g, b>>
+        end
+
+        def unpack(binary) do
+          for <<r::8, g::8, b::8 <- binary>>, do: {r, g, b}
+        end
+      end
+    explanation: |
+      `<<r, g, b>>` builds a 3-byte binary (integer segments default to 8 bits; values over 255 would be
+      truncated). `for ... into: <<>>` concatenates because binaries implement `Collectable`. The
+      bitstring generator `<<r::8, g::8, b::8 <- binary>>` consumes 24 bits per iteration and simply
+      stops when fewer bits remain, which is why the trailing byte in the last test is dropped. This is
+      the same machinery you would use to parse network packets or image headers.
+    tags: [bit-syntax, binaries, comprehensions]
+    source: https://elixir.hexdocs.pm/comprehensions.html
+
+  - slug: elixir-core-code-custom-sigil
+    kind: code
+    difficulty: junior
+    title: "Define a custom sigil"
+    body: |
+      Create a module `MySigils` that defines a `~u` sigil which upcases its content. With the `r`
+      modifier it should also reverse the (grapheme) string.
+
+      ```elixir
+      import MySigils
+      ~u(hello)    # => "HELLO"
+      ~u(hello)r   # => "OLLEH"
+      ```
+    starter_code: |
+      defmodule MySigils do
+        # TODO: def sigil_u(string, modifiers)
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule MySigilsTest do
+        use ExUnit.Case
+        import MySigils
+
+        test "upcases" do
+          assert ~u(hello) == "HELLO"
+          assert ~u(Mixed Case) == "MIXED CASE"
+        end
+
+        test "r modifier reverses" do
+          assert ~u(hello)r == "OLLEH"
+        end
+
+        test "empty" do
+          assert ~u() == ""
+        end
+
+        test "is a plain function" do
+          assert MySigils.sigil_u("abc", [?r]) == "CBA"
+        end
+      end
+    solution: |
+      defmodule MySigils do
+        def sigil_u(string, modifiers) do
+          up = String.upcase(string)
+          if ?r in modifiers, do: String.reverse(up), else: up
+        end
+      end
+    explanation: |
+      A sigil `~x(...)mods` is sugar for calling `sigil_x("...", ~c"mods")`: the content is passed as a
+      string and the modifiers as a charlist of codepoints, which is why the test checks `?r in
+      modifiers` (`?r` is the integer codepoint `114`). Lowercase sigil names get interpolation and escape
+      processing; uppercase names (`~U`-style) are passed raw. Elixir's own `~r`, `~w`, `~D` are defined
+      exactly this way in `Kernel`.
+    tags: [sigils, metaprogramming]
+    source: https://elixir.hexdocs.pm/sigils.html
+
+  - slug: elixir-core-code-keyword-to-map
+    kind: code
+    difficulty: middle
+    title: "Collapse a keyword list with duplicate keys into a map"
+    body: |
+      Keyword lists may repeat keys; maps cannot. Implement `KwTool.to_map/1` that turns a keyword list
+      into a map where each key points to the **list of all its values in original order**.
+
+      ```elixir
+      KwTool.to_map(a: 1, b: 2, a: 3)   # => %{a: [1, 3], b: [2]}
+      ```
+    starter_code: |
+      defmodule KwTool do
+        def to_map(keyword) do
+          # TODO
+        end
+      end
+    tests: |
+      ExUnit.start()
+
+      defmodule KwToolTest do
+        use ExUnit.Case
+
+        test "groups duplicate keys in order" do
+          assert KwTool.to_map(a: 1, b: 2, a: 3) == %{a: [1, 3], b: [2]}
+        end
+
+        test "single values still become lists" do
+          assert KwTool.to_map(x: :y) == %{x: [:y]}
+        end
+
+        test "empty keyword list" do
+          assert KwTool.to_map([]) == %{}
+        end
+
+        test "preserves order with many duplicates" do
+          assert KwTool.to_map(k: 1, k: 2, k: 3, j: 0) == %{k: [1, 2, 3], j: [0]}
+        end
+      end
+    solution: |
+      defmodule KwTool do
+        def to_map(keyword) do
+          keyword
+          |> Enum.reduce(%{}, fn {k, v}, acc -> Map.update(acc, k, [v], &[v | &1]) end)
+          |> Map.new(fn {k, vs} -> {k, Enum.reverse(vs)} end)
+        end
+      end
+    explanation: |
+      A keyword list is just `[{atom, value}]`, so you reduce over tuples. `Map.update/4` takes an initial
+      value for a missing key and an updater otherwise. Prepending with `[v | acc]` is O(1); reversing
+      once at the end restores order — the standard accumulate-then-reverse idiom. `Map.new/1` on a
+      keyword list would silently keep only the last value, which is the pitfall this task targets
+      (`Enum.group_by/3` is an acceptable one-liner alternative).
+    tags: [keyword-lists, maps, reduce]
+    source: https://elixir.hexdocs.pm/keywords-and-maps.html
+
+  - slug: elixir-core-code-inspect-protocol
+    kind: code
+    difficulty: senior
+    title: "Hide secrets with a custom `Inspect` implementation"
+    body: |
+      Define a struct `Secret` with a `:value` field and implement the `Inspect` protocol for it so that
+      `inspect/1` never reveals the value. The output must be exactly `#Secret<redacted>`.
+
+      ```elixir
+      inspect(%Secret{value: "hunter2"})        # => "#Secret<redacted>"
+      inspect([%Secret{value: "x"}])            # => "[#Secret<redacted>]"
+      ```
+    starter_code: |
+      defmodule Secret do
+        defstruct [:value]
+      end
+
+      # TODO: defimpl Inspect, for: Secret
+    tests: |
+      ExUnit.start()
+
+      defmodule SecretInspectTest do
+        use ExUnit.Case
+
+        test "value is redacted" do
+          assert inspect(%Secret{value: "hunter2"}) == "#Secret<redacted>"
+        end
+
+        test "nested inside other data" do
+          assert inspect([%Secret{value: "x"}]) == "[#Secret<redacted>]"
+          assert inspect(%{token: %Secret{value: "y"}}) == "%{token: #Secret<redacted>}"
+        end
+
+        test "the value is still accessible programmatically" do
+          assert %Secret{value: "z"}.value == "z"
+        end
+
+        test "interpolation uses String.Chars, not Inspect" do
+          assert_raise Protocol.UndefinedError, fn -> to_string(%Secret{value: "q"}) end
+        end
+      end
+    solution: |
+      defmodule Secret do
+        defstruct [:value]
+      end
+
+      defimpl Inspect, for: Secret do
+        def inspect(_secret, _opts), do: "#Secret<redacted>"
+      end
+    explanation: |
+      `inspect/1`, `IO.inspect/2`, exception messages and Logger all go through the `Inspect` protocol, so
+      overriding it is how you keep passwords and tokens out of logs. `defimpl Inspect` must define
+      `inspect/2` and may return a plain string or an `Inspect.Algebra` document. The lighter
+      alternative is `@derive {Inspect, except: [:value]}` (or `only:`) on the struct, which prints
+      `#Secret<...>` with the listed fields omitted. `String.Chars` (used by `to_string/1` and `"#{}"`) is a
+      separate protocol — structs do not implement it by default.
+    tags: [protocols, inspect, security]
+    source: https://elixir.hexdocs.pm/structs.html
+
+  - slug: elixir-core-booleans-are-atoms
+    kind: theory
+    difficulty: junior
+    title: "Booleans and `nil` are atoms"
+    body: |
+      Elixir has no dedicated boolean or null type. `true`, `false` and `nil` are **atoms** whose leading
+      colon may be omitted:
+
+      ```elixir
+      true == :true      # => true
+      nil == :nil        # => true
+      is_atom(false)     # => true
+      is_boolean(nil)    # => false   (is_boolean only accepts true/false)
+      ```
+
+      An atom is an interned constant whose name is its value. Comparison is an O(1) pointer check, which
+      is why atoms are used as tags (`:ok`, `:error`), map keys and option names. Module names are atoms
+      too: `MyApp.User == :"Elixir.MyApp.User"`.
+
+      Consequences:
+
+      - Guards have `is_atom/1`, `is_boolean/1`, `is_nil/1`; `is_nil(x)` is the guard-safe way to test for
+        nil.
+      - Truthiness: only `false` and `nil` are falsy; everything else, including `0`, `""` and `[]`, is
+        truthy.
+      - `and`/`or`/`not` require a boolean on the left and raise `BadBooleanError` otherwise; `&&`/`||`/`!`
+        accept any term.
+      - Atoms are never garbage collected (default limit ~1M), so never create them from user input.
+      - `Atom.to_string(nil)` is `"nil"`, and `"#{nil}"` is `""` because `String.Chars` for nil returns
+        the empty string.
+    answer: |
+      **Q:** Why does `nil and true` raise but `nil && true` returns `nil`?
+      **A:** `and` is strictly boolean and checks that its left operand is `true` or `false`; `nil` is an
+      atom but not a boolean, so it raises `BadBooleanError`. `&&` works on truthiness: `nil` is falsy, so
+      it is returned without evaluating the right side.
+    explanation: |
+      Interviewers follow up with "what is `:"hello world"`?" (an atom with spaces, needs quotes) and "why
+      is `nil` an atom rather than a special value?" (Erlang heritage; `nil` is just a conventional atom,
+      the VM has no null).
+    tags: [atoms, booleans, nil]
+    source: https://elixir.hexdocs.pm/basic-types.html
+
+  - slug: elixir-core-sigils-overview
+    kind: theory
+    difficulty: middle
+    title: "Sigils: `~s`, `~S`, `~w`, `~r`, `~D`, `~U` and your own"
+    body: |
+      A sigil is `~` + name + delimited content + optional modifiers. Any of `() [] {} <> // || "" ''`
+      delimit, and `"""` heredocs work too. Lowercase names interpolate and process escapes; uppercase
+      names are raw.
+
+      ```elixir
+      ~s(she said "hi" #{1 + 1})   # => "she said \"hi\" 2"  (string, interpolated)
+      ~S(no #{interp} \n here)     # => "no \#{interp} \\n here"
+      ~w(a b c)                    # => ["a", "b", "c"]
+      ~w(a b c)a                   # => [:a, :b, :c]   (modifiers: s, a, c)
+      ~c"abc"                      # => [97, 98, 99]   (charlist)
+      ~r/\d+/i                     # => regex; modifiers i, m, s, u, x
+      ~D[2024-05-01]               # => %Date{}
+      ~T[12:30:00]                 # => %Time{}
+      ~N[2024-05-01 12:30:00]      # => %NaiveDateTime{}
+      ~U[2024-05-01 12:30:00Z]     # => %DateTime{} in Etc/UTC
+      ```
+
+      Every sigil is just a function call `sigil_X(content, modifiers)`, so defining your own is one
+      function:
+
+      ```elixir
+      defmodule MySigils do
+        def sigil_i(string, []), do: String.to_integer(string)
+        def sigil_i(string, [?n]), do: -String.to_integer(string)
+      end
+      # import MySigils; ~i(42)n => -42
+      ```
+
+      Since Elixir 1.15 multi-letter uppercase sigils (`~HTML`, `~SQL`) are allowed, and `~H` in Phoenix
+      LiveView and `~p` for verified routes are ordinary sigils defined by those libraries.
+    answer: |
+      **Q:** What is the difference between `~s` and `~S`, and why does `~r` exist when `Regex.compile!/1`
+      works?
+      **A:** `~s` processes escapes and `#{}` interpolation; `~S` keeps the content verbatim. `~r` lets
+      you pick a delimiter that avoids escaping slashes (`~r(^https?://)`) and compiles the regex at
+      compile time when there is no interpolation, so it is not rebuilt on every call.
+    explanation: |
+      Follow-up: "What are sigil modifiers passed as?" A charlist of codepoints (`[?n]`), which is why
+      implementations match on `?n`. "Why does the compiler treat `~r` specially?" It does not; Kernel
+      defines `sigil_r` as a macro so it can precompile when possible.
+    tags: [sigils, regex, dates]
+    source: https://elixir.hexdocs.pm/sigils.html
+
+  - slug: elixir-core-unicode-graphemes-codepoints
+    kind: theory
+    difficulty: middle
+    title: "Codepoints, graphemes and `?c`"
+    body: |
+      A **codepoint** is a Unicode scalar value (`?é` is `233`); a **grapheme** is what a reader perceives
+      as one character and may consist of several codepoints. Elixir strings are UTF-8 binaries, so one
+      codepoint is 1–4 bytes.
+
+      ```elixir
+      s = "é"                 # "é" built from "e" + combining acute accent
+      byte_size(s)                  # => 3
+      String.codepoints(s)          # => ["e", "́"]      (2 codepoints)
+      String.graphemes(s)           # => ["é"]          (1 grapheme)
+      String.length(s)              # => 1              (counts graphemes)
+      String.first("👩‍🚒")         # => "👩‍🚒"         (one grapheme, 3 codepoints)
+      ```
+
+      `?c` is the codepoint literal: `?a == 97`, `?\n == 10`. It is what you get from a charlist element
+      and from a bare `<<x>>`/`<<x::utf8>>` match:
+
+      ```elixir
+      <<first::utf8, rest::binary>> = "über"   # first == ?ü == 252, rest == "ber"
+      <<first, rest::binary>> = "über"         # first == 195 — only the first BYTE of ü
+      ```
+
+      Rules of thumb:
+
+      - `String.length/1`, `String.slice/3`, `String.reverse/1`, `String.at/2` operate on graphemes and are
+        O(n).
+      - `byte_size/1`, `binary_part/3`, `<<>>` matching operate on bytes and are O(1)/O(size).
+      - `String.valid?/1` checks that a binary is valid UTF-8; `String.normalize/2` (`:nfc`/`:nfd`)
+        makes equal-looking strings compare equal.
+      - `String.upcase/1` etc. are Unicode-aware (`"ß"` upcases to `"SS"`).
+    answer: |
+      **Q:** `String.reverse("noël")` — why might this return a broken string in a naive implementation,
+      and why does Elixir's return `"lëon"`?
+      **A:** Reversing bytes would split the multi-byte `ë`; reversing codepoints would detach a combining
+      diaeresis from its base letter. Elixir reverses *graphemes*, keeping each user-perceived character
+      intact.
+    explanation: |
+      Follow-up: "What does `String.to_charlist("é")` give?" `[233]` — one codepoint. "How would you
+      truncate a user string to 10 characters for display?" `String.slice(s, 0, 10)` (graphemes), not
+      `binary_part`.
+    tags: [strings, unicode, codepoints]
+    source: https://elixir.hexdocs.pm/binaries-strings-and-charlists.html
+
+  - slug: elixir-core-bit-syntax-basics
+    kind: theory
+    difficulty: senior
+    title: "Binaries and the `<<>>` bit syntax"
+    body: |
+      `<<>>` both *constructs* and *matches* bitstrings. Each segment is `value::type-size-unit-modifiers`.
+
+      ```elixir
+      <<1, 2, 3>>                      # three 8-bit integers (default type integer, size 8)
+      <<256>>                          # => <<0>>  — integers are truncated to the segment size
+      <<1::16>>                        # => <<0, 1>>  big-endian by default
+      <<1::16-little>>                 # => <<1, 0>>
+      <<3.14::float>>                  # 64-bit float; ::float-32 for single precision
+      <<"ab", 0, "cd">>                # strings are inlined as bytes
+      <<"ab"::binary, rest::binary>>   # binary segments
+      <<x::utf8>>                      # encode/decode one codepoint as UTF-8
+      <<a::4, b::4>> = <<0xAB>>        # a == 10, b == 11 — sub-byte matching
+      <<len::8, body::binary-size(len), rest::binary>> = packet   # length-prefixed frame
+      ```
+
+      Vocabulary: a **bitstring** is any number of bits (`<<1::4>>`), a **binary** is a bitstring whose
+      size is a multiple of 8 (`is_binary/1`), a **string** is a binary that is valid UTF-8. `<>` is
+      binary concatenation and desugars to `<<a::binary, b::binary>>`, which is why `"pre" <> rest = str`
+      works as a pattern but `rest <> "suf"` does not (only the last segment may have unknown size).
+
+      Rules interviewers probe:
+
+      - Only the last segment of a *match* may omit its size (`rest::binary`, `rest::bits`).
+      - Sizes can be variables bound earlier in the same pattern (`body::binary-size(len)`), or pinned
+        variables from outside (`^n`).
+      - `::size(n)-unit(8)` means `n` bytes; the shorthand `::8*4` is 32 bits.
+      - Modifiers: `signed`/`unsigned`, `big`/`little`/`native`, types `integer`, `float`, `binary`/`bytes`,
+        `bitstring`/`bits`, `utf8`/`utf16`/`utf32`.
+      - Large binaries (> 64 bytes) live off-heap and are reference-counted; sub-binaries from matching
+        share them, so matching is O(1) and allocation-free.
+    answer: |
+      **Q:** Why does `<<a, b::binary>> = "über"` bind `a` to `195` instead of `?ü`?
+      **A:** A bare segment is an 8-bit integer, i.e. one byte. `ü` is two UTF-8 bytes (`195, 188`), so
+      you get the first byte. Use `a::utf8` to decode a whole codepoint.
+    explanation: |
+      Follow-up: "How would you parse a TCP-style header of version (1 byte), flags (1 byte), length
+      (2 bytes big-endian) and payload?" — one `<<v::8, f::8, len::16, payload::binary-size(len),
+      rest::binary>>` pattern. "Why is binary matching efficient?" Sub-binaries reference the parent, and
+      the compiler keeps a match context across clauses to avoid re-creating them.
+    tags: [binaries, bit-syntax, pattern-matching]
+    source: https://elixir.hexdocs.pm/Kernel.SpecialForms.html
+
+  - slug: elixir-core-ranges-and-steps
+    kind: theory
+    difficulty: middle
+    title: "Ranges, steps and the `in` operator"
+    body: |
+      A range `first..last//step` is a struct (`%Range{first: 1, last: 10, step: 1}`) that implements
+      `Enumerable` lazily: `1..1_000_000` allocates nothing until enumerated.
+
+      ```elixir
+      Enum.to_list(1..5)         # => [1, 2, 3, 4, 5]
+      Enum.to_list(1..10//3)     # => [1, 4, 7, 10]
+      Enum.to_list(10..1//-2)    # => [10, 8, 6, 4, 2]
+      Enum.to_list(1..0//1)      # => []   explicit positive step, empty
+      Enum.to_list(1..0)         # => [1, 0]  (!) default step is -1 when first > last — warns since 1.17
+      Range.size(1..10//3)       # => 4
+      5 in 1..10                 # => true  — also valid in guards
+      5.0 in 1..10               # => false — `in` on ranges checks integers only
+      ```
+
+      - `first..last` without a step has step `1` when `first <= last` and `-1` otherwise. Relying on the
+        implicit `-1` is a classic bug (`1..length(list) - 1` on an empty list is `1..-1`, i.e. `[1, 0, -1]`);
+        write `1..n//1` when you want an empty range for `n < 1`.
+      - `in` desugars to `Enum.member?/2` outside guards and to a compiled comparison inside guards; the
+        right side in a guard must be a literal list or range.
+      - `Enum.slice/2`, `String.slice/2`, `Enum.random/1` accept ranges; negative bounds count from the
+        end in slicing (`Enum.slice(list, 1..-2//1)`).
+      - `Range.new/3`, `Range.split/2`, `Range.shift/2` exist for programmatic use.
+    answer: |
+      **Q:** `for i <- 1..length(items) - 1, do: i` surprises you on an empty list — why, and how do you
+      fix it?
+      **A:** With an empty list the range is `1..-1`, which has an implicit step of `-1` and yields
+      `[1, 0, -1]`. Write `1..length(items) - 1//1` so the range is empty when the upper bound is below
+      the lower one.
+    explanation: |
+      Follow-up: "Is a range a list?" No — it is a struct; `is_list(1..3)` is false and `length(1..3)`
+      raises. "Can you pattern match on a range?" Yes: `first..last//step = 1..10`.
+    tags: [ranges, operators, enum]
+    source: https://elixir.hexdocs.pm/Kernel.html
+
+  - slug: elixir-core-keyword-vs-map
+    kind: theory
+    difficulty: junior
+    title: "Keyword lists vs maps"
+    body: |
+      Both are key-value structures, but they are different data types with different guarantees.
+
+      ```elixir
+      kw = [a: 1, b: 2]            # sugar for [{:a, 1}, {:b, 2}]
+      kw[:a]                       # => 1   (Access, linear scan)
+      Keyword.get(kw, :a)          # => 1
+      [a: 1] ++ [a: 2]             # => [a: 1, a: 2]   duplicates allowed, order kept
+      Keyword.get([a: 1, a: 2], :a) # => 1  first wins
+
+      m = %{a: 1, "b" => 2}        # any key type; atom keys use the shorthand
+      m.a                          # => 1   (atom keys only; raises KeyError if missing)
+      m[:zzz]                      # => nil
+      %{m | a: 3}                  # update existing key only
+      Map.put(m, :c, 3)            # add
+      ```
+
+      | | keyword list | map |
+      |---|---|---|
+      | keys | atoms only | any term |
+      | order | preserved | unordered (small maps ≤ 32 keys print sorted) |
+      | duplicates | allowed | no |
+      | lookup | O(n) | O(log n) |
+      | pattern match | positional, fragile | subset of keys, any order |
+      | typical use | function options (`Enum.sort(l, order: :desc)`) | data, state |
+
+      The trailing keyword list in a call may drop its brackets: `foo(1, a: 2)` is `foo(1, [a: 2])`;
+      `if cond, do: x, else: y` is the same mechanism.
+    answer: |
+      **Q:** Why do the docs say "do not pattern match on keyword lists"?
+      **A:** A keyword list is a list, so `[a: a, b: b] = opts` requires exactly those two keys in exactly
+      that order and fails on `[b: 2, a: 1]` or on an extra option. Use `Keyword.get/3`,
+      `Keyword.fetch!/2` or `Keyword.validate!/2` instead; maps match on a subset of keys regardless of order.
+    explanation: |
+      Follow-up: "When would a map be a worse choice for options?" When ordering matters or the same key
+      may appear twice (e.g. multiple `plug` or query `where` entries). "What happens to a map with more
+      than 32 keys?" Implementation switches from a sorted flat array to a HAMT; iteration order becomes
+      arbitrary — never rely on map ordering.
+    tags: [keyword-lists, maps, access]
+    source: https://elixir.hexdocs.pm/keywords-and-maps.html
